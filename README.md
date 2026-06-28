@@ -155,11 +155,39 @@ JARVIS_LOG_LEVEL=INFO
 
 ---
 
-## Running tests
+## Development / CI
+
+### Run tests locally
 
 ```bash
+# Compile-check all modules
+python -m compileall app db
+
+# Run full test suite (unit + smoke tests)
 pytest
 ```
+
+### What is tested
+
+| Suite | File | Coverage |
+|---|---|---|
+| Permissions | `tests/test_permissions.py` | All 3 levels, blocked keywords |
+| Router | `tests/test_router.py` | All command patterns |
+| Tool registry | `tests/test_tool_registry.py` | Register, execute, error handling |
+| Smoke | `tests/test_smoke.py` | Imports, routing, registry, API endpoints |
+
+### CI pipeline
+
+GitHub Actions runs on every **pull request** and every **push to `main`**:
+
+- OS: `ubuntu-latest`
+- Python: `3.11`
+- Steps: checkout → install `requirements.txt` → `compileall` → `pytest`
+
+Workflow file: `.github/workflows/ci.yml`
+
+> Note: Windows-only tools (app launcher, screenshot) are tested at the
+> routing/registration level only in CI. Actual OS calls are not made on Linux.
 
 ---
 
