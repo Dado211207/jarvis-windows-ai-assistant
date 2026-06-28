@@ -81,6 +81,31 @@ cp .env.example .env               # optional: add ANTHROPIC_API_KEY
 
 ---
 
+## First Run (Windows ZIP)
+
+If you downloaded the release ZIP, use the included helper scripts — no
+Python installation required.
+
+| Script | What it does |
+|---|---|
+| `SETUP_ENV.bat` | Creates `.env` from `.env.example`; prints API key setup instructions |
+| `START_JARVIS.bat` | Starts the JARVIS CLI assistant |
+| `START_JARVIS_API.bat` | Starts the local FastAPI server on `127.0.0.1:5555` |
+| `QUICKSTART.md` | Step-by-step guide for new users |
+
+**Quick steps:**
+
+1. Extract the ZIP (e.g. to `C:\JARVIS\`).
+2. Double-click `SETUP_ENV.bat` — follow the on-screen instructions to
+   add your Anthropic API key to `.env` (optional; required only for
+   natural-language AI responses).
+3. Double-click `START_JARVIS.bat`.
+
+The API key is **never** included in the ZIP and is stored only in your
+local `.env` file.
+
+---
+
 ## Running JARVIS
 
 ### CLI
@@ -223,7 +248,11 @@ pull request and push to `main`.
 |---|---|
 | `JARVIS.exe` and its runtime libraries | ✅ |
 | `README.md` | ✅ |
+| `QUICKSTART.md` | ✅ |
 | `.env.example` | ✅ |
+| `START_JARVIS.bat` | ✅ |
+| `START_JARVIS_API.bat` | ✅ |
+| `SETUP_ENV.bat` | ✅ |
 | Python runtime (embedded) | ✅ |
 | All `app/` and `db/` modules | ✅ (compiled into the bundle) |
 
@@ -281,9 +310,10 @@ JARVIS-Windows-v0.1.0.zip
 
 ### What is and is not in the release ZIP
 
-Same inclusions/exclusions as the Actions build artifact:
-the `ANTHROPIC_API_KEY` and `.env` are **never bundled**.
-The user creates `.env` from `.env.example` on their own machine after download.
+The release ZIP includes the same content as the Actions build artifact,
+plus the first-run helper scripts and quick-start guide.
+The `ANTHROPIC_API_KEY` and `.env` are **never bundled**.
+Run `SETUP_ENV.bat` after extracting to create your local `.env`.
 
 ### Security and limitations
 
@@ -330,7 +360,11 @@ data/               — Runtime data (gitignored except .gitkeep)
 tests/              — Pytest suite
 installer/          — Windows setup scripts
 docs/               — Developer process documentation
-run_jarvis.py       — PyInstaller entry point (delegates to app.main)
+run_jarvis.py       — PyInstaller entry point (--api flag starts FastAPI server)
+QUICKSTART.md       — First-run guide (included in release ZIP)
+START_JARVIS.bat    — CLI launcher (included in release ZIP)
+START_JARVIS_API.bat — API launcher (included in release ZIP)
+SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 ```
 
 ---

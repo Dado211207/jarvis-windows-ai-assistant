@@ -49,7 +49,8 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
-if __name__ == "__main__":
+def run_api() -> None:
+    """Start the FastAPI server. Called by run_jarvis.py when --api is passed."""
     import uvicorn
 
     setup_logging()
@@ -65,3 +66,7 @@ if __name__ == "__main__":
         reload=False,
         log_level=settings.jarvis_log_level.lower(),
     )
+
+
+if __name__ == "__main__":
+    run_api()
