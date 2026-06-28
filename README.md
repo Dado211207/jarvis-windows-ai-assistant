@@ -204,6 +204,63 @@ Workflow file: `.github/workflows/ci.yml`
 
 ---
 
+## Windows build artifact
+
+A downloadable Windows build is produced automatically by GitHub Actions on every
+pull request and push to `main`.
+
+### How to download
+
+1. Go to the [**Actions** tab](../../actions/workflows/windows-build.yml) in the
+   repository.
+2. Click the latest successful **Windows Build** run.
+3. Scroll to **Artifacts** and download **JARVIS-Windows-Build.zip**.
+4. Unzip it — you get a `JARVIS\` folder containing `JARVIS.exe`.
+
+### What is included
+
+| Item | Included |
+|---|---|
+| `JARVIS.exe` and its runtime libraries | ✅ |
+| `README.md` | ✅ |
+| `.env.example` | ✅ |
+| Python runtime (embedded) | ✅ |
+| All `app/` and `db/` modules | ✅ (compiled into the bundle) |
+
+### What is NOT included
+
+| Item | Excluded |
+|---|---|
+| `.env` / `ANTHROPIC_API_KEY` | ✅ Never included |
+| `data/jarvis.db` (live database) | ✅ Created fresh on first run |
+| `data/logs/` | ✅ Created fresh on first run |
+| `data/screenshots/` | ✅ Created on demand |
+| Test files | ✅ Not bundled |
+| `.git` history | ✅ Not bundled |
+
+### First-time setup on Windows
+
+```bat
+REM 1. Unzip JARVIS-Windows-Build.zip into a folder, e.g. C:\JARVIS\
+REM 2. Copy .env.example to .env and add your API key (optional):
+copy C:\JARVIS\JARVIS\.env.example C:\JARVIS\JARVIS\.env
+REM    Then edit .env and add: ANTHROPIC_API_KEY=sk-ant-...
+REM 3. Run JARVIS:
+C:\JARVIS\JARVIS\JARVIS.exe
+```
+
+JARVIS runs entirely on your local machine. No data is sent to the network unless
+you configure an `ANTHROPIC_API_KEY` for AI responses. The API key is **never**
+included in the build artifact.
+
+> **Note:** This is a development/testing artifact, not a signed Windows installer.
+> Windows SmartScreen may warn on first launch — click **More info → Run anyway**.
+> A signed installer is planned for a later phase.
+
+Workflow file: `.github/workflows/windows-build.yml`
+
+---
+
 ## Project structure
 
 ```
@@ -212,12 +269,13 @@ app/
   config.py         — Pydantic settings
   logging_config.py — Structured logging setup
   core/
-    brain.py        — Orchestrator (Claude-ready stub)
+    brain.py        — Orchestrator + Claude AI integration
     router.py       — Command → tool mapping
     tool_registry.py — Central tool registry
     permissions.py  — Permission enforcement
     memory.py       — Memory tool wrappers
     models.py       — Shared Pydantic models
+    system_prompt.py — JARVIS AI safety constraints
   desktop/
     apps.py         — App launcher (allowlist)
     screenshots.py  — Screenshot tool
@@ -232,6 +290,7 @@ db/
 data/               — Runtime data (gitignored except .gitkeep)
 tests/              — Pytest suite
 installer/          — Windows setup scripts
+run_jarvis.py       — PyInstaller entry point (delegates to app.main)
 ```
 
 ---
