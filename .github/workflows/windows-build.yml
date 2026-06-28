@@ -1,0 +1,64 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: "Windows Executable / Python 3.11"
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Compile check (app + db)
+        run: python -m compileall app db
+
+      - name: Run tests
+        run: pytest
+        env:
+          # Write the test DB to the runner temp dir so CI never writes
+          # inside the checkout directory.
+          JARVIS_DB_PATH: ${{ runner.temp }}/ci_jarvis_test.db
+          JARVIS_LOG_LEVEL: WARNING
+
+      - name: Build Windows executable
+        run: >-
+          pyinstaller
+          --name JARVIS
+          --onedir
+          --noconfirm
+          --clean
+          --collect-all pydantic_settings
+          --collect-all anthropic
+          --add-data "README.md;."
+          --add-data ".env.example;."
+          run_jarvis.py
+
+      - name: Package build into ZIP
+        shell: pwsh
+        run: Compress-Archive -Path dist\JARVIS -DestinationPath JARVIS-Windows-Build.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Windows-Build
+          path: JARVIS-Windows-Build.zip
+          retention-days: 30
