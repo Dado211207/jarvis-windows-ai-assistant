@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag (e.g. v0.1.0)"
+        required: true
+        type: string
+
+jobs:
+  release:
+    name: "Windows Release / Python 3.11"
+    runs-on: windows-latest
+    permissions:
+      contents: write   # required to create GitHub Releases and upload assets
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Compile check (app + db)
+        run: python -m compileall app db
+
+      - name: Run tests
+        run: pytest
+        env:
+          JARVIS_DB_PATH: ${{ runner.temp }}/ci_jarvis_test.db
+          JARVIS_LOG_LEVEL: WARNING
+
+      - name: Build Windows executable
+        run: >-
+          pyinstaller
+          --name JARVIS
+          --onedir
+          --noconfirm
+          --clean
+          --collect-all pydantic_settings
+          --collect-all anthropic
+          --add-data "README.md;."
+          --add-data ".env.example;."
+          run_jarvis.py
+
+      - name: Package into versioned ZIP
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          Compress-Archive -Path dist\JARVIS -DestinationPath "JARVIS-Windows-$version.zip"
+
+      - name: Write release notes
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          $asset   = "JARVIS-Windows-$version.zip"
+          $notes = @(
+            "## JARVIS Windows $version",
+            "",
+            "**Local-first personal Windows AI assistant — runs entirely on your machine.**",
+            "",
+            "### What is included",
+            "- CLI interface with deterministic command router",
+            "- Claude AI brain integration (natural-language fallback when API key is configured)",
+            "- System status, SQLite memory, app launcher, screenshot tools",
+            "- FastAPI local API on ``127.0.0.1:5555``",
+            "- Phase 1 foundation + Phase 2 Claude brain",
+            "",
+            "### First-time setup on Windows",
+            "``````",
+            "REM 1. Unzip $asset into a folder, e.g. C:\JARVIS\",
+            "REM 2. (Optional) Enable Claude AI responses:",
+            "copy JARVIS\.env.example JARVIS\.env",
+            "REM    Edit JARVIS\.env and add:  ANTHROPIC_API_KEY=sk-ant-...",
+            "REM 3. Run JARVIS:",
+            "JARVIS\JARVIS.exe",
+            "``````",
+            "",
+            "### Security",
+            "- The ``ANTHROPIC_API_KEY`` is **never** bundled in this release",
+            "- FastAPI binds to ``127.0.0.1`` only — never exposed to the network",
+            "- App launcher uses a strict allowlist — arbitrary executables cannot be launched",
+            "",
+            "> **Note:** This is an **unsigned** testing build.",
+            "> Windows SmartScreen may warn on first launch — click **More info → Run anyway**.",
+            "> A signed installer is planned for a later phase."
+          ) -join "`n"
+          Set-Content -Path notes.txt -Value $notes -Encoding UTF8
+
+      - name: Create GitHub Release and upload asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          $asset   = "JARVIS-Windows-$version.zip"
+          gh release create $version `
+            --title "JARVIS Windows $version" `
+            --notes-file notes.txt `
+            $asset
