@@ -59,6 +59,14 @@ class ConversationEntry(BaseModel):
     created_at: Optional[datetime] = None
 
 
+class BrainResponse(BaseModel):
+    content: str
+    provider: str
+    model: Optional[str] = None
+    used_api: bool = False
+    error: Optional[str] = None
+
+
 class ActionLog(BaseModel):
     id: Optional[int] = None
     command: str

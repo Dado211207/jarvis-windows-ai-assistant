@@ -53,8 +53,9 @@ ROUTES: List[Route] = [
 class CommandRouter:
     """Maps raw command strings to registered tools and executes them."""
 
-    def __init__(self, registry) -> None:
+    def __init__(self, registry, brain=None) -> None:
         self._registry = registry
+        self._brain = brain
 
     def route(self, command: str) -> CommandResponse:
         cmd = command.strip()
@@ -69,12 +70,37 @@ class CommandRouter:
                 logger.debug("Matched route -> tool '%s', kwargs=%s", route.tool_name, kwargs)
                 return self._dispatch(route.tool_name, cmd, **kwargs)
 
+        if self._brain is not None:
+            return self._brain_response(cmd)
+
         return CommandResponse(
             success=False,
             message=(
                 f"Unknown command: '{cmd}'. "
                 "Type 'help' to see available commands."
             ),
+        )
+
+    def _brain_response(self, cmd: str) -> CommandResponse:
+        """Delegate an unrecognised command to the Brain's AI layer."""
+        br = self._brain.generate_response(cmd)
+        try:
+            from db.database import get_db
+            db = get_db()
+            db.add_conversation("user", cmd)
+            db.add_conversation("assistant", br.content)
+        except Exception:
+            pass
+        return CommandResponse(
+            success=True,
+            message=br.content,
+            data={
+                "provider": br.provider,
+                "model": br.model,
+                "used_api": br.used_api,
+                **({"error": br.error} if br.error else {}),
+            },
+            tool_used="brain",
         )
 
     def _dispatch(self, tool_name: str, raw_cmd: str, **kwargs) -> CommandResponse:

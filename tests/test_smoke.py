@@ -220,13 +220,14 @@ def test_command_help_returns_200(api_client):
     assert body["success"] is True
 
 
-def test_command_unknown_returns_200_but_failure(api_client):
-    """Unknown commands return HTTP 200 but success=False in the body."""
+def test_command_unknown_returns_200_via_brain(api_client):
+    """Unknown commands are handled by the brain (Phase 2) and return success=True."""
     r = api_client.post("/command", json={"command": "launch_rocket"})
     assert r.status_code == 200
     body = r.json()
-    assert body["success"] is False
-    assert "Unknown command" in body["message"]
+    # Brain handles unknown commands; no API key in CI so local fallback is used.
+    assert body["success"] is True
+    assert body["tool_used"] == "brain"
 
 
 def test_memory_search_endpoint(api_client):
