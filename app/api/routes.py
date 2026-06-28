@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app import __phase__, __version__
 from app.core.brain import brain
 from app.core.models import CommandRequest, CommandResponse, MemoryEntry, ToolDefinition
+from app.core.tool_registry import registry
 from app.logging_config import get_logger
 
 logger = get_logger("api.routes")
@@ -38,14 +39,12 @@ def root() -> StatusResponse:
         status="running",
         version=__version__,
         phase=__phase__,
-        tools_registered=len(brain._registry) if hasattr(brain, "_registry") else 0,
+        tools_registered=len(registry),
     )
 
 
 @router.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    from app.core.tool_registry import registry
-
     db_ok = False
     try:
         from db.database import get_db
@@ -68,7 +67,6 @@ def run_command(req: CommandRequest) -> CommandResponse:
 
 @router.get("/tools", response_model=List[ToolDefinition])
 def list_tools() -> List[ToolDefinition]:
-    from app.core.tool_registry import registry
     return registry.list_definitions()
 
 
