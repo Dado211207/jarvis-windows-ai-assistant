@@ -1,11 +1,13 @@
-"""JARVIS Brain — orchestrates tools, routing, and (future) Claude AI.
+"""JARVIS Brain — orchestrates tools, routing, and Claude AI.
 
-Phase 1: deterministic routing only, no Claude API required.
-Phase 2 (TODO): wire in Anthropic SDK when ANTHROPIC_API_KEY is present.
+Phase 1: deterministic routing only.
+Phase 2: unknown commands fall through to the Anthropic API when a key is present;
+          local fallback message returned when no key is configured.
 """
 
 from app.config import settings
-from app.core.models import CommandResponse
+from app.core.models import BrainResponse, CommandResponse
+from app.core.system_prompt import SYSTEM_PROMPT
 from app.core.tool_registry import registry
 from app.logging_config import get_logger
 
@@ -18,15 +20,15 @@ class Brain:
     def __init__(self) -> None:
         self._ready = False
 
+    # --- lifecycle ---
+
     def initialise(self) -> None:
         if self._ready:
             return
 
-        # Ensure DB tables exist before any tool runs
         from db.migrations import create_tables
         create_tables()
 
-        # Register all tool modules
         from app.core import memory as memory_module
         from app.desktop import apps, screenshots, system
 
@@ -41,6 +43,74 @@ class Brain:
             "Brain initialised. %d tools registered. Claude API: %s",
             len(registry),
             "available" if settings.has_anthropic_key else "not configured",
+        )
+
+    # --- public API ---
+
+    def is_configured(self) -> bool:
+        """Return True when the Anthropic API key is present and non-empty."""
+        return settings.has_anthropic_key
+
+    def process(self, command: str) -> CommandResponse:
+        if not self._ready:
+            self.initialise()
+
+        from app.core.router import CommandRouter
+        router = CommandRouter(registry, brain=self)
+        return router.route(command)
+
+    def generate_response(self, command: str) -> BrainResponse:
+        """Call the Anthropic API with *command* as the user message.
+
+        Falls back to a local message if the key is absent or the call fails.
+        """
+        if not self.is_configured():
+            return self._local_fallback(command)
+
+        model = settings.jarvis_ai_model or "claude-haiku-4-5-20251001"
+        try:
+            import anthropic
+            client = anthropic.Anthropic(
+                api_key=settings.anthropic_api_key,
+                timeout=float(settings.jarvis_ai_timeout_seconds),
+            )
+            message = client.messages.create(
+                model=model,
+                max_tokens=settings.jarvis_ai_max_tokens,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": command}],
+            )
+            content = message.content[0].text if message.content else ""
+            logger.info("Claude API response received. model=%s tokens=%s", model, message.usage)
+            return BrainResponse(
+                content=content,
+                provider=settings.jarvis_ai_provider,
+                model=model,
+                used_api=True,
+            )
+        except Exception as exc:
+            logger.warning("Claude API call failed (%s), using local fallback.", exc)
+            return BrainResponse(
+                content=self._local_fallback(command).content,
+                provider=settings.jarvis_ai_provider,
+                model=model,
+                used_api=False,
+                error=str(exc),
+            )
+
+    # --- private helpers ---
+
+    def _local_fallback(self, command: str) -> BrainResponse:
+        """Return a polite message when no API key is set or the call fails."""
+        msg = (
+            f"I received your message: \"{command}\"\n"
+            "Claude AI is not configured. "
+            "Add your ANTHROPIC_API_KEY to .env to enable AI responses."
+        )
+        return BrainResponse(
+            content=msg,
+            provider="local",
+            used_api=False,
         )
 
     def _register_utility_tools(self) -> None:
@@ -74,16 +144,6 @@ class Brain:
             self._exit,
         )
 
-    def process(self, command: str) -> CommandResponse:
-        if not self._ready:
-            self.initialise()
-
-        from app.core.router import CommandRouter
-        router = CommandRouter(registry)
-        return router.route(command)
-
-    # --- built-in tool handlers ---
-
     def _help(self) -> dict:
         tools = registry.list_definitions()
         lines = ["Available commands and tools:\n"]
@@ -95,10 +155,12 @@ class Brain:
 
     def _status(self) -> dict:
         from app import __phase__, __version__
+        ai_status = "configured" if settings.has_anthropic_key else "not configured"
         msg = (
             f"JARVIS {__version__} — {__phase__}\n"
             f"  Tools registered : {len(registry)}\n"
-            f"  Claude API       : {'configured' if settings.has_anthropic_key else 'not configured'}\n"
+            f"  Claude API       : {ai_status}\n"
+            f"  AI model         : {settings.jarvis_ai_model or 'default'}\n"
             f"  DB               : {settings.jarvis_db_path}\n"
             f"  Log file         : {settings.jarvis_log_file}"
         )

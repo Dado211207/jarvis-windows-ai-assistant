@@ -23,11 +23,15 @@ class StatusResponse(BaseModel):
     version: str
     phase: str
     tools_registered: int
+    brain_configured: bool
+    ai_provider: str
+    ai_model: str
 
 
 class HealthResponse(BaseModel):
     healthy: bool
     db_accessible: bool
+    brain_configured: bool
     version: str
 
 
@@ -35,11 +39,15 @@ class HealthResponse(BaseModel):
 
 @router.get("/", response_model=StatusResponse)
 def root() -> StatusResponse:
+    from app.config import settings
     return StatusResponse(
         status="running",
         version=__version__,
         phase=__phase__,
         tools_registered=len(registry),
+        brain_configured=brain.is_configured(),
+        ai_provider=settings.jarvis_ai_provider,
+        ai_model=settings.jarvis_ai_model,
     )
 
 
@@ -55,6 +63,7 @@ def health() -> HealthResponse:
     return HealthResponse(
         healthy=True,
         db_accessible=db_ok,
+        brain_configured=brain.is_configured(),
         version=__version__,
     )
 

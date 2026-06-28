@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     jarvis_log_level: str = "INFO"
     jarvis_log_file: str = "data/logs/jarvis.log"
 
+    # AI / Claude settings
+    jarvis_ai_provider: str = "anthropic"
+    jarvis_ai_model: str = "claude-haiku-4-5-20251001"
+    jarvis_ai_max_tokens: int = 250
+    jarvis_ai_timeout_seconds: int = 20
+
     @property
     def db_path(self) -> Path:
         return Path(self.jarvis_db_path)

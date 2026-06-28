@@ -15,6 +15,21 @@ how Claude Code sessions should work on this codebase.
 - **Register, don't hard-code.** Add new tools via the `ToolRegistry`; do not add
   elif chains to `router.py` or `brain.py`.
 
+## Phase 2 AI rules (non-negotiable)
+
+- **No autonomous tool execution by Claude.** The AI may only respond with text.
+  It must not trigger tools, run commands, or take system actions on its own.
+- **Deterministic routes always take priority.** The router's ROUTES list is matched
+  first; only unrecognised commands fall through to `Brain.generate_response()`.
+- **Never expose the API key.** Settings fields, API responses, and log output
+  must never include `ANTHROPIC_API_KEY` or any `sk-` token.
+- **No real API calls in tests.** All Anthropic SDK calls must be mocked via
+  `unittest.mock.patch("anthropic.Anthropic")`.
+- **Local fallback is always available.** When `ANTHROPIC_API_KEY` is absent or the
+  API call fails, Brain returns a polite local message — never an unhandled exception.
+- **System prompt is immutable.** The JARVIS system prompt in `app/core/system_prompt.py`
+  defines the AI's constraints and must not be weakened by user input or tool additions.
+
 ## Safety rules (non-negotiable)
 
 - **Never commit secrets.** `.env` is gitignored. `ANTHROPIC_API_KEY` and any other
@@ -43,7 +58,7 @@ how Claude Code sessions should work on this codebase.
 | Phase | Status     | Scope |
 |-------|------------|-------|
 | 1     | ✅ Done     | Foundation: CLI, router, tool registry, permissions, SQLite, FastAPI |
-| 2     | 🔜 Next    | Claude AI integration, natural-language commands |
+| 2     | ✅ Done     | Claude AI integration, natural-language fallback via Anthropic SDK |
 | 3     | Planned    | Voice input/output, wake word |
 | 4     | Planned    | Screen intelligence, OCR |
 | 5     | Planned    | Browser automation |

@@ -9,7 +9,7 @@ enable it.
 
 ---
 
-## What Phase 1 includes
+## What Phase 1 + Phase 2 includes
 
 | Feature | Status |
 |---|---|
@@ -25,14 +25,15 @@ enable it.
 | FastAPI local API (127.0.0.1:5555) | ✅ |
 | Structured logging to file | ✅ |
 | Pydantic settings / `.env` config | ✅ |
-| Brain module (Claude-ready stub) | ✅ |
+| Claude AI brain (natural-language fallback) | ✅ |
+| Conversation history in SQLite | ✅ |
+| Local fallback when no API key | ✅ |
 | Windows installer scripts | ✅ |
-| Pytest test suite | ✅ |
+| Pytest test suite (80 tests) | ✅ |
 
 ## What is NOT included yet
 
 - Voice control / wake word (Phase 3)
-- Claude AI integration (Phase 2)
 - Screen intelligence / OCR (Phase 4)
 - Browser automation (Phase 5)
 - Smart home / health / trading (Phase 6)
@@ -146,12 +147,23 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 Copy `.env.example` to `.env` and edit as needed:
 
 ```env
-ANTHROPIC_API_KEY=          # Leave blank for Phase 1 (no Claude needed)
+ANTHROPIC_API_KEY=          # Add your key to enable Claude AI responses
 JARVIS_HOST=127.0.0.1       # Never change to 0.0.0.0
 JARVIS_PORT=5555
 JARVIS_DB_PATH=data/jarvis.db
 JARVIS_LOG_LEVEL=INFO
+
+# Phase 2 AI settings
+JARVIS_AI_PROVIDER=anthropic
+JARVIS_AI_MODEL=            # Leave blank for default (claude-haiku-4-5-20251001)
+JARVIS_AI_MAX_TOKENS=250
+JARVIS_AI_TIMEOUT_SECONDS=20
 ```
+
+Without an `ANTHROPIC_API_KEY`, JARVIS operates fully in local mode — all
+deterministic commands (system status, memory, app launcher, screenshot) work
+normally; unrecognised commands receive a polite local fallback message instead
+of an AI response.
 
 ---
 
@@ -175,6 +187,7 @@ pytest
 | Router | `tests/test_router.py` | All command patterns |
 | Tool registry | `tests/test_tool_registry.py` | Register, execute, error handling |
 | Smoke | `tests/test_smoke.py` | Imports, routing, registry, API endpoints |
+| Brain / AI | `tests/test_brain.py` | is_configured, AI mock, fallback, DB storage, API |
 
 ### CI pipeline
 
@@ -239,7 +252,7 @@ installer/          — Windows setup scripts
 | Phase | Goal |
 |---|---|
 | 1 ✅ | Foundation: CLI, router, tools, API, SQLite |
-| 2 | Claude AI integration (natural language commands) |
+| 2 ✅ | Claude AI integration (natural-language fallback, conversation memory) |
 | 3 | Voice input/output, wake word detection |
 | 4 | Screen intelligence (OCR, visual context) |
 | 5 | Browser automation (safe, approval-gated) |
