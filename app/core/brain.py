@@ -31,11 +31,13 @@ class Brain:
 
         from app.core import memory as memory_module
         from app.desktop import apps, screenshots, system
+        from app.voice import tts as tts_module
 
         apps.register_tools(registry)
         screenshots.register_tools(registry)
         system.register_tools(registry)
         memory_module.register_tools(registry)
+        tts_module.register_tools(registry)
         self._register_utility_tools()
 
         self._ready = True

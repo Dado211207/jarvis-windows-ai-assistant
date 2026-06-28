@@ -15,6 +15,9 @@ Type 'help' to list commands, 'exit' to quit.
 
 PROMPT = "jarvis> "
 
+# TTS control tools manage their own speech — don't auto-speak their responses.
+_TTS_CONTROL_TOOLS = {"tts_enable", "tts_disable", "tts_status", "tts_test", "tts_stop"}
+
 
 def main() -> None:
     setup_logging()
@@ -46,6 +49,13 @@ def main() -> None:
 
         if response.data:
             _maybe_print_data(response.data)
+
+        # Auto-speak successful responses when TTS session is enabled.
+        # TTS control commands handle their own output — skip them here.
+        if response.success and response.tool_used not in _TTS_CONTROL_TOOLS:
+            from app.voice.tts import tts_service
+            if tts_service.session_enabled:
+                tts_service.speak(response.message)
 
         print()
 

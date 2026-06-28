@@ -3,13 +3,14 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app import __phase__, __version__
 from app.core.brain import brain
 from app.core.models import CommandRequest, CommandResponse, MemoryEntry, ToolDefinition
 from app.core.tool_registry import registry
 from app.logging_config import get_logger
+from app.voice.tts import MAX_SPEAK_LENGTH, tts_service
 
 logger = get_logger("api.routes")
 
@@ -97,3 +98,54 @@ def recent_logs(limit: int = Query(default=20, ge=1, le=100)):
     from db.database import get_db
     logs = get_db().get_recent_logs(limit=limit)
     return [l.model_dump() for l in logs]
+
+
+# ---------------------------------------------------------------------------
+# Voice / TTS endpoints (Phase 3)  —  local-only, no cloud TTS
+# ---------------------------------------------------------------------------
+
+class SpeakRequest(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def _validate_text(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("text must not be empty")
+        if len(v) > MAX_SPEAK_LENGTH:
+            raise ValueError(f"text too long (max {MAX_SPEAK_LENGTH} chars)")
+        return v
+
+
+class VoiceStatusResponse(BaseModel):
+    tts_enabled: bool
+    tts_engine: str
+    tts_available: bool
+
+
+@router.get("/voice/status", response_model=VoiceStatusResponse)
+def voice_status() -> VoiceStatusResponse:
+    from app.config import settings
+    return VoiceStatusResponse(
+        tts_enabled=settings.jarvis_tts_enabled,
+        tts_engine=settings.jarvis_tts_engine,
+        tts_available=tts_service.is_available(),
+    )
+
+
+@router.post("/voice/speak")
+def voice_speak(req: SpeakRequest) -> dict:
+    from app.config import settings
+    if not settings.jarvis_tts_enabled:
+        return {
+            "success": False,
+            "message": "TTS is disabled. Set JARVIS_TTS_ENABLED=true in .env to enable.",
+        }
+    result = tts_service.speak(req.text)
+    return {"success": result.success, "message": result.message}
+
+
+@router.post("/voice/stop")
+def voice_stop() -> dict:
+    result = tts_service.stop()
+    return {"success": result.success, "message": result.message}

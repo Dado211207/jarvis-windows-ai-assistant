@@ -16,6 +16,7 @@ class ToolCategory(str, Enum):
     APP = "app"
     MEMORY = "memory"
     UTILITY = "utility"
+    VOICE = "voice"
 
 
 class ToolDefinition(BaseModel):
