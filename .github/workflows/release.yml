@@ -53,6 +53,15 @@ jobs:
           --add-data ".env.example;."
           run_jarvis.py
 
+      - name: Copy helper files into distribution
+        shell: pwsh
+        run: |
+          Copy-Item START_JARVIS.bat     dist\JARVIS\
+          Copy-Item START_JARVIS_API.bat dist\JARVIS\
+          Copy-Item SETUP_ENV.bat        dist\JARVIS\
+          Copy-Item QUICKSTART.md        dist\JARVIS\
+          Copy-Item .env.example         dist\JARVIS\
+
       - name: Package into versioned ZIP
         shell: pwsh
         run: |
