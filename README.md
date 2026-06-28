@@ -261,6 +261,45 @@ Workflow file: `.github/workflows/windows-build.yml`
 
 ---
 
+## GitHub Releases
+
+Versioned Windows ZIPs are published to **GitHub Releases** via a separate
+manual workflow.
+
+### How to create a release
+
+1. Go to **GitHub → Actions → Release** workflow.
+2. Click **Run workflow**, enter a version tag (e.g. `v0.1.0`), click **Run**.
+3. The workflow runs all tests, builds the executable, and publishes a release.
+4. The release appears under **GitHub → Releases** with the ZIP attached.
+
+### Release asset name
+
+```
+JARVIS-Windows-v0.1.0.zip
+```
+
+### What is and is not in the release ZIP
+
+Same inclusions/exclusions as the Actions build artifact:
+the `ANTHROPIC_API_KEY` and `.env` are **never bundled**.
+The user creates `.env` from `.env.example` on their own machine after download.
+
+### Security and limitations
+
+- The API key is **never** included in any release asset.
+- FastAPI binds to `127.0.0.1` only.
+- Releases are **unsigned** — Windows SmartScreen may warn on first launch.
+  Click **More info → Run anyway**.
+- A signed installer is planned for a later phase.
+
+See [`docs/release-process.md`](docs/release-process.md) for the full release
+checklist and version naming guide.
+
+Workflow file: `.github/workflows/release.yml`
+
+---
+
 ## Project structure
 
 ```
@@ -290,6 +329,7 @@ db/
 data/               — Runtime data (gitignored except .gitkeep)
 tests/              — Pytest suite
 installer/          — Windows setup scripts
+docs/               — Developer process documentation
 run_jarvis.py       — PyInstaller entry point (delegates to app.main)
 ```
 
