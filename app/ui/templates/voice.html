@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Voice{% endblock %}
+{% block content %}
+<div id="voice-root">
+
+  <div class="page-header">
+    <h1 class="page-title">Voice / TTS</h1>
+    <p class="page-subtitle">
+      Local text-to-speech output controls.
+      Output-only &mdash; no microphone, no speech-to-text, no wake word.
+    </p>
+  </div>
+
+  <div class="grid grid-2 mb-4">
+    <div class="card">
+      <div class="card-title">TTS Status</div>
+      <div class="mt-2">
+        <div class="text-xs text-muted">Available</div>
+        <div id="tts-avail" class="text-sm loading mt-1">Loading&hellip;</div>
+        <div class="text-xs text-muted mt-2">Session</div>
+        <div id="tts-enabled-val" class="text-sm loading mt-1">Loading&hellip;</div>
+        <div class="text-xs text-muted mt-2">Engine</div>
+        <div id="tts-engine-val" class="text-sm loading mt-1">Loading&hellip;</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Safety</div>
+      <ul class="text-sm text-muted mt-2" style="list-style: none; line-height: 2.1;">
+        <li><span class="text-ok">&#10003;</span> TTS is output-only</li>
+        <li><span class="text-ok">&#10003;</span> No microphone</li>
+        <li><span class="text-ok">&#10003;</span> No speech-to-text</li>
+        <li><span class="text-ok">&#10003;</span> No wake word</li>
+        <li><span class="text-ok">&#10003;</span> No always-listening behavior</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Controls</div>
+    <div class="btn-row mt-2">
+      <button id="btn-speak-on" class="btn btn-primary" type="button">Enable Speech</button>
+      <button id="btn-speak-off" class="btn btn-ghost" type="button">Disable Speech</button>
+      <button id="btn-speak-test" class="btn btn-ghost" type="button">Test Speech</button>
+      <button id="btn-speak-stop" class="btn btn-danger" type="button">Stop Speaking</button>
+    </div>
+    <p class="text-xs text-muted mt-3">
+      Enable/disable sends <code class="mono">speak on</code> / <code class="mono">speak off</code> through the JARVIS command router.
+      TTS preference is session-only and resets on restart.
+      To enable by default, set <code class="mono">JARVIS_TTS_ENABLED=true</code> in <code class="mono">.env</code>.
+    </p>
+  </div>
+
+</div>
+{% endblock %}

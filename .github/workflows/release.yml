@@ -55,6 +55,8 @@ jobs:
           --hidden-import comtypes.client
           --add-data "README.md;."
           --add-data ".env.example;."
+          --add-data "app/ui/templates;app/ui/templates"
+          --add-data "app/ui/static;app/ui/static"
           run_jarvis.py
 
       - name: Copy helper files into distribution
