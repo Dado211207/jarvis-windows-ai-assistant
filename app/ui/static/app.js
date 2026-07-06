@@ -148,7 +148,7 @@ async function sendChat() {
 
   try {
     const data = await API.post("/command", { command: text });
-    const reply = typeof data.response === "string" ? data.response : JSON.stringify(data.response);
+    const reply = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
     addMessage("assistant", reply, data.tool_used || null);
   } catch (e) {
     addMessage("assistant", `Error: ${e.message}`, null);
