@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Memory{% endblock %}
+{% block content %}
+<div id="memory-root">
+
+  <div class="page-header">
+    <h1 class="page-title">Memory</h1>
+    <p class="page-subtitle">
+      Notes saved with <code class="mono">memory add &lt;text&gt;</code>.
+      Search with <code class="mono">memory search &lt;query&gt;</code>.
+    </p>
+  </div>
+
+  <div class="card mb-3">
+    <div class="flex items-center gap-2">
+      <input
+        id="memory-search"
+        class="input"
+        type="text"
+        placeholder="Search memories&hellip;"
+        autocomplete="off"
+        aria-label="Memory search"
+      >
+      <button id="memory-search-btn" class="btn btn-ghost" type="button">Search</button>
+    </div>
+  </div>
+
+  <div id="memory-list"></div>
+
+</div>
+{% endblock %}

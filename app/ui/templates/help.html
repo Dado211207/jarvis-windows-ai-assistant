@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Help{% endblock %}
+{% block content %}
+<div id="help-root">
+
+  <div class="page-header">
+    <h1 class="page-title">Help &amp; Setup</h1>
+    <p class="page-subtitle">Getting started with JARVIS.</p>
+  </div>
+
+  <div class="section">
+    <h2 class="section-title">Quick Start</h2>
+    <div class="card">
+      <ol class="text-sm" style="padding-left: 1.25rem; color: var(--text-muted); line-height: 2.2;">
+        <li>Start JARVIS API: run <code class="mono">START_JARVIS_API.bat</code> or <code class="mono">python -m app.api.server</code></li>
+        <li>Open this dashboard: <a href="/ui/">http://127.0.0.1:5555/ui/</a></li>
+        <li>Use the <a href="/ui/chat">Chat</a> page to send commands and questions</li>
+        <li>(Optional) Add your Anthropic API key to <code class="mono">.env</code> for AI responses</li>
+        <li>(Optional) Enable TTS on the <a href="/ui/voice">Voice</a> page</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2 class="section-title">Adding Your API Key (Optional)</h2>
+    <div class="card text-sm" style="line-height: 1.8; color: var(--text-muted);">
+      <p>JARVIS works without an API key. All deterministic commands work locally. To enable Claude AI responses:</p>
+      <ol style="margin: 0.75rem 0 0 1.25rem; line-height: 2.2;">
+        <li>Copy <code class="mono">.env.example</code> to <code class="mono">.env</code></li>
+        <li>Open <code class="mono">.env</code> in a text editor</li>
+        <li>Add your key: <code class="mono">ANTHROPIC_API_KEY=your-key-here</code></li>
+        <li>Restart JARVIS</li>
+      </ol>
+      <p class="mt-2">
+        Your API key is stored only in <code class="mono">.env</code> on your machine.
+        It is never sent to this browser, never committed to git, and never included in builds.
+      </p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2 class="section-title">Commands</h2>
+    <div class="card">
+      <ul class="cmd-list">
+        <li><span class="cmd-name">help</span><span class="cmd-desc">List all available tools</span></li>
+        <li><span class="cmd-name">status</span><span class="cmd-desc">Show JARVIS version and config</span></li>
+        <li><span class="cmd-name">system status</span><span class="cmd-desc">CPU, RAM, disk, battery</span></li>
+        <li><span class="cmd-name">open &lt;app&gt;</span><span class="cmd-desc">Launch an allowlisted app (chrome, notepad, calculator&hellip;)</span></li>
+        <li><span class="cmd-name">screenshot</span><span class="cmd-desc">Capture screen to data/screenshots/</span></li>
+        <li><span class="cmd-name">memory add &lt;text&gt;</span><span class="cmd-desc">Save a note to local memory</span></li>
+        <li><span class="cmd-name">memory search &lt;query&gt;</span><span class="cmd-desc">Search saved memories</span></li>
+        <li><span class="cmd-name">speak on</span><span class="cmd-desc">Enable TTS voice output (session only)</span></li>
+        <li><span class="cmd-name">speak off</span><span class="cmd-desc">Disable TTS voice output</span></li>
+        <li><span class="cmd-name">speak status</span><span class="cmd-desc">Show TTS engine status</span></li>
+        <li><span class="cmd-name">speak test</span><span class="cmd-desc">Speak a test phrase aloud</span></li>
+        <li><span class="cmd-name">stop speaking</span><span class="cmd-desc">Stop current speech immediately</span></li>
+        <li><span class="cmd-name">exit</span><span class="cmd-desc">Exit JARVIS CLI</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2 class="section-title">API &amp; Docs</h2>
+    <div class="card text-sm" style="color: var(--text-muted);">
+      <p class="mb-2">The local API runs on <code class="mono">http://127.0.0.1:5555</code> and is never exposed to the network.</p>
+      <p><a href="/docs" target="_blank" rel="noopener noreferrer">Open Swagger API Docs &#8599;</a></p>
+    </div>
+  </div>
+
+  <div class="notice">
+    <div class="local-pill mb-2">&#x25CF; Local-only</div>
+    <div class="text-sm" style="color: var(--text-muted);">
+      JARVIS binds exclusively to <code class="mono">127.0.0.1</code>. It is not accessible from
+      other devices on your network. Your API key, memories, and conversation history never leave your machine.
+      Arbitrary command execution and password extraction are permanently blocked by the permission system.
+    </div>
+  </div>
+
+</div>
+{% endblock %}

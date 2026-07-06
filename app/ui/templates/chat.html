@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Chat{% endblock %}
+{% block content %}
+<div id="chat-root">
+
+  <div class="page-header">
+    <h1 class="page-title">Chat</h1>
+    <p class="page-subtitle">
+      Send commands and questions to JARVIS.
+      All commands go through the router, tool registry, and permission system.
+    </p>
+  </div>
+
+  <div class="card" style="padding: 1rem;">
+    <div id="chat-messages" class="chat-messages">
+      <div id="chat-empty" class="chat-empty">
+        No messages yet &mdash; type a command below.
+      </div>
+    </div>
+    <div class="chat-input-row">
+      <input
+        id="chat-input"
+        class="input"
+        type="text"
+        placeholder='Try: "status", "system status", "help", "memory add hello world"'
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Command input"
+      >
+      <button id="chat-send" class="btn btn-primary" type="button">Send</button>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

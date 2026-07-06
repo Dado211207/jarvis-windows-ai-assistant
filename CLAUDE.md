@@ -66,16 +66,33 @@ how Claude Code sessions should work on this codebase.
 - **Branch naming.** Use `feat/`, `fix/`, `chore/`, or `docs/` prefixes.
 - **Never merge without user approval.** Always open a draft PR and wait.
 
+## Phase 4 dashboard rules (non-negotiable)
+
+- **No API key in templates.** Jinja2 templates must never render `ANTHROPIC_API_KEY`
+  or any `sk-` token. All sensitive settings stay server-side only.
+- **textContent only.** All dynamic text inserted into the DOM via JavaScript must
+  use `textContent` (never `innerHTML`) to prevent XSS.
+- **Dashboard calls existing API only.** The browser calls `POST /command`,
+  `GET /health`, `GET /logs`, `GET /memory`, `GET /voice/status`, etc.
+  It does not directly invoke tools or bypass the permission system.
+- **Static files bundled with PyInstaller.** Use `--add-data` for both
+  `app/ui/templates` and `app/ui/static` so the dashboard works in the `.exe` build.
+- **No external CDNs.** All CSS and JS is served locally from `/ui/static/`.
+  No remote fonts, no analytics, no tracking scripts.
+- **API binds to 127.0.0.1 only.** The dashboard is not accessible from other
+  devices on the network. Never change the bind address.
+
 ## Phase guide
 
-| Phase | Status     | Scope |
-|-------|------------|-------|
-| 1     | ✅ Done     | Foundation: CLI, router, tool registry, permissions, SQLite, FastAPI |
-| 2     | ✅ Done     | Claude AI integration, natural-language fallback via Anthropic SDK |
-| 3     | ✅ Done     | TTS voice output (pyttsx3, local/offline, output-only, no microphone) |
-| 4     | Planned    | Screen intelligence, OCR |
-| 5     | Planned    | Browser automation |
-| 6     | Planned    | Smart home, health, trading integrations |
+| Phase | Status      | Scope |
+|-------|-------------|-------|
+| 1     | ✅ Done      | Foundation: CLI, router, tool registry, permissions, SQLite, FastAPI |
+| 2     | ✅ Done      | Claude AI integration, natural-language fallback via Anthropic SDK |
+| 3     | ✅ Done      | TTS voice output (pyttsx3, local/offline, output-only, no microphone) |
+| 4     | 🔄 In progress | Local browser dashboard: FastAPI + Jinja2 + vanilla JS |
+| 5     | Planned     | Screen intelligence, OCR |
+| 6     | Planned     | Browser automation |
+| 7     | Planned     | Smart home, health, trading integrations |
 
 ## Do NOT implement in this repo (ever, without explicit separate design review)
 

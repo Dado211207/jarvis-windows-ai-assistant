@@ -7,7 +7,7 @@ from pydantic import BaseModel, field_validator
 
 from app import __phase__, __version__
 from app.core.brain import brain
-from app.core.models import CommandRequest, CommandResponse, MemoryEntry, ToolDefinition
+from app.core.models import CommandRequest, CommandResponse, ConversationEntry, MemoryEntry, ToolDefinition
 from app.core.tool_registry import registry
 from app.logging_config import get_logger
 from app.voice.tts import MAX_SPEAK_LENGTH, tts_service
@@ -30,10 +30,23 @@ class StatusResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    status: str
     healthy: bool
+    db: str
     db_accessible: bool
+    brain: str
     brain_configured: bool
     version: str
+    phase: str
+
+
+class SystemStatusResponse(BaseModel):
+    cpu_percent: float
+    ram_percent: float
+    uptime: str
+    tools_registered: int
+    version: str
+    phase: str
 
 
 # --- routes ---
@@ -61,12 +74,45 @@ def health() -> HealthResponse:
         db_ok = True
     except Exception:
         pass
+    brain_ok = brain.is_configured()
     return HealthResponse(
+        status="ok",
         healthy=True,
+        db="ok" if db_ok else "error",
         db_accessible=db_ok,
-        brain_configured=brain.is_configured(),
+        brain="claude" if brain_ok else "local",
+        brain_configured=brain_ok,
         version=__version__,
+        phase=__phase__,
     )
+
+
+@router.get("/system", response_model=SystemStatusResponse)
+def system_status() -> SystemStatusResponse:
+    import datetime
+    import psutil
+    cpu = psutil.cpu_percent(interval=0.1)
+    ram = psutil.virtual_memory().percent
+    boot_ts = psutil.boot_time()
+    delta = datetime.datetime.now() - datetime.datetime.fromtimestamp(boot_ts)
+    total_s = int(delta.total_seconds())
+    hours, rem = divmod(total_s, 3600)
+    mins = rem // 60
+    uptime = f"{hours}h {mins}m"
+    return SystemStatusResponse(
+        cpu_percent=round(cpu, 1),
+        ram_percent=round(ram, 1),
+        uptime=uptime,
+        tools_registered=len(registry),
+        version=__version__,
+        phase=__phase__,
+    )
+
+
+@router.get("/conversation", response_model=List[ConversationEntry])
+def get_conversation(limit: int = Query(default=50, ge=1, le=200)) -> List[ConversationEntry]:
+    from db.database import get_db
+    return get_db().get_recent_conversations(limit=limit)
 
 
 @router.post("/command", response_model=CommandResponse)

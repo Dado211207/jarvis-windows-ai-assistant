@@ -1,9 +1,12 @@
 """JARVIS FastAPI application — local-only, binds to 127.0.0.1."""
 
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app import __phase__, __version__
 from app.config import settings
@@ -43,7 +46,20 @@ def create_app() -> FastAPI:
     from app.api.routes import router
     app.include_router(router)
 
+    from app.ui.routes import router as ui_router
+    app.include_router(ui_router)
+
+    static_dir = _ui_static_dir()
+    if static_dir.exists():
+        app.mount("/ui/static", StaticFiles(directory=str(static_dir)), name="ui_static")
+
     return app
+
+
+def _ui_static_dir() -> Path:
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "app" / "ui" / "static"
+    return Path(__file__).resolve().parent.parent / "ui" / "static"
 
 
 app = create_app()

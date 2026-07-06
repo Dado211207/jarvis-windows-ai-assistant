@@ -1,6 +1,6 @@
 # JARVIS — Personal Windows AI Assistant
 
-> Phase 3: TTS voice output — local, offline, no cloud required.
+> Phase 4: Local browser dashboard — interact with JARVIS in your browser.
 
 JARVIS is a local Windows AI assistant that brings together PC automation,
 memory, system monitoring, voice output, and Claude AI —
@@ -9,7 +9,25 @@ enable it.
 
 ---
 
-## What Phase 1 + Phase 2 + Phase 3 includes
+## Browser Dashboard (Phase 4)
+
+Open **http://127.0.0.1:5555/ui/** in any browser while JARVIS API is running.
+
+| Page | URL | Description |
+|---|---|---|
+| Dashboard | `/ui/` | Live system health — CPU, RAM, AI brain, TTS status |
+| Chat | `/ui/chat` | Send commands and questions to JARVIS |
+| Logs | `/ui/logs` | Recent command and tool execution history |
+| Memory | `/ui/memory` | Browse and search saved memories |
+| Voice | `/ui/voice` | TTS status and controls |
+| Help | `/ui/help` | Quick start guide and command reference |
+
+The dashboard is **local-only** — it never exposes your API key to the browser
+and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
+
+---
+
+## What Phase 1–4 includes
 
 | Feature | Status |
 |---|---|
@@ -29,21 +47,24 @@ enable it.
 | Conversation history in SQLite | ✅ |
 | Local fallback when no API key | ✅ |
 | Windows installer scripts | ✅ |
-| Pytest test suite (130 tests) | ✅ |
+| Pytest test suite | ✅ |
 | TTS voice output (pyttsx3, local/offline) | ✅ |
 | Voice CLI commands (speak on/off/test/status) | ✅ |
 | Voice API endpoints (`/voice/status`, `/voice/speak`, `/voice/stop`) | ✅ |
+| Local browser dashboard (6 pages, dark UI) | ✅ |
+| Dashboard chat page (calls `POST /command`) | ✅ |
+| Dashboard memory browser | ✅ |
+| Dashboard TTS controls | ✅ |
 
-## What is NOT included yet
+## What is NOT included
 
-- Microphone input / speech-to-text (not planned for Phase 3)
-- Wake word / always-listening (not planned for Phase 3)
-- Screen intelligence / OCR (Phase 4)
-- Browser automation (Phase 5)
-- Smart home / health / trading (Phase 6)
+- Microphone input / speech-to-text (never planned)
+- Wake word / always-listening (never planned)
+- Screen intelligence / OCR (Phase 5)
+- Browser automation (Phase 6)
+- Smart home / health / trading (Phase 7)
 - Email sending
 - AnyDesk / remote control
-- Real-time dashboard UI
 - Any network exposure (API is 127.0.0.1 only)
 
 ---
