@@ -40,21 +40,89 @@
 
   <div class="section">
     <h2 class="section-title">Commands</h2>
+
+    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">General</h3>
     <div class="card">
       <ul class="cmd-list">
         <li><span class="cmd-name">help</span><span class="cmd-desc">List all available tools</span></li>
         <li><span class="cmd-name">status</span><span class="cmd-desc">Show JARVIS version and config</span></li>
-        <li><span class="cmd-name">system status</span><span class="cmd-desc">CPU, RAM, disk, battery</span></li>
-        <li><span class="cmd-name">open &lt;app&gt;</span><span class="cmd-desc">Launch an allowlisted app (chrome, notepad, calculator&hellip;)</span></li>
+        <li><span class="cmd-name">exit</span><span class="cmd-desc">Exit JARVIS CLI</span></li>
+      </ul>
+    </div>
+
+    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">System Info</h3>
+    <div class="card">
+      <ul class="cmd-list">
+        <li><span class="cmd-name">system status</span><span class="cmd-desc">CPU, RAM, disk, battery summary</span></li>
+        <li><span class="cmd-name">disk space</span><span class="cmd-desc">Show disk usage (used / free / total)</span></li>
+        <li><span class="cmd-name">network status</span><span class="cmd-desc">Show hostname and local IP (read-only, no scanning)</span></li>
+        <li><span class="cmd-name">battery status</span><span class="cmd-desc">Show battery / power status</span></li>
         <li><span class="cmd-name">screenshot</span><span class="cmd-desc">Capture screen to data/screenshots/</span></li>
-        <li><span class="cmd-name">memory add &lt;text&gt;</span><span class="cmd-desc">Save a note to local memory</span></li>
+      </ul>
+    </div>
+
+    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Open Apps &amp; URLs</h3>
+    <div class="card">
+      <ul class="cmd-list">
+        <li><span class="cmd-name">open &lt;app&gt;</span><span class="cmd-desc">Launch an allowlisted app (notepad, calculator, chrome, vscode&hellip;)</span></li>
+        <li><span class="cmd-name">open file explorer</span><span class="cmd-desc">Open Windows File Explorer</span></li>
+        <li><span class="cmd-name">open settings</span><span class="cmd-desc">Open Windows Settings</span></li>
+        <li><span class="cmd-name">open website &lt;url&gt;</span><span class="cmd-desc">Open an http/https URL in your browser (file: and script: schemes blocked)</span></li>
+        <li><span class="cmd-name">open dashboard</span><span class="cmd-desc">Open the JARVIS local dashboard in the browser</span></li>
+      </ul>
+    </div>
+
+    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Open Folders</h3>
+    <div class="card">
+      <ul class="cmd-list">
+        <li><span class="cmd-name">open downloads</span><span class="cmd-desc">Open your Downloads folder</span></li>
+        <li><span class="cmd-name">open documents</span><span class="cmd-desc">Open your Documents folder</span></li>
+        <li><span class="cmd-name">open desktop</span><span class="cmd-desc">Open your Desktop folder</span></li>
+        <li><span class="cmd-name">open notes folder</span><span class="cmd-desc">Open the JARVIS Notes folder</span></li>
+        <li><span class="cmd-name">open jarvis folder</span><span class="cmd-desc">Open the JARVIS project folder</span></li>
+      </ul>
+    </div>
+
+    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Notes &amp; Memory</h3>
+    <div class="card">
+      <ul class="cmd-list">
+        <li><span class="cmd-name">create note &lt;text&gt;</span><span class="cmd-desc">Save a timestamped note to ~/Documents/JARVIS_Notes/</span></li>
+        <li><span class="cmd-name">memory add &lt;text&gt;</span><span class="cmd-desc">Save a note to local SQLite memory</span></li>
         <li><span class="cmd-name">memory search &lt;query&gt;</span><span class="cmd-desc">Search saved memories</span></li>
+      </ul>
+    </div>
+
+    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Voice (TTS)</h3>
+    <div class="card">
+      <ul class="cmd-list">
         <li><span class="cmd-name">speak on</span><span class="cmd-desc">Enable TTS voice output (session only)</span></li>
         <li><span class="cmd-name">speak off</span><span class="cmd-desc">Disable TTS voice output</span></li>
         <li><span class="cmd-name">speak status</span><span class="cmd-desc">Show TTS engine status</span></li>
         <li><span class="cmd-name">speak test</span><span class="cmd-desc">Speak a test phrase aloud</span></li>
         <li><span class="cmd-name">stop speaking</span><span class="cmd-desc">Stop current speech immediately</span></li>
-        <li><span class="cmd-name">exit</span><span class="cmd-desc">Exit JARVIS CLI</span></li>
+      </ul>
+    </div>
+
+    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Approval-Required</h3>
+    <div class="card">
+      <ul class="cmd-list">
+        <li><span class="cmd-name">clear logs</span><span class="cmd-desc">Delete all action log entries — requires confirmation on the Actions page</span></li>
+      </ul>
+    </div>
+
+    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Permanently Blocked</h3>
+    <div class="card text-sm" style="color: var(--text-muted); line-height: 1.8;">
+      The following are blocked by the permission system and can never execute:
+      <ul style="margin: 0.5rem 0 0 1.25rem;">
+        <li>Arbitrary shell / CMD / PowerShell commands</li>
+        <li>Arbitrary executable paths</li>
+        <li>File deletion or mass file operations</li>
+        <li>Registry edits</li>
+        <li>Dangerous URL schemes (file:, javascript:, data:, powershell:)</li>
+        <li>Apps not in the allowlist</li>
+        <li>Folders not in the allowlist</li>
+        <li>Password / credential extraction</li>
+        <li>Keylogging or screen surveillance</li>
       </ul>
     </div>
   </div>

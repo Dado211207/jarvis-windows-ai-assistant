@@ -107,6 +107,23 @@ how Claude Code sessions should work on this codebase.
   tool handler directly but the handler itself must not bypass OS security or
   perform privileged operations without user intent.
 
+## Phase 6 safe actions rules (non-negotiable)
+
+- **Allowlisted apps only.** `open_app` must only launch executables in `APP_ALLOWLIST`
+  or URI handlers in `_URI_APPS`. No arbitrary paths, no shell=True.
+- **Allowlisted folders only.** `open_folder` must only open folders in the hardcoded
+  map (home subdirs + JARVIS root). No `..` traversal, no arbitrary paths.
+- **Safe URL schemes only.** `open_website` must reject `file:`, `javascript:`, `data:`,
+  `powershell:`, `cmd:`, `vbscript:`, and any non-http/https scheme. Parse with
+  `urlparse` BEFORE prepending `https://` to detect existing dangerous schemes.
+- **Notes confined to JARVIS_Notes.** `create_note` writes only to
+  `~/Documents/JARVIS_Notes/`. Filenames are sanitised; paths are validated with
+  `note_path.resolve().relative_to(NOTES_DIR.resolve())` before writing.
+- **Network info is local-only.** `get_network_info` uses only `socket` — no HTTP
+  requests, no external DNS, no port scanning.
+- **All Phase 6 tools are SAFE permission level.** None require approval or are blocked.
+  No Phase 6 tool deletes files, modifies settings, or sends data externally.
+
 ## Phase guide
 
 | Phase | Status      | Scope |
@@ -115,10 +132,11 @@ how Claude Code sessions should work on this codebase.
 | 2     | ✅ Done      | Claude AI integration, natural-language fallback via Anthropic SDK |
 | 3     | ✅ Done      | TTS voice output (pyttsx3, local/offline, output-only, no microphone) |
 | 4     | ✅ Done      | Local browser dashboard: FastAPI + Jinja2 + vanilla JS |
-| 5     | 🔄 In progress | Action approval system: pending actions, confirm/cancel, Actions UI |
-| 6     | Planned     | Screen intelligence, OCR |
-| 7     | Planned     | Browser automation |
-| 8     | Planned     | Smart home, health, trading integrations |
+| 5     | ✅ Done      | Action approval system: pending actions, confirm/cancel, Actions UI |
+| 6     | ✅ Done      | Safe Windows actions: URL opener, folders, notes, disk, network, battery |
+| 7     | Planned     | Screen intelligence / OCR (on-request only, explicit user permission) |
+| 8     | Planned     | Browser automation (approval-gated, no autonomous browsing) |
+| 9     | Planned     | Smart home, health, trading integrations |
 
 ## Do NOT implement in this repo (ever, without explicit separate design review)
 

@@ -17,9 +17,16 @@ APP_ALLOWLIST: Dict[str, str] = {
     "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     "notepad": "notepad.exe",
     "calculator": "calc.exe",
+    "file_explorer": "explorer.exe",
     "vscode": r"C:\Users\%USERNAME%\AppData\Local\Programs\Microsoft VS Code\Code.exe",
     "spotify": r"C:\Users\%USERNAME%\AppData\Roaming\Spotify\Spotify.exe",
     "discord": r"C:\Users\%USERNAME%\AppData\Local\Discord\Update.exe",
+}
+
+# Apps opened via explorer.exe with a safe URI argument (explicit arg list, no shell).
+# These use Windows URI protocol handlers and require no arbitrary shell execution.
+_URI_APPS: Dict[str, str] = {
+    "settings": "ms-settings:",
 }
 
 # Short aliases for cross-platform test environments
@@ -37,9 +44,28 @@ _POSIX_FALLBACKS: Dict[str, str] = {
 
 def open_app(app_name: str) -> dict:
     """Launch an allowlisted application by name."""
-    name = app_name.strip().lower()
+    name = app_name.strip().lower().replace(" ", "_")
+
+    is_windows = platform.system() == "Windows"
+
+    # URI-style apps: opened via explorer.exe with a safe URI argument
+    if name in _URI_APPS:
+        if not is_windows:
+            return {
+                "success": False,
+                "message": f"'{name}' is a Windows-only app.",
+                "data": None,
+            }
+        uri = _URI_APPS[name]
+        try:
+            subprocess.Popen(["explorer.exe", uri], shell=False)  # noqa: S603
+            logger.info("Launched URI app: %s (%s)", name, uri)
+            return {"success": True, "message": f"Launched {name}.", "data": {"app": name}}
+        except Exception as exc:
+            return {"success": False, "message": f"Failed to launch '{name}': {exc}", "data": None}
+
     if name not in APP_ALLOWLIST:
-        allowed = ", ".join(sorted(APP_ALLOWLIST.keys()))
+        allowed = ", ".join(sorted(list(APP_ALLOWLIST.keys()) + list(_URI_APPS.keys())))
         return {
             "success": False,
             "message": (
@@ -48,8 +74,6 @@ def open_app(app_name: str) -> dict:
             ),
             "data": None,
         }
-
-    is_windows = platform.system() == "Windows"
 
     if is_windows:
         exe = APP_ALLOWLIST[name]
@@ -90,7 +114,7 @@ def open_app(app_name: str) -> dict:
 
 
 def list_apps() -> dict:
-    apps = sorted(APP_ALLOWLIST.keys())
+    apps = sorted(list(APP_ALLOWLIST.keys()) + list(_URI_APPS.keys()))
     return {
         "success": True,
         "message": "Allowlisted apps: " + ", ".join(apps),
