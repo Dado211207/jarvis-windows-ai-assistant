@@ -82,6 +82,31 @@ how Claude Code sessions should work on this codebase.
 - **API binds to 127.0.0.1 only.** The dashboard is not accessible from other
   devices on the network. Never change the bind address.
 
+## Phase 5 approval system rules (non-negotiable)
+
+- **No action may bypass the approval gate.** Any tool registered with
+  `PermissionLevel.APPROVAL_REQUIRED` must never execute through `registry.execute()`.
+  Execution only happens via `registry.execute_approved()` after explicit user confirmation.
+- **No arbitrary command execution.** Only allowlisted tools registered in the
+  `ToolRegistry` may be executed. Do not add shell passthrough or generic exec tools.
+- **Approval-required commands must return a pending action preview.** The router
+  must intercept `APPROVAL_REQUIRED` tools in `_dispatch()` and create a `PendingAction`
+  instead of calling `registry.execute()`. The `CommandResponse` must include
+  `requires_approval=True` and `pending_action_id`.
+- **Confirmed actions must be logged.** After execution via the confirm endpoint,
+  write to `action_logs` with status `success` or `failure`.
+- **Cancelled actions must never execute.** Status transitions are final. A
+  `cancelled`, `expired`, or `executed` action cannot be re-confirmed. The cancel
+  endpoint must write status `blocked` to `action_logs`.
+- **Pending actions are in-memory and expire after 10 minutes.** This is intentional.
+  Stale approvals from before a restart are never executed. Document this clearly
+  in any UI that surfaces pending actions.
+- **No secrets in pending action payloads.** Action previews served to the browser
+  must not include `ANTHROPIC_API_KEY`, `.env` values, or any `sk-` tokens.
+- **Confirmation goes through the tool registry.** `execute_approved()` calls the
+  tool handler directly but the handler itself must not bypass OS security or
+  perform privileged operations without user intent.
+
 ## Phase guide
 
 | Phase | Status      | Scope |
@@ -89,10 +114,11 @@ how Claude Code sessions should work on this codebase.
 | 1     | ✅ Done      | Foundation: CLI, router, tool registry, permissions, SQLite, FastAPI |
 | 2     | ✅ Done      | Claude AI integration, natural-language fallback via Anthropic SDK |
 | 3     | ✅ Done      | TTS voice output (pyttsx3, local/offline, output-only, no microphone) |
-| 4     | 🔄 In progress | Local browser dashboard: FastAPI + Jinja2 + vanilla JS |
-| 5     | Planned     | Screen intelligence, OCR |
-| 6     | Planned     | Browser automation |
-| 7     | Planned     | Smart home, health, trading integrations |
+| 4     | ✅ Done      | Local browser dashboard: FastAPI + Jinja2 + vanilla JS |
+| 5     | 🔄 In progress | Action approval system: pending actions, confirm/cancel, Actions UI |
+| 6     | Planned     | Screen intelligence, OCR |
+| 7     | Planned     | Browser automation |
+| 8     | Planned     | Smart home, health, trading integrations |
 
 ## Do NOT implement in this repo (ever, without explicit separate design review)
 

@@ -44,6 +44,8 @@ class CommandResponse(BaseModel):
     message: str
     data: Optional[Any] = None
     tool_used: Optional[str] = None
+    requires_approval: bool = False
+    pending_action_id: Optional[str] = None
 
 
 class MemoryEntry(BaseModel):

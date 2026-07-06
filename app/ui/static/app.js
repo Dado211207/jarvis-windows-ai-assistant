@@ -148,14 +148,100 @@ async function sendChat() {
 
   try {
     const data = await API.post("/command", { command: text });
-    const reply = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
-    addMessage("assistant", reply, data.tool_used || null);
+    if (data.requires_approval && data.pending_action_id) {
+      addApprovalCard(data.pending_action_id, data);
+    } else {
+      const reply = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
+      addMessage("assistant", reply, data.tool_used || null);
+    }
   } catch (e) {
-    addMessage("assistant", `Error: ${e.message}`, null);
+    addMessage("assistant", "Error: " + e.message, null);
   } finally {
     if (sendBtn) sendBtn.disabled = false;
     if (input)   input.focus();
   }
+}
+
+function addApprovalCard(actionId, data) {
+  const list = $("chat-messages");
+  if (!list) return;
+
+  const empty = $("chat-empty");
+  if (empty && chatEmpty) { empty.style.display = "none"; chatEmpty = false; }
+
+  const preview = (data && data.data) ? data.data : {};
+  const riskLevel = preview.risk_level || "medium";
+
+  const card = document.createElement("div");
+  card.className = "msg-approval";
+
+  const hdr = document.createElement("div");
+  hdr.className = "msg-approval-header";
+  hdr.textContent = "⚠ Approval Required";
+
+  const desc = document.createElement("div");
+  desc.className = "msg-approval-desc";
+  desc.textContent = preview.description || data.message || "";
+
+  const meta = document.createElement("div");
+  meta.className = "msg-approval-meta";
+  meta.textContent = "Tool: " + (preview.tool_name || "—") + "  •  Risk: " + riskLevel;
+
+  const footer = document.createElement("div");
+  footer.className = "msg-approval-footer";
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.className = "btn btn-primary btn-sm";
+  confirmBtn.textContent = "Confirm";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn btn-danger btn-sm";
+  cancelBtn.textContent = "Cancel";
+
+  const statusEl = document.createElement("span");
+  statusEl.className = "msg-approval-status";
+
+  confirmBtn.addEventListener("click", async () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try {
+      const r = await API.post("/actions/" + actionId + "/confirm", {});
+      statusEl.textContent = r.message;
+      statusEl.className = "msg-approval-status " + (r.success ? "text-ok" : "text-err");
+    } catch (e) {
+      statusEl.textContent = "Error: " + e.message;
+      statusEl.className = "msg-approval-status text-err";
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+
+  cancelBtn.addEventListener("click", async () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try {
+      await API.post("/actions/" + actionId + "/cancel", {});
+      statusEl.textContent = "Cancelled.";
+      statusEl.className = "msg-approval-status text-muted";
+    } catch (e) {
+      statusEl.textContent = "Error: " + e.message;
+      statusEl.className = "msg-approval-status text-err";
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+
+  footer.appendChild(confirmBtn);
+  footer.appendChild(cancelBtn);
+  footer.appendChild(statusEl);
+
+  card.appendChild(hdr);
+  card.appendChild(desc);
+  card.appendChild(meta);
+  card.appendChild(footer);
+
+  list.appendChild(card);
+  list.scrollTop = list.scrollHeight;
 }
 
 function initChat() {
@@ -372,6 +458,140 @@ function initVoice() {
   refreshVoiceStatus();
 }
 
+// ── Actions ───────────────────────────────────────────────────────────────────
+
+function _clearEl(el) {
+  while (el.firstChild) el.removeChild(el.firstChild);
+}
+
+function buildActionCard(action) {
+  const riskLevel = action.risk_level || "medium";
+  const card = document.createElement("div");
+  card.className = "action-card risk-" + riskLevel;
+  card.id = "action-" + action.id;
+
+  const header = document.createElement("div");
+  header.className = "action-card-header";
+
+  const title = document.createElement("div");
+  title.className = "action-card-title";
+  title.textContent = action.action_name || action.tool_name;
+
+  const riskMap = { high: "badge-err", medium: "badge-warn", low: "badge-info" };
+  const riskBadge = document.createElement("span");
+  riskBadge.className = "badge " + (riskMap[riskLevel] || "badge-info");
+  riskBadge.textContent = riskLevel;
+
+  header.appendChild(title);
+  header.appendChild(riskBadge);
+
+  const desc = document.createElement("div");
+  desc.className = "action-card-desc";
+  desc.textContent = action.description || "";
+
+  const meta = document.createElement("div");
+  meta.className = "action-card-meta";
+  meta.textContent =
+    "Command: " + (action.command || "—") +
+    "  •  Tool: " + (action.tool_name || "—") +
+    "  •  Created: " + (action.created_at || "—");
+
+  const statusEl = document.createElement("div");
+  statusEl.className = "action-card-status mt-2";
+
+  const footer = document.createElement("div");
+  footer.className = "action-card-footer";
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.className = "btn btn-primary btn-sm";
+  confirmBtn.textContent = "Confirm";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn btn-ghost btn-sm";
+  cancelBtn.textContent = "Cancel";
+
+  confirmBtn.addEventListener("click", async () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try {
+      const r = await API.post("/actions/" + action.id + "/confirm", {});
+      statusEl.textContent = r.message;
+      statusEl.className = "action-card-status mt-2 " + (r.success ? "text-ok" : "text-err");
+      card.className = "action-card risk-" + riskLevel + " resolved";
+    } catch (e) {
+      statusEl.textContent = "Error: " + e.message;
+      statusEl.className = "action-card-status mt-2 text-err";
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+
+  cancelBtn.addEventListener("click", async () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try {
+      await API.post("/actions/" + action.id + "/cancel", {});
+      statusEl.textContent = "Action cancelled.";
+      statusEl.className = "action-card-status mt-2 text-muted";
+      card.className = "action-card risk-" + riskLevel + " resolved";
+    } catch (e) {
+      statusEl.textContent = "Error: " + e.message;
+      statusEl.className = "action-card-status mt-2 text-err";
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+
+  footer.appendChild(confirmBtn);
+  footer.appendChild(cancelBtn);
+  footer.appendChild(statusEl);
+
+  card.appendChild(header);
+  card.appendChild(desc);
+  card.appendChild(meta);
+  card.appendChild(footer);
+
+  return card;
+}
+
+async function loadActions() {
+  const list = $("actions-list");
+  if (!list) return;
+
+  _clearEl(list);
+  const loading = document.createElement("p");
+  loading.className = "empty";
+  loading.textContent = "Loading…";
+  list.appendChild(loading);
+
+  try {
+    const actions = await API.get("/actions/pending");
+    _clearEl(list);
+
+    if (!actions.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No pending actions.";
+      list.appendChild(empty);
+      return;
+    }
+
+    actions.forEach(a => list.appendChild(buildActionCard(a)));
+  } catch (e) {
+    _clearEl(list);
+    const err = document.createElement("p");
+    err.className = "empty text-err";
+    err.textContent = "Error loading actions: " + e.message;
+    list.appendChild(err);
+  }
+}
+
+function initActions() {
+  const btn = $("actions-refresh");
+  if (btn) btn.addEventListener("click", loadActions);
+  loadActions();
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -382,6 +602,8 @@ document.addEventListener("DOMContentLoaded", () => {
     loadDashboard();
   } else if (path === "/ui/chat") {
     initChat();
+  } else if (path === "/ui/actions") {
+    initActions();
   } else if (path === "/ui/logs") {
     initLogs();
   } else if (path === "/ui/memory") {

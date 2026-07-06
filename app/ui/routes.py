@@ -54,6 +54,11 @@ async def voice(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "voice.html", {"page": "voice"})
 
 
+@router.get("/actions", response_class=HTMLResponse, include_in_schema=False)
+async def actions_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "actions.html", {"page": "actions"})
+
+
 @router.get("/help", response_class=HTMLResponse, include_in_schema=False)
 async def help_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "help.html", {"page": "help"})

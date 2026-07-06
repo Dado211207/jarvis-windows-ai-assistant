@@ -65,6 +65,26 @@ class ToolRegistry:
             logger.error("Tool '%s' raised an error: %s", name, exc, exc_info=True)
             return {"success": False, "message": f"Tool error: {exc}", "data": None}
 
+    def execute_approved(self, name: str, **kwargs) -> dict:
+        """Execute a tool that has been explicitly approved by the user.
+
+        Skips the permission check because the caller (the confirm endpoint)
+        has already verified that the user consented to this specific action.
+        Only call this from the action confirmation path.
+        """
+        tool = self._tools.get(name)
+        if tool is None:
+            return {"success": False, "message": f"Unknown tool: '{name}'", "data": None}
+        try:
+            result = tool.handler(**kwargs)
+            logger.info("Approved tool executed: %s", name)
+            if isinstance(result, dict):
+                return result
+            return {"success": True, "message": str(result), "data": result}
+        except Exception as exc:
+            logger.error("Approved tool '%s' raised an error: %s", name, exc, exc_info=True)
+            return {"success": False, "message": f"Tool error: {exc}", "data": None}
+
     def __len__(self) -> int:
         return len(self._tools)
 

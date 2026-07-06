@@ -383,6 +383,51 @@ code, .mono {
 .text-sm      { font-size: 0.875rem; }
 .empty        { text-align: center; color: var(--text-muted); font-size: 0.875rem; padding: 2rem 0; }
 
+/* ── Action approval cards ─────────────────── */
+.action-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin-bottom: 0.75rem;
+  transition: border-color 0.2s;
+}
+.action-card.risk-high   { border-color: rgba(248, 81, 73, 0.6);  background: rgba(248, 81, 73, 0.04); }
+.action-card.risk-medium { border-color: rgba(227, 179, 65, 0.6); background: rgba(227, 179, 65, 0.04); }
+.action-card.risk-low    { border-color: var(--border); }
+.action-card.resolved    { opacity: 0.7; }
+.action-card-header      { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+.action-card-title       { font-weight: 600; font-size: 0.95rem; }
+.action-card-desc        { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.65rem; line-height: 1.6; }
+.action-card-meta        { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.75rem; }
+.action-card-footer      { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+.action-card-status      { font-size: 0.8rem; margin-left: 0.25rem; }
+
+/* ── Chat approval card ─────────────────────── */
+.msg-approval {
+  align-self: flex-start;
+  max-width: 96%;
+  background: var(--surface);
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+}
+.msg-approval-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--warn);
+  margin-bottom: 0.55rem;
+}
+.msg-approval-desc   { font-size: 0.875rem; line-height: 1.55; margin-bottom: 0.5rem; }
+.msg-approval-meta   { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.75rem; }
+.msg-approval-footer { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
+.msg-approval-status { font-size: 0.8rem; margin-left: 0.25rem; }
+
 /* ── Reduced motion ────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; }

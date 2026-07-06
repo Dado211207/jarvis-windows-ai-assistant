@@ -115,6 +115,13 @@ class Database:
         conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 
+    def clear_logs(self) -> int:
+        """Delete all action log entries. Returns the number of rows deleted."""
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM action_logs")
+        conn.commit()
+        return cur.rowcount
+
     def get_recent_logs(self, limit: int = 50) -> List[ActionLog]:
         conn = self._get_conn()
         rows = conn.execute(

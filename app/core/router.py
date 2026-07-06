@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from app.core.models import CommandResponse
+from app.core.models import CommandResponse, PermissionLevel
 from app.logging_config import get_logger
 
 logger = get_logger("router")
@@ -53,7 +53,22 @@ ROUTES: List[Route] = [
     Route(r"^speak\s+status$", "tts_status"),
     Route(r"^speak\s+test$", "tts_test"),
     Route(r"^stop\s+speaking$", "tts_stop"),
+    # Maintenance commands (Phase 5 — approval required)
+    Route(r"^clear\s+logs?$", "clear_logs"),
 ]
+
+# Human-readable metadata for APPROVAL_REQUIRED tools.
+# Defines what the user sees in the approval card before confirming.
+_PENDING_ACTION_META: Dict[str, Dict[str, str]] = {
+    "clear_logs": {
+        "action_name": "Clear All Action Logs",
+        "description": (
+            "Permanently deletes all action log entries from the local JARVIS database. "
+            "This action cannot be undone."
+        ),
+        "risk_level": "medium",
+    },
+}
 
 
 class CommandRouter:
@@ -112,6 +127,12 @@ class CommandRouter:
     def _dispatch(self, tool_name: str, raw_cmd: str, **kwargs) -> CommandResponse:
         from db.database import get_db
 
+        # Check permission before executing — intercept APPROVAL_REQUIRED to
+        # create a pending action instead of failing silently.
+        tool = self._registry.get(tool_name)
+        if tool and tool.definition.permission_level == PermissionLevel.APPROVAL_REQUIRED:
+            return self._create_pending_action(tool_name, raw_cmd, **kwargs)
+
         result = self._registry.execute(tool_name, **kwargs)
         try:
             get_db().log_action(
@@ -127,4 +148,36 @@ class CommandRouter:
             message=result.get("message", ""),
             data=result.get("data"),
             tool_used=tool_name,
+        )
+
+    def _create_pending_action(self, tool_name: str, raw_cmd: str, **kwargs) -> CommandResponse:
+        """Create a pending approval action instead of executing immediately."""
+        from app.core.pending_actions import pending_store
+
+        meta = _PENDING_ACTION_META.get(tool_name, {})
+        action_name = meta.get("action_name", tool_name.replace("_", " ").title())
+        description = meta.get("description", f"Execute tool '{tool_name}'.")
+        risk_level = meta.get("risk_level", "medium")
+
+        action = pending_store.create(
+            command=raw_cmd,
+            tool_name=tool_name,
+            action_name=action_name,
+            description=description,
+            risk_level=risk_level,
+            parameters=dict(kwargs),
+        )
+
+        logger.info("Pending action created: %s (id=%s)", tool_name, action.id)
+        msg = (
+            f"'{action_name}' requires your approval before it can execute. "
+            f"Review and confirm on the Actions page, or use action ID: {action.id[:8]}…"
+        )
+        return CommandResponse(
+            success=True,
+            message=msg,
+            data=action.model_dump(),
+            tool_used=tool_name,
+            requires_approval=True,
+            pending_action_id=action.id,
         )

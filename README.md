@@ -1,11 +1,45 @@
 # JARVIS — Personal Windows AI Assistant
 
-> Phase 4: Local browser dashboard — interact with JARVIS in your browser.
+> Phase 5: Action Approval System — risky actions require explicit confirmation before execution.
 
 JARVIS is a local Windows AI assistant that brings together PC automation,
 memory, system monitoring, voice output, and Claude AI —
 all running privately on your machine, never in the cloud unless you choose to
 enable it.
+
+---
+
+## Action Approval System (Phase 5)
+
+Before JARVIS can execute higher-risk actions, it pauses and asks you to confirm.
+
+### How it works
+
+1. You send a command that maps to an approval-required action (e.g. `clear logs`).
+2. JARVIS does **not** execute it. Instead it creates a **pending action** with a preview.
+3. The response includes `requires_approval: true` and a `pending_action_id`.
+4. You review the action on the **Actions page** or via API and click **Confirm** or **Cancel**.
+5. Confirm → executes through the existing tool registry and permission system; result is logged.
+6. Cancel → marks the action as cancelled; nothing is executed; logged as `blocked`.
+7. Unconfirmed actions expire after **10 minutes** and are never automatically executed.
+
+### Approval API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/actions/pending` | List all pending approval actions |
+| GET | `/actions/{id}` | Get one action by ID |
+| POST | `/actions/{id}/confirm` | Confirm and execute |
+| POST | `/actions/{id}/cancel` | Cancel (never executes) |
+
+### Safety guarantees
+
+- **Cancelled actions are never executed.** Status transitions are final.
+- **Executed actions cannot run twice.** Idempotent-safe by design.
+- **Confirmation goes through the tool registry.** No permission bypass.
+- **Pending actions are in-memory.** They reset on app restart (documented limitation).
+- **All events are logged.** Confirmed actions write `success` or `failure`; cancelled actions write `blocked`.
+- **No secrets in action previews.** API key and `.env` values never appear in action payloads.
 
 ---
 
@@ -16,7 +50,8 @@ Open **http://127.0.0.1:5555/ui/** in any browser while JARVIS API is running.
 | Page | URL | Description |
 |---|---|---|
 | Dashboard | `/ui/` | Live system health — CPU, RAM, AI brain, TTS status |
-| Chat | `/ui/chat` | Send commands and questions to JARVIS |
+| Chat | `/ui/chat` | Send commands and questions; approval cards shown inline |
+| Actions | `/ui/actions` | Review, confirm, or cancel pending approval actions |
 | Logs | `/ui/logs` | Recent command and tool execution history |
 | Memory | `/ui/memory` | Browse and search saved memories |
 | Voice | `/ui/voice` | TTS status and controls |
@@ -27,7 +62,7 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 
 ---
 
-## What Phase 1–4 includes
+## What Phase 1–5 includes
 
 | Feature | Status |
 |---|---|
@@ -51,18 +86,29 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 | TTS voice output (pyttsx3, local/offline) | ✅ |
 | Voice CLI commands (speak on/off/test/status) | ✅ |
 | Voice API endpoints (`/voice/status`, `/voice/speak`, `/voice/stop`) | ✅ |
-| Local browser dashboard (6 pages, dark UI) | ✅ |
+| Local browser dashboard (7 pages, dark UI) | ✅ |
 | Dashboard chat page (calls `POST /command`) | ✅ |
 | Dashboard memory browser | ✅ |
 | Dashboard TTS controls | ✅ |
+| Action approval system (pending / confirm / cancel) | ✅ |
+| Approval API (`/actions/pending`, `/confirm`, `/cancel`) | ✅ |
+| Actions dashboard page with confirm/cancel cards | ✅ |
+| Chat inline approval cards | ✅ |
+| Approval events logged (`success` / `failure` / `blocked`) | ✅ |
+
+## Approval-required commands
+
+| Command | What it does | Risk |
+|---|---|---|
+| `clear logs` | Clears all action log entries from the database | Medium |
 
 ## What is NOT included
 
 - Microphone input / speech-to-text (never planned)
 - Wake word / always-listening (never planned)
-- Screen intelligence / OCR (Phase 5)
-- Browser automation (Phase 6)
-- Smart home / health / trading (Phase 7)
+- Screen intelligence / OCR (Phase 6)
+- Browser automation (Phase 7)
+- Smart home / health / trading (Phase 8)
 - Email sending
 - AnyDesk / remote control
 - Any network exposure (API is 127.0.0.1 only)
