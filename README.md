@@ -1,15 +1,15 @@
 # JARVIS — Personal Windows AI Assistant
 
-> Phase 1: Foundation — modular, local-first, safe.
+> Phase 3: TTS voice output — local, offline, no cloud required.
 
 JARVIS is a local Windows AI assistant that brings together PC automation,
-memory, system monitoring, and (in later phases) voice control and Claude AI —
+memory, system monitoring, voice output, and Claude AI —
 all running privately on your machine, never in the cloud unless you choose to
 enable it.
 
 ---
 
-## What Phase 1 + Phase 2 includes
+## What Phase 1 + Phase 2 + Phase 3 includes
 
 | Feature | Status |
 |---|---|
@@ -29,11 +29,15 @@ enable it.
 | Conversation history in SQLite | ✅ |
 | Local fallback when no API key | ✅ |
 | Windows installer scripts | ✅ |
-| Pytest test suite (80 tests) | ✅ |
+| Pytest test suite (130 tests) | ✅ |
+| TTS voice output (pyttsx3, local/offline) | ✅ |
+| Voice CLI commands (speak on/off/test/status) | ✅ |
+| Voice API endpoints (`/voice/status`, `/voice/speak`, `/voice/stop`) | ✅ |
 
 ## What is NOT included yet
 
-- Voice control / wake word (Phase 3)
+- Microphone input / speech-to-text (not planned for Phase 3)
+- Wake word / always-listening (not planned for Phase 3)
 - Screen intelligence / OCR (Phase 4)
 - Browser automation (Phase 5)
 - Smart home / health / trading (Phase 6)
@@ -133,7 +137,7 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 
 ---
 
-## Supported commands (Phase 1)
+## Supported commands
 
 | Command | What it does |
 |---|---|
@@ -151,6 +155,11 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | `take screenshot` | Same as above |
 | `memory add <text>` | Save a note to SQLite memory |
 | `memory search <query>` | Search saved memories |
+| `speak on` | Enable TTS voice output for this session |
+| `speak off` | Disable TTS voice output |
+| `speak status` | Show TTS engine status |
+| `speak test` | Speak a test phrase aloud |
+| `stop speaking` | Stop current speech immediately |
 | `exit` | Quit JARVIS |
 
 ### API endpoints
@@ -164,6 +173,9 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | GET | `/memory/search?q=...` | Search memory |
 | GET | `/memory` | List recent memories |
 | GET | `/logs` | Recent action logs |
+| GET | `/voice/status` | TTS enabled / engine / available |
+| POST | `/voice/speak` | `{"text": "hello"}` — speak text (requires TTS enabled) |
+| POST | `/voice/stop` | Stop current speech |
 
 ---
 
@@ -183,6 +195,13 @@ JARVIS_AI_PROVIDER=anthropic
 JARVIS_AI_MODEL=            # Leave blank for default (claude-haiku-4-5-20251001)
 JARVIS_AI_MAX_TOKENS=250
 JARVIS_AI_TIMEOUT_SECONDS=20
+
+# Phase 3 TTS / voice output (local/offline — no cloud API required)
+JARVIS_TTS_ENABLED=false    # Set to true to enable voice output
+JARVIS_TTS_ENGINE=pyttsx3
+JARVIS_TTS_RATE=175         # Words per minute
+JARVIS_TTS_VOLUME=1.0       # 0.0 – 1.0
+JARVIS_TTS_VOICE=           # Leave blank for system default voice
 ```
 
 Without an `ANTHROPIC_API_KEY`, JARVIS operates fully in local mode — all
@@ -386,7 +405,7 @@ SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 |---|---|
 | 1 ✅ | Foundation: CLI, router, tools, API, SQLite |
 | 2 ✅ | Claude AI integration (natural-language fallback, conversation memory) |
-| 3 | Voice input/output, wake word detection |
+| 3 ✅ | TTS voice output (pyttsx3, local/offline, output-only — no microphone) |
 | 4 | Screen intelligence (OCR, visual context) |
 | 5 | Browser automation (safe, approval-gated) |
 | 6 | Smart home, health tracking, optional trading alerts |

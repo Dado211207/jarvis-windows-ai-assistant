@@ -98,6 +98,30 @@ other devices on your network.
 
 ---
 
+---
+
+## Step 6 — Enable voice output (optional)
+
+Open `.env` in Notepad and set:
+
+```
+JARVIS_TTS_ENABLED=true
+```
+
+Then restart JARVIS. Use these voice commands:
+
+| Command | What it does |
+|---|---|
+| `speak on` | Enable voice for this session |
+| `speak off` | Disable voice |
+| `speak test` | Hear a test phrase |
+| `stop speaking` | Stop current speech |
+
+> Voice is **local and offline** — no API key required.
+> This is text-to-speech **output only** — no microphone or wake word.
+
+---
+
 ## Security notes
 
 - The API key is **never** included in the ZIP or any release asset.

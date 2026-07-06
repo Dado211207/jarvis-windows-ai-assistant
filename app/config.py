@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     jarvis_ai_max_tokens: int = 250
     jarvis_ai_timeout_seconds: int = 20
 
+    # TTS / voice output settings (Phase 3)
+    jarvis_tts_enabled: bool = False
+    jarvis_tts_engine: str = "pyttsx3"
+    jarvis_tts_rate: int = 175
+    jarvis_tts_volume: float = 1.0
+    jarvis_tts_voice: str = ""
+
     @property
     def db_path(self) -> Path:
         return Path(self.jarvis_db_path)

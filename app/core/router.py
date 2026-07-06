@@ -47,6 +47,12 @@ ROUTES: List[Route] = [
         lambda m: {"query": m.group(1).strip()},
     ),
     Route(r"^exit$", "exit"),
+    # TTS voice commands (Phase 3)
+    Route(r"^speak\s+on$", "tts_enable"),
+    Route(r"^speak\s+off$", "tts_disable"),
+    Route(r"^speak\s+status$", "tts_status"),
+    Route(r"^speak\s+test$", "tts_test"),
+    Route(r"^stop\s+speaking$", "tts_stop"),
 ]
 
 

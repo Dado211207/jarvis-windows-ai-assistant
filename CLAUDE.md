@@ -15,6 +15,19 @@ how Claude Code sessions should work on this codebase.
 - **Register, don't hard-code.** Add new tools via the `ToolRegistry`; do not add
   elif chains to `router.py` or `brain.py`.
 
+## Phase 3 TTS rules (non-negotiable)
+
+- **Output only.** Phase 3 TTS is text-to-speech output. No microphone input,
+  no speech-to-text, no always-listening behavior, no wake word — ever.
+- **TTS failures must never crash the app.** All pyttsx3 errors are caught and
+  logged; the app continues normally without audio.
+- **Tests must mock the TTS engine.** No test may play real audio or require
+  audio hardware. Use `unittest.mock.patch("pyttsx3.init")` or equivalent.
+- **TTS is disabled by default.** `JARVIS_TTS_ENABLED=false` in `.env.example`.
+  Users must opt in explicitly.
+- **No cloud TTS.** Only local/offline engines (pyttsx3 / OS SAPI/espeak).
+  Do not add cloud TTS APIs without explicit design review.
+
 ## Phase 2 AI rules (non-negotiable)
 
 - **No autonomous tool execution by Claude.** The AI may only respond with text.
@@ -59,7 +72,7 @@ how Claude Code sessions should work on this codebase.
 |-------|------------|-------|
 | 1     | ✅ Done     | Foundation: CLI, router, tool registry, permissions, SQLite, FastAPI |
 | 2     | ✅ Done     | Claude AI integration, natural-language fallback via Anthropic SDK |
-| 3     | Planned    | Voice input/output, wake word |
+| 3     | ✅ Done     | TTS voice output (pyttsx3, local/offline, output-only, no microphone) |
 | 4     | Planned    | Screen intelligence, OCR |
 | 5     | Planned    | Browser automation |
 | 6     | Planned    | Smart home, health, trading integrations |

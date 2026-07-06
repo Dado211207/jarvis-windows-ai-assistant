@@ -48,6 +48,10 @@ jobs:
           --clean
           --collect-all pydantic_settings
           --collect-all anthropic
+          --collect-all pyttsx3
+          --hidden-import pyttsx3.drivers.sapi5
+          --hidden-import comtypes
+          --hidden-import comtypes.client
           --add-data "README.md;."
           --add-data ".env.example;."
           run_jarvis.py
