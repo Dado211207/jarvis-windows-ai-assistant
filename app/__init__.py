@@ -1,4 +1,4 @@
 """JARVIS — Personal Windows AI Assistant."""
 
-__version__ = "0.1.3-alpha"
-__phase__ = "Phase 4: Local Browser Dashboard"
+__version__ = "0.1.4-alpha"
+__phase__ = "Phase 5: Action Approval System"

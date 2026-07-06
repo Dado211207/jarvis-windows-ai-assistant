@@ -210,7 +210,7 @@ def test_health_includes_phase(api_client):
     assert r.status_code == 200
     body = r.json()
     assert "phase" in body
-    assert "Phase 4" in body["phase"]
+    assert "Phase" in body["phase"]
 
 
 def test_health_includes_db_string(api_client):

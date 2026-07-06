@@ -40,7 +40,7 @@ def check_permission(tool_name: str, level: PermissionLevel) -> None:
         logger.info("Approval required for tool: %s", tool_name)
         raise ApprovalRequiredError(
             f"Tool '{tool_name}' requires explicit user approval before execution. "
-            "Approval workflow is not yet implemented in Phase 1."
+            "Use the Actions page or POST /actions/{id}/confirm to approve."
         )
 
     # PermissionLevel.SAFE — allowed

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Actions{% endblock %}
+{% block content %}
+<div id="actions-root">
+
+  <div class="page-header">
+    <div class="flex items-center" style="justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
+      <div>
+        <h1 class="page-title">Actions</h1>
+        <p class="page-subtitle">Pending approval &mdash; review and confirm or cancel before expiry.</p>
+      </div>
+      <button id="actions-refresh" class="btn btn-ghost btn-sm" type="button">Refresh</button>
+    </div>
+  </div>
+
+  <div id="actions-list">
+    <p class="empty">Loading&hellip;</p>
+  </div>
+
+  <div class="notice" style="margin-top:2rem;">
+    <div class="text-sm" style="color:var(--text-muted);">
+      Pending actions expire after 10&nbsp;minutes and are never automatically executed.
+      All confirmations and cancellations are recorded in the action log.
+      Approved actions are executed through the same tool registry and permission system as all other JARVIS commands.
+    </div>
+  </div>
+
+</div>
+{% endblock %}
