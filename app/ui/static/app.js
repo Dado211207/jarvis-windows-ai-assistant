@@ -202,10 +202,10 @@ async function loadLogs() {
       const row = document.createElement("tr");
 
       const cells = [
-        entry.timestamp || "—",
-        entry.command   || "—",
-        entry.tool_used || "—",
-        entry.status    || "—",
+        entry.created_at || "—",
+        entry.command    || "—",
+        entry.tool_name  || "—",
+        entry.status     || "—",
       ];
 
       cells.forEach(val => {
