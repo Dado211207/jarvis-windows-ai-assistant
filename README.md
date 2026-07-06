@@ -62,7 +62,7 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 
 ---
 
-## What Phase 1–5 includes
+## What Phase 1–6 includes
 
 | Feature | Status |
 |---|---|
@@ -86,7 +86,7 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 | TTS voice output (pyttsx3, local/offline) | ✅ |
 | Voice CLI commands (speak on/off/test/status) | ✅ |
 | Voice API endpoints (`/voice/status`, `/voice/speak`, `/voice/stop`) | ✅ |
-| Local browser dashboard (7 pages, dark UI) | ✅ |
+| Local browser dashboard (8 pages, dark UI) | ✅ |
 | Dashboard chat page (calls `POST /command`) | ✅ |
 | Dashboard memory browser | ✅ |
 | Dashboard TTS controls | ✅ |
@@ -95,6 +95,14 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 | Actions dashboard page with confirm/cancel cards | ✅ |
 | Chat inline approval cards | ✅ |
 | Approval events logged (`success` / `failure` / `blocked`) | ✅ |
+| Safe URL opener (http/https only; dangerous schemes blocked) | ✅ |
+| Open JARVIS dashboard from CLI | ✅ |
+| Safe folder opener (allowlisted: downloads, documents, desktop, notes…) | ✅ |
+| File note creator (`create note <text>` → `~/Documents/JARVIS_Notes/`) | ✅ |
+| Dedicated disk space command | ✅ |
+| Dedicated network info command (local only, no scanning) | ✅ |
+| Dedicated battery/power status command | ✅ |
+| Expanded app allowlist (file explorer, settings) | ✅ |
 
 ## Approval-required commands
 
@@ -102,16 +110,25 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 |---|---|---|
 | `clear logs` | Clears all action log entries from the database | Medium |
 
-## What is NOT included
+## What is NOT included (current alpha)
 
-- Microphone input / speech-to-text (never planned)
-- Wake word / always-listening (never planned)
-- Screen intelligence / OCR (Phase 6)
-- Browser automation (Phase 7)
-- Smart home / health / trading (Phase 8)
-- Email sending
+The following are **not** in the current release. Some are planned for later phases with explicit user confirmation and safety controls; others are permanently excluded.
+
+**Planned later (with explicit user permission and safety controls):**
+- Push-to-talk voice input (Phase 7 — approval-gated, no always-listening)
+- Screen intelligence / OCR — on user request only (Phase 7)
+- Browser automation with approval gate (Phase 8)
+- Controlled computer-use actions with preview + confirmation (Phase 9)
+
+**Permanently excluded:**
+- Always-listening / wake word (no microphone open in the background, ever)
+- Email sending without an approval flow
 - AnyDesk / remote control
-- Any network exposure (API is 127.0.0.1 only)
+- Any network exposure (API binds to `127.0.0.1` only, never `0.0.0.0`)
+- Password / credential extraction
+- Keylogging or clipboard surveillance
+- Network scanning or port scanning
+- Mass file deletion
 
 ---
 
@@ -206,11 +223,29 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 
 ## Supported commands
 
+### General
+
 | Command | What it does |
 |---|---|
 | `help` | List all available tools |
 | `status` | Show JARVIS version and config |
-| `system status` | CPU, RAM, disk, battery |
+| `exit` | Quit JARVIS CLI |
+
+### System info
+
+| Command | What it does |
+|---|---|
+| `system status` | CPU, RAM, disk, battery summary |
+| `disk space` | Show disk usage (used / free / total) |
+| `network status` | Show hostname and local IP (read-only, no scanning) |
+| `battery status` | Show battery / power status |
+| `screenshot` | Capture screen → `data/screenshots/` |
+| `take screenshot` | Same as above |
+
+### Open apps
+
+| Command | What it does |
+|---|---|
 | `open chrome` | Launch Chrome (Windows, allowlist only) |
 | `open notepad` | Launch Notepad |
 | `open calculator` | Launch Calculator |
@@ -218,16 +253,49 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | `open vscode` | Launch VS Code |
 | `open spotify` | Launch Spotify |
 | `open discord` | Launch Discord |
-| `screenshot` | Capture screen → `data/screenshots/` |
-| `take screenshot` | Same as above |
-| `memory add <text>` | Save a note to SQLite memory |
+| `open file explorer` | Open Windows File Explorer |
+| `open settings` | Open Windows Settings |
+
+### Open URLs & dashboard
+
+| Command | What it does |
+|---|---|
+| `open website <url>` | Open an http/https URL (dangerous schemes blocked) |
+| `open dashboard` | Open the JARVIS local dashboard in your browser |
+
+### Open folders
+
+| Command | What it does |
+|---|---|
+| `open downloads` | Open your Downloads folder |
+| `open documents` | Open your Documents folder |
+| `open desktop` | Open your Desktop folder |
+| `open notes folder` | Open the JARVIS Notes folder |
+| `open jarvis folder` | Open the JARVIS project folder |
+
+### Notes & memory
+
+| Command | What it does |
+|---|---|
+| `create note <text>` | Save a timestamped note to `~/Documents/JARVIS_Notes/` |
+| `memory add <text>` | Save a note to local SQLite memory |
 | `memory search <query>` | Search saved memories |
+
+### Voice (TTS)
+
+| Command | What it does |
+|---|---|
 | `speak on` | Enable TTS voice output for this session |
 | `speak off` | Disable TTS voice output |
 | `speak status` | Show TTS engine status |
 | `speak test` | Speak a test phrase aloud |
 | `stop speaking` | Stop current speech immediately |
-| `exit` | Quit JARVIS |
+
+### Approval-required
+
+| Command | What it does |
+|---|---|
+| `clear logs` | Delete all action log entries — requires confirmation |
 
 ### API endpoints
 
@@ -468,11 +536,14 @@ SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 
 ## Roadmap
 
-| Phase | Goal |
-|---|---|
-| 1 ✅ | Foundation: CLI, router, tools, API, SQLite |
-| 2 ✅ | Claude AI integration (natural-language fallback, conversation memory) |
-| 3 ✅ | TTS voice output (pyttsx3, local/offline, output-only — no microphone) |
-| 4 | Screen intelligence (OCR, visual context) |
-| 5 | Browser automation (safe, approval-gated) |
-| 6 | Smart home, health tracking, optional trading alerts |
+| Phase | Goal | Status |
+|---|---|---|
+| 1 | Foundation: CLI, router, tools, API, SQLite | ✅ Done |
+| 2 | Claude AI integration (natural-language fallback, conversation memory) | ✅ Done |
+| 3 | TTS voice output (pyttsx3, local/offline, output-only — no microphone) | ✅ Done |
+| 4 | Local browser dashboard (8 pages, dark UI, Jinja2 + vanilla JS) | ✅ Done |
+| 5 | Action approval system (pending / confirm / cancel, Actions UI) | ✅ Done |
+| 6 | Safe Windows actions expansion (URL opener, folders, notes, disk, network, battery) | ✅ Done |
+| 7 | Screen intelligence (OCR, on-request only — explicit user permission required) | Planned |
+| 8 | Browser automation (approval-gated, no autonomous browsing) | Planned |
+| 9 | Smart home, health tracking, optional trading alerts | Planned |

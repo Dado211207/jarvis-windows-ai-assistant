@@ -30,11 +30,34 @@ ROUTES: List[Route] = [
     Route(r"^help$", "help"),
     Route(r"^status$", "status"),
     Route(r"^system\s+status$", "system_status"),
+    # Phase 6: URL opener (before generic open_app to intercept "open website/url/site ...")
+    Route(
+        r"^open\s+(?:website|url|site)\s+(.+)$",
+        "open_website",
+        lambda m: {"url": m.group(1).strip()},
+    ),
+    # Phase 6: Dashboard shortcut (before generic open_app — "dashboard" is one word)
+    Route(r"^open\s+(?:jarvis\s+)?dashboard$", "open_dashboard"),
+    Route(r"^open\s+jarvis$", "open_dashboard"),
+    # Phase 6: Folder opener — intercepts known folder names before the generic open_app
+    Route(
+        r"^open\s+(downloads?|documents?|desktop|pictures?|music|videos?)$",
+        "open_folder",
+        lambda m: {"folder_name": m.group(1).strip()},
+    ),
+    Route(
+        r"^open\s+(notes?(?:\s+folder)?|jarvis\s+folder)$",
+        "open_folder",
+        lambda m: {"folder_name": m.group(1).strip()},
+    ),
+    # Generic single-word app opener (kept here to preserve existing test expectations)
     Route(
         r"^open\s+(\w+)$",
         "open_app",
         lambda m: {"app_name": m.group(1).lower()},
     ),
+    # Phase 6: Multi-word app names (after generic — these patterns are more specific)
+    Route(r"^open\s+file\s+explorer$", "open_app", lambda m: {"app_name": "file_explorer"}),
     Route(r"^(take\s+)?screenshot$", "take_screenshot"),
     Route(
         r"^memory\s+add\s+(.+)$",
@@ -55,6 +78,20 @@ ROUTES: List[Route] = [
     Route(r"^stop\s+speaking$", "tts_stop"),
     # Maintenance commands (Phase 5 — approval required)
     Route(r"^clear\s+logs?$", "clear_logs"),
+    # Phase 6: Dedicated system info commands
+    Route(r"^disk\s+(?:space|usage)$", "disk_space"),
+    Route(r"^show\s+disk(?:\s+usage)?$", "disk_space"),
+    Route(r"^how\s+much\s+(?:space|disk).*$", "disk_space"),
+    Route(r"^network\s+(?:status|info)$", "network_info"),
+    Route(r"^show\s+(?:my\s+)?ip$", "network_info"),
+    Route(r"^show\s+network(?:\s+info)?$", "network_info"),
+    Route(r"^(?:battery|power)\s+status$", "battery_status"),
+    # Phase 6: Note creation
+    Route(
+        r"^(?:create|write)\s+note\s+(.+)$",
+        "create_note",
+        lambda m: {"content": m.group(1).strip()},
+    ),
 ]
 
 # Human-readable metadata for APPROVAL_REQUIRED tools.
