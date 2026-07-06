@@ -8,23 +8,79 @@
 </head>
 <body>
 
-<nav class="nav">
-  <span class="nav-brand">JARVIS</span>
-  <div class="nav-links">
-    <a href="/ui/" class="nav-link{% if page == 'dashboard' %} active{% endif %}">Dashboard</a>
-    <a href="/ui/chat" class="nav-link{% if page == 'chat' %} active{% endif %}">Chat</a>
-    <a href="/ui/actions" class="nav-link{% if page == 'actions' %} active{% endif %}">Actions</a>
-    <a href="/ui/logs" class="nav-link{% if page == 'logs' %} active{% endif %}">Logs</a>
-    <a href="/ui/memory" class="nav-link{% if page == 'memory' %} active{% endif %}">Memory</a>
-    <a href="/ui/voice" class="nav-link{% if page == 'voice' %} active{% endif %}">Voice</a>
-    <a href="/ui/help" class="nav-link{% if page == 'help' %} active{% endif %}">Help</a>
-    <a href="/docs" class="nav-link" target="_blank" rel="noopener noreferrer">API Docs &#8599;</a>
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <div class="sidebar-logo">J</div>
+    <div class="sidebar-brand-text">
+      <span class="sidebar-brand-name">JARVIS</span>
+      <span class="sidebar-brand-sub">Local AI</span>
+    </div>
   </div>
-</nav>
 
-<main class="main">
-  {% block content %}{% endblock %}
-</main>
+  <div class="sidebar-divider"></div>
+
+  <nav class="sidebar-nav" aria-label="Main navigation">
+    <a href="/ui/" class="sidebar-link{% if page == 'dashboard' %} active{% endif %}" aria-current="{% if page == 'dashboard' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9642;</span>Dashboard
+    </a>
+    <a href="/ui/chat" class="sidebar-link{% if page == 'chat' %} active{% endif %}" aria-current="{% if page == 'chat' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9641;</span>Chat
+    </a>
+    <a href="/ui/actions" class="sidebar-link{% if page == 'actions' %} active{% endif %}" aria-current="{% if page == 'actions' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9654;</span>Actions
+    </a>
+    <a href="/ui/voice" class="sidebar-link{% if page == 'voice' %} active{% endif %}" aria-current="{% if page == 'voice' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9650;</span>Voice
+    </a>
+    <a href="/ui/logs" class="sidebar-link{% if page == 'logs' %} active{% endif %}" aria-current="{% if page == 'logs' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9644;</span>Logs
+    </a>
+    <a href="/ui/memory" class="sidebar-link{% if page == 'memory' %} active{% endif %}" aria-current="{% if page == 'memory' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9643;</span>Memory
+    </a>
+    <a href="/ui/help" class="sidebar-link{% if page == 'help' %} active{% endif %}" aria-current="{% if page == 'help' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9645;</span>Help
+    </a>
+
+    <div class="sidebar-divider" style="margin-top:0.5rem;"></div>
+
+    <a href="/docs" class="sidebar-link" target="_blank" rel="noopener noreferrer">
+      <span class="sidebar-link-icon">&#9646;</span>API Docs
+      <span class="sidebar-ext-icon">&#8599;</span>
+    </a>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="local-badge">
+      <span class="local-badge-dot"></span>127.0.0.1 only
+    </div>
+    <div class="text-xs text-muted" style="padding: 0 0.1rem; line-height: 1.5;">
+      All data stays on your machine.
+    </div>
+  </div>
+</aside>
+
+<div class="layout-main">
+
+  <header class="topbar">
+    <span class="topbar-title">{% block topbar_title %}JARVIS{% endblock %}</span>
+    <div class="topbar-indicators">
+      <span class="topbar-indicator">
+        <span class="status-dot status-dot-grey" id="topbar-health-dot"></span>
+        <span id="topbar-health-label">connecting</span>
+      </span>
+      <span class="topbar-indicator">
+        <span class="status-dot status-dot-grey" id="topbar-brain-dot"></span>
+        <span id="topbar-brain-label">brain</span>
+      </span>
+    </div>
+  </header>
+
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
 
 <script src="/ui/static/app.js"></script>
 {% block scripts %}{% endblock %}

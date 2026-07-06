@@ -643,12 +643,12 @@ def test_help_page_no_real_api_key(api_client):
 
 # ── Version / phase ───────────────────────────────────────────────────────────
 
-def test_version_is_015(api_client):
+def test_version_is_016(api_client):
     r = api_client.get("/")
-    assert "0.1.5" in r.json()["version"]
+    assert "0.1.6" in r.json()["version"]
 
 
-def test_health_reports_phase_6(api_client):
+def test_health_reports_phase_7(api_client):
     r = api_client.get("/health")
     body = r.json()
-    assert "Phase 6" in body["phase"]
+    assert "Phase 7" in body["phase"]
