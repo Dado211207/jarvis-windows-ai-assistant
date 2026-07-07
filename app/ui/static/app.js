@@ -17,11 +17,32 @@ const API = {
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },
+  async patch(path, body) {
+    const r = await fetch(path, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return r.json();
+  },
+  async del(path) {
+    const r = await fetch(path, { method: "DELETE" });
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return r.json();
+  },
 };
 
 function setText(id, text) {
   const el = $(id);
   if (el) el.textContent = text;
+}
+
+function setMetric(id, text) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = "metric-card-value";
 }
 
 function setBadge(id, text, type) {
@@ -141,11 +162,46 @@ async function loadDashboard() {
   } catch (e) {
     console.error("dashboard load error", e);
   }
+
+  loadPersonality();
+}
+
+async function loadPersonality() {
+  const [settings, prefs] = await Promise.allSettled([
+    API.get("/settings"),
+    API.get("/preferences"),
+  ]);
+
+  if (settings.status === "fulfilled") {
+    const s = settings.value;
+    setMetric("dash-assistant-name", s.assistant_name || "JARVIS");
+    setMetric("dash-user-name", s.user_display_name ? s.user_display_name : "not set");
+    const pinned = (s.pinned_commands || "").split(",").map(x => x.trim()).filter(Boolean);
+    setMetric("dash-pinned", String(pinned.length));
+  } else {
+    ["dash-assistant-name", "dash-user-name", "dash-pinned"].forEach(id => setMetric(id, "—"));
+  }
+
+  if (prefs.status === "fulfilled" && Array.isArray(prefs.value)) {
+    setMetric("dash-mem-count", String(prefs.value.length));
+  } else {
+    setMetric("dash-mem-count", "—");
+  }
 }
 
 // ── Chat ─────────────────────────────────────────────────────────────────────
 
 let chatEmpty = true;
+let assistantName = "JARVIS";
+
+async function loadAssistantName() {
+  try {
+    const s = await API.get("/settings");
+    if (s && s.assistant_name) assistantName = s.assistant_name;
+  } catch (e) {
+    // keep default name on failure
+  }
+}
 
 function addMessage(role, text, toolUsed) {
   const list = $("chat-messages");
@@ -159,7 +215,7 @@ function addMessage(role, text, toolUsed) {
 
   const roleEl = document.createElement("div");
   roleEl.className = "msg-role";
-  roleEl.textContent = role === "user" ? "You" : "JARVIS";
+  roleEl.textContent = role === "user" ? "You" : assistantName;
 
   const bubble = document.createElement("div");
   bubble.className = "msg-bubble";
@@ -292,6 +348,7 @@ function addApprovalCard(actionId, data) {
 function initChat() {
   const btn   = $("chat-send");
   const input = $("chat-input");
+  loadAssistantName();
   if (btn)   btn.addEventListener("click", sendChat);
   if (input) input.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
@@ -399,50 +456,97 @@ function initLogs() {
   loadLogs();
 }
 
-// ── Memory ───────────────────────────────────────────────────────────────────
+// ── Memory (personality preferences) ──────────────────────────────────────────
 
-async function loadMemory(query) {
+let memoryCategory = "";
+
+function renderMemoryEmpty(list, isSearch) {
+  const empty = document.createElement("p");
+  empty.className = "empty";
+  empty.textContent = isSearch
+    ? "No preferences match that search."
+    : "No preferences saved yet. Try: remember that I prefer short answers";
+  list.appendChild(empty);
+}
+
+function buildMemoryCard(item) {
+  const card = document.createElement("div");
+  card.className = "memory-item";
+
+  const head = document.createElement("div");
+  head.className = "memory-head";
+
+  const cat = document.createElement("span");
+  cat.className = "badge badge-info";
+  cat.textContent = item.category || "general_preference";
+
+  const forget = document.createElement("button");
+  forget.className = "btn btn-ghost btn-sm";
+  forget.textContent = "Forget";
+
+  head.appendChild(cat);
+  head.appendChild(forget);
+
+  const text = document.createElement("div");
+  text.className = "memory-text";
+  text.textContent = item.value || item.title || "—";
+
+  const meta = document.createElement("div");
+  meta.className = "memory-meta";
+  meta.textContent = item.created_at || "";
+
+  card.appendChild(head);
+  card.appendChild(text);
+  if (meta.textContent) card.appendChild(meta);
+
+  forget.addEventListener("click", async () => {
+    forget.disabled = true;
+    try {
+      await API.del("/preferences/" + item.id);
+      if (card.parentNode) card.parentNode.removeChild(card);
+      const list = $("memory-list");
+      if (list && !list.querySelector(".memory-item")) renderMemoryEmpty(list, false);
+    } catch (e) {
+      forget.disabled = false;
+      forget.textContent = "Error";
+    }
+  });
+
+  return card;
+}
+
+async function loadMemory() {
   const list = $("memory-list");
   if (!list) return;
 
-  list.textContent = "";
+  _clearEl(list);
   const loading = document.createElement("p");
   loading.className = "empty";
   loading.textContent = "Loading…";
   list.appendChild(loading);
 
-  try {
-    const path = query ? `/memory/search?q=${encodeURIComponent(query)}` : "/memory";
-    const data  = await API.get(path);
-    const items = Array.isArray(data) ? data : (data.memories || data.results || []);
+  const input = $("memory-search");
+  const q = input ? input.value.trim() : "";
 
-    list.textContent = "";
-    if (!items.length) {
-      const empty = document.createElement("p");
-      empty.className = "empty";
-      empty.textContent = query ? "No memories match that query." : "No memories saved yet.";
-      list.appendChild(empty);
+  try {
+    let path;
+    if (q) {
+      path = "/preferences/search?q=" + encodeURIComponent(q);
+    } else if (memoryCategory) {
+      path = "/preferences?category=" + encodeURIComponent(memoryCategory);
+    } else {
+      path = "/preferences";
+    }
+    const items = await API.get(path);
+
+    _clearEl(list);
+    if (!Array.isArray(items) || !items.length) {
+      renderMemoryEmpty(list, !!q);
       return;
     }
-
-    items.forEach(item => {
-      const card = document.createElement("div");
-      card.className = "memory-item";
-
-      const text = document.createElement("div");
-      text.className = "memory-text";
-      text.textContent = item.content || item.text || item.memory || "—";
-
-      const meta = document.createElement("div");
-      meta.className = "memory-meta";
-      meta.textContent = item.timestamp || item.created_at || "";
-
-      card.appendChild(text);
-      if (meta.textContent) card.appendChild(meta);
-      list.appendChild(card);
-    });
+    items.forEach(item => list.appendChild(buildMemoryCard(item)));
   } catch (e) {
-    list.textContent = "";
+    _clearEl(list);
     const err = document.createElement("p");
     err.className = "empty";
     err.textContent = `Error loading memory: ${e.message}`;
@@ -451,20 +555,31 @@ async function loadMemory(query) {
 }
 
 function initMemory() {
-  const btn   = $("memory-search-btn");
-  const input = $("memory-search");
+  const btn     = $("memory-search-btn");
+  const refresh = $("memory-refresh-btn");
+  const input   = $("memory-search");
 
-  const doSearch = () => {
-    const q = input ? input.value.trim() : "";
-    loadMemory(q || null);
-  };
-
-  if (btn)   btn.addEventListener("click", doSearch);
+  if (btn) btn.addEventListener("click", loadMemory);
+  if (refresh) refresh.addEventListener("click", () => {
+    if (input) input.value = "";
+    loadMemory();
+  });
   if (input) input.addEventListener("keydown", e => {
-    if (e.key === "Enter") { e.preventDefault(); doSearch(); }
+    if (e.key === "Enter") { e.preventDefault(); loadMemory(); }
   });
 
-  loadMemory(null);
+  const cats = document.querySelectorAll(".memory-cat");
+  cats.forEach(chip => {
+    chip.addEventListener("click", () => {
+      memoryCategory = chip.getAttribute("data-category") || "";
+      cats.forEach(c => c.classList.remove("active"));
+      chip.classList.add("active");
+      if (input) input.value = "";
+      loadMemory();
+    });
+  });
+
+  loadMemory();
 }
 
 // ── Voice ─────────────────────────────────────────────────────────────────────
@@ -522,6 +637,20 @@ async function voiceStop() {
   }
 }
 
+async function loadVoiceSettings() {
+  const rate = $("tts-rate-val");
+  const vol  = $("tts-volume-val");
+  if (!rate && !vol) return;
+  try {
+    const s = await API.get("/settings");
+    if (rate) { rate.textContent = s.tts_rate   || "—"; rate.className = "status-row-value font-mono"; }
+    if (vol)  { vol.textContent  = s.tts_volume || "—"; vol.className  = "status-row-value font-mono"; }
+  } catch (e) {
+    if (rate) { rate.textContent = "—"; rate.className = "status-row-value font-mono"; }
+    if (vol)  { vol.textContent  = "—"; vol.className  = "status-row-value font-mono"; }
+  }
+}
+
 function initVoice() {
   const on   = $("btn-speak-on");
   const off  = $("btn-speak-off");
@@ -534,6 +663,7 @@ function initVoice() {
   if (stop) stop.addEventListener("click", voiceStop);
 
   refreshVoiceStatus();
+  loadVoiceSettings();
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -670,6 +800,75 @@ function initActions() {
   loadActions();
 }
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+const SETTINGS_FIELDS = [
+  "user_display_name", "assistant_name", "preferred_language",
+  "preferred_response_style", "preferred_tone", "theme_mode", "compact_mode",
+  "dashboard_default_page", "tts_enabled", "tts_rate", "tts_volume", "tts_voice",
+  "pinned_commands",
+];
+
+function setSettingsStatus(text, ok) {
+  const el = $("settings-status");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "settings-status " + (ok ? "text-ok" : "text-err");
+}
+
+function applySettingsToForm(s) {
+  SETTINGS_FIELDS.forEach(key => {
+    const el = $("set-" + key);
+    if (el && s[key] != null) el.value = s[key];
+  });
+  const safety = $("settings-safety-mode");
+  if (safety) safety.textContent = s.safety_mode || "on";
+}
+
+async function loadSettings() {
+  try {
+    const s = await API.get("/settings");
+    applySettingsToForm(s);
+    setSettingsStatus("", true);
+  } catch (e) {
+    setSettingsStatus("Error loading settings: " + e.message, false);
+  }
+}
+
+async function saveSettings(ev) {
+  if (ev) ev.preventDefault();
+  const values = {};
+  SETTINGS_FIELDS.forEach(key => {
+    const el = $("set-" + key);
+    if (el) values[key] = el.value;
+  });
+
+  const btn = $("settings-save");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await API.patch("/settings", { values });
+    if (r.settings) applySettingsToForm(r.settings);
+    if (r.success) {
+      setSettingsStatus("Saved.", true);
+    } else {
+      const keys = Object.keys(r.errors || {});
+      setSettingsStatus(keys.length ? r.errors[keys[0]] : "Some values were rejected.", false);
+    }
+  } catch (e) {
+    setSettingsStatus("Error saving: " + e.message, false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function initSettings() {
+  const form   = $("settings-form");
+  const reload = $("settings-reload");
+  if (form)   form.addEventListener("submit", saveSettings);
+  if (reload) reload.addEventListener("click", loadSettings);
+  loadSettings();
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -687,5 +886,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initMemory();
   } else if (path === "/ui/voice") {
     initVoice();
+  } else if (path === "/ui/settings") {
+    initSettings();
   }
 });

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from app.config import settings
-from app.core.models import ActionLog, ConversationEntry, MemoryEntry
+from app.core.models import ActionLog, ConversationEntry, MemoryEntry, Preference
 from app.logging_config import get_logger
 
 logger = get_logger("db.database")
@@ -140,6 +140,111 @@ class Database:
             )
             for r in rows
         ]
+
+    # --- settings (Phase 8) ---
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Upsert a single settings key. Values are always stored as text."""
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) "
+            "VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+            "updated_at = datetime('now')",
+            (key, value),
+        )
+        conn.commit()
+
+    def get_setting(self, key: str) -> Optional[str]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+
+    def get_all_settings(self) -> dict:
+        conn = self._get_conn()
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        return {r["key"]: r["value"] for r in rows}
+
+    # --- preferences / personality memory (Phase 8) ---
+
+    def add_preference(
+        self,
+        title: str,
+        value: str,
+        category: str = "general_preference",
+        source: str = "user",
+        is_sensitive: bool = False,
+    ) -> int:
+        conn = self._get_conn()
+        cur = conn.execute(
+            "INSERT INTO preferences (title, value, category, source, is_sensitive) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (title, value, category, source, 1 if is_sensitive else 0),
+        )
+        conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def _row_to_preference(self, r: sqlite3.Row) -> Preference:
+        return Preference(
+            id=r["id"],
+            title=r["title"],
+            value=r["value"],
+            category=r["category"],
+            source=r["source"],
+            is_sensitive=bool(r["is_sensitive"]),
+            created_at=r["created_at"],
+            updated_at=r["updated_at"],
+        )
+
+    def get_preferences(
+        self, category: Optional[str] = None, limit: int = 100
+    ) -> List[Preference]:
+        conn = self._get_conn()
+        if category:
+            rows = conn.execute(
+                "SELECT * FROM preferences WHERE category = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (category, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM preferences ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._row_to_preference(r) for r in rows]
+
+    def search_preferences(self, query: str) -> List[Preference]:
+        conn = self._get_conn()
+        like = f"%{query}%"
+        rows = conn.execute(
+            "SELECT * FROM preferences "
+            "WHERE title LIKE ? OR value LIKE ? OR category LIKE ? "
+            "ORDER BY created_at DESC LIMIT 50",
+            (like, like, like),
+        ).fetchall()
+        return [self._row_to_preference(r) for r in rows]
+
+    def get_preference(self, pref_id: int) -> Optional[Preference]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM preferences WHERE id = ?", (pref_id,)
+        ).fetchone()
+        return self._row_to_preference(row) if row else None
+
+    def delete_preference(self, pref_id: int) -> bool:
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM preferences WHERE id = ?", (pref_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+    def clear_preferences(self) -> int:
+        """Delete all preference entries. Returns the number of rows deleted."""
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM preferences")
+        conn.commit()
+        return cur.rowcount
 
 
 # Module-level singleton

@@ -27,10 +27,19 @@
           <span class="status-row-label">Engine</span>
           <span id="tts-engine-val" class="status-row-value font-mono loading">&#8230;</span>
         </div>
+        <div class="status-row">
+          <span class="status-row-label">Saved rate</span>
+          <span id="tts-rate-val" class="status-row-value font-mono loading">&#8230;</span>
+        </div>
+        <div class="status-row">
+          <span class="status-row-label">Saved volume</span>
+          <span id="tts-volume-val" class="status-row-value font-mono loading">&#8230;</span>
+        </div>
       </div>
       <p class="text-xs text-muted mt-3">
-        To enable by default, set <code>JARVIS_TTS_ENABLED=true</code> in <code>.env</code>.
-        TTS preference resets on restart unless configured in <code>.env</code>.
+        Rate and volume are read from your saved <a href="/ui/settings">Settings</a> and now
+        persist across restarts. The <em>session enabled</em> toggle above still resets on
+        restart unless you set it in Settings or <code>.env</code>.
       </p>
     </div>
 

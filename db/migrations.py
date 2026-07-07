@@ -32,8 +32,31 @@ CREATE TABLE IF NOT EXISTS action_logs (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_memories_created   ON memories(created_at);
-CREATE INDEX IF NOT EXISTS idx_action_logs_status ON action_logs(status);
+-- Phase 8: persistent user settings (safe key/value pairs, local-only).
+-- Secrets/API keys are never stored here — they live only in .env.
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Phase 8: explicit personality / preferences memory.
+-- Only written when the user clearly asks (remember that…, save preference…).
+CREATE TABLE IF NOT EXISTS preferences (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT    NOT NULL,
+    value        TEXT    NOT NULL,
+    category     TEXT    NOT NULL DEFAULT 'general_preference',
+    source       TEXT    NOT NULL DEFAULT 'user',
+    is_sensitive INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_created      ON memories(created_at);
+CREATE INDEX IF NOT EXISTS idx_action_logs_status    ON action_logs(status);
+CREATE INDEX IF NOT EXISTS idx_preferences_category  ON preferences(category);
+CREATE INDEX IF NOT EXISTS idx_preferences_created   ON preferences(created_at);
 """
 
 

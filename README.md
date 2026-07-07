@@ -109,16 +109,41 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 | Command | What it does | Risk |
 |---|---|---|
 | `clear logs` | Clears all action log entries from the database | Medium |
+| `clear memory` | Deletes all saved preferences / personality memory | High |
+
+## Persistent settings & personality memory (Phase 8)
+
+JARVIS now remembers safe preferences across restarts, stored locally in SQLite.
+
+| Command | What it does |
+|---|---|
+| `settings` / `show settings` | Show your current settings |
+| `set my name to <name>` | Tell JARVIS what to call you |
+| `set assistant name to <name>` | Rename the assistant |
+| `set language to <language>` | Set preferred language |
+| `set response style to <short\|balanced\|detailed>` | Set preferred answer length |
+| `set tone to <friendly\|formal\|casual\|neutral\|direct>` | Set preferred tone |
+| `remember that <text>` | Explicitly save a preference |
+| `what do you remember` | List saved preferences |
+| `search memory <query>` | Search personality memory |
+| `forget <text>` | Delete a single preference |
+| `clear memory` | Delete all preferences (approval required) |
+
+Memory is **explicit only** — JARVIS never saves anything silently or infers preferences
+from ordinary chat. Secrets, passwords, API keys, tokens, cookies, and browser data are
+**never** stored: any value that looks like a credential is rejected. Manage everything
+visually on the **Settings** and **Memory** pages. `safety_mode` is always on and cannot
+be disabled.
 
 ## What is NOT included (current alpha)
 
 The following are **not** in the current release. Some are planned for later phases with explicit user confirmation and safety controls; others are permanently excluded.
 
 **Planned later (with explicit user permission and safety controls):**
-- Push-to-talk voice input (Phase 7 — approval-gated, no always-listening)
-- Screen intelligence / OCR — on user request only (Phase 7)
-- Browser automation with approval gate (Phase 8)
-- Controlled computer-use actions with preview + confirmation (Phase 9)
+- Screen intelligence / OCR — on user request only
+- Browser automation with approval gate
+- Push-to-talk voice input — approval-gated, no always-listening
+- Controlled computer-use actions with preview + confirmation
 
 **Permanently excluded:**
 - Always-listening / wake word (no microphone open in the background, ever)
@@ -544,6 +569,8 @@ SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 | 4 | Local browser dashboard (8 pages, dark UI, Jinja2 + vanilla JS) | ✅ Done |
 | 5 | Action approval system (pending / confirm / cancel, Actions UI) | ✅ Done |
 | 6 | Safe Windows actions expansion (URL opener, folders, notes, disk, network, battery) | ✅ Done |
-| 7 | Screen intelligence (OCR, on-request only — explicit user permission required) | Planned |
-| 8 | Browser automation (approval-gated, no autonomous browsing) | Planned |
-| 9 | Smart home, health tracking, optional trading alerts | Planned |
+| 7 | Professional UI/UX polish (sidebar layout, design system, metric cards) | ✅ Done |
+| 8 | Persistent settings & personality memory (local, explicit-only, no secrets) | ✅ Done |
+| 9 | Screen intelligence (OCR, on-request only — explicit user permission required) | Planned |
+| 10 | Browser automation (approval-gated, no autonomous browsing) | Planned |
+| 11 | Smart home, health tracking, optional trading alerts | Planned |

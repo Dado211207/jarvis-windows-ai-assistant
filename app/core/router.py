@@ -92,6 +92,84 @@ ROUTES: List[Route] = [
         "create_note",
         lambda m: {"content": m.group(1).strip()},
     ),
+    # ------------------------------------------------------------------
+    # Phase 8: Persistent settings
+    # ------------------------------------------------------------------
+    Route(r"^(?:show\s+)?settings$", "show_settings"),
+    Route(
+        r"^set\s+assistant\s+name\s+to\s+(.+)$",
+        "update_setting",
+        lambda m: {"key": "assistant_name", "value": m.group(1).strip()},
+    ),
+    Route(
+        r"^set\s+(?:my\s+)?name\s+to\s+(.+)$",
+        "update_setting",
+        lambda m: {"key": "user_display_name", "value": m.group(1).strip()},
+    ),
+    Route(
+        r"^set\s+language\s+to\s+(.+)$",
+        "update_setting",
+        lambda m: {"key": "preferred_language", "value": m.group(1).strip()},
+    ),
+    Route(
+        r"^set\s+(?:my\s+)?response\s+style\s+to\s+(.+)$",
+        "update_setting",
+        lambda m: {"key": "preferred_response_style", "value": m.group(1).strip()},
+    ),
+    Route(
+        r"^set\s+(?:my\s+)?tone\s+to\s+(.+)$",
+        "update_setting",
+        lambda m: {"key": "preferred_tone", "value": m.group(1).strip()},
+    ),
+    Route(
+        r"^set\s+theme\s+to\s+(.+)$",
+        "update_setting",
+        lambda m: {"key": "theme_mode", "value": m.group(1).strip()},
+    ),
+    # ------------------------------------------------------------------
+    # Phase 8: Personality / preferences memory
+    # ------------------------------------------------------------------
+    Route(
+        r"^remember\s+that\s+(.+)$",
+        "remember_preference",
+        lambda m: {"text": m.group(1).strip()},
+    ),
+    Route(
+        r"^save\s+(?:my\s+)?preference\s+(?:that\s+|to\s+)?(.+)$",
+        "remember_preference",
+        lambda m: {"text": m.group(1).strip()},
+    ),
+    Route(
+        r"^set\s+(?:my\s+)?preference\s+(?:that\s+|to\s+)?(.+)$",
+        "remember_preference",
+        lambda m: {"text": m.group(1).strip()},
+    ),
+    Route(
+        r"^remember\s+(.+)$",
+        "remember_preference",
+        lambda m: {"text": m.group(1).strip()},
+    ),
+    Route(r"^what\s+do\s+you\s+remember.*$", "list_preferences"),
+    Route(r"^show\s+memory$", "list_preferences"),
+    Route(r"^(?:show|list)\s+preferences$", "list_preferences"),
+    Route(
+        r"^search\s+memory\s+(.+)$",
+        "search_preferences",
+        lambda m: {"query": m.group(1).strip()},
+    ),
+    Route(
+        r"^search\s+preferences?\s+(.+)$",
+        "search_preferences",
+        lambda m: {"query": m.group(1).strip()},
+    ),
+    Route(
+        r"^forget\s+(.+)$",
+        "forget_preference",
+        lambda m: {"text": m.group(1).strip()},
+    ),
+    # clear memory is destructive → APPROVAL_REQUIRED (intercepted in _dispatch)
+    Route(r"^clear\s+(?:my\s+)?memory$", "clear_preferences"),
+    Route(r"^clear\s+(?:all\s+)?preferences$", "clear_preferences"),
 ]
 
 # Human-readable metadata for APPROVAL_REQUIRED tools.
@@ -104,6 +182,14 @@ _PENDING_ACTION_META: Dict[str, Dict[str, str]] = {
             "This action cannot be undone."
         ),
         "risk_level": "medium",
+    },
+    "clear_preferences": {
+        "action_name": "Clear All Personality Memory",
+        "description": (
+            "Permanently deletes every saved preference and personality memory entry "
+            "from the local JARVIS database. This action cannot be undone."
+        ),
+        "risk_level": "high",
     },
 }
 

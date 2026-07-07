@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block topbar_title %}Settings{% endblock %}
+{% block content %}
+<div id="settings-root">
+
+  <div class="page-header">
+    <h1 class="page-title">Settings</h1>
+    <p class="page-subtitle">
+      Local, persistent preferences &mdash; stored in your JARVIS SQLite database and
+      remembered across restarts. Secrets and API keys are never stored here.
+    </p>
+  </div>
+
+  <form id="settings-form" autocomplete="off">
+
+    <div class="section">
+      <div class="section-title">Profile</div>
+      <div class="card settings-grid">
+        <label class="settings-field">
+          <span class="settings-label">Your name</span>
+          <input class="input" type="text" id="set-user_display_name" maxlength="200"
+                 placeholder="e.g. Dragan" aria-label="Your name">
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Assistant name</span>
+          <input class="input" type="text" id="set-assistant_name" maxlength="200"
+                 placeholder="JARVIS" aria-label="Assistant name">
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Preferred language</span>
+          <input class="input" type="text" id="set-preferred_language" maxlength="200"
+                 placeholder="English" aria-label="Preferred language">
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Response style</span>
+          <select class="input" id="set-preferred_response_style" aria-label="Response style">
+            <option value="short">short</option>
+            <option value="balanced">balanced</option>
+            <option value="detailed">detailed</option>
+          </select>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Tone</span>
+          <select class="input" id="set-preferred_tone" aria-label="Tone">
+            <option value="friendly">friendly</option>
+            <option value="formal">formal</option>
+            <option value="casual">casual</option>
+            <option value="neutral">neutral</option>
+            <option value="direct">direct</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Interface</div>
+      <div class="card settings-grid">
+        <label class="settings-field">
+          <span class="settings-label">Theme</span>
+          <select class="input" id="set-theme_mode" aria-label="Theme">
+            <option value="dark">dark</option>
+            <option value="light">light</option>
+            <option value="auto">auto</option>
+          </select>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Compact mode</span>
+          <select class="input" id="set-compact_mode" aria-label="Compact mode">
+            <option value="false">off</option>
+            <option value="true">on</option>
+          </select>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Default page</span>
+          <select class="input" id="set-dashboard_default_page" aria-label="Default page">
+            <option value="dashboard">Dashboard</option>
+            <option value="chat">Chat</option>
+            <option value="actions">Actions</option>
+            <option value="voice">Voice</option>
+            <option value="logs">Logs</option>
+            <option value="memory">Memory</option>
+            <option value="settings">Settings</option>
+            <option value="help">Help</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Voice / TTS</div>
+      <div class="card settings-grid">
+        <label class="settings-field">
+          <span class="settings-label">TTS enabled</span>
+          <select class="input" id="set-tts_enabled" aria-label="TTS enabled">
+            <option value="false">off</option>
+            <option value="true">on</option>
+          </select>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">TTS rate (50&ndash;400)</span>
+          <input class="input" type="number" id="set-tts_rate" min="50" max="400"
+                 aria-label="TTS rate">
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">TTS volume (0.0&ndash;1.0)</span>
+          <input class="input" type="number" id="set-tts_volume" min="0" max="1" step="0.1"
+                 aria-label="TTS volume">
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">TTS voice</span>
+          <input class="input" type="text" id="set-tts_voice" maxlength="200"
+                 placeholder="(system default)" aria-label="TTS voice">
+        </label>
+      </div>
+      <p class="text-xs text-muted mt-2">
+        These preferences persist across restarts. TTS remains output-only &mdash; no
+        microphone, speech-to-text, or wake word is included.
+      </p>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Commands</div>
+      <div class="card settings-grid">
+        <label class="settings-field settings-field-wide">
+          <span class="settings-label">Pinned commands (comma-separated)</span>
+          <input class="input" type="text" id="set-pinned_commands" maxlength="200"
+                 placeholder="status, disk space, what do you remember"
+                 aria-label="Pinned commands">
+        </label>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button type="submit" id="settings-save" class="btn btn-primary">Save settings</button>
+      <button type="button" id="settings-reload" class="btn btn-ghost">Reload</button>
+      <span id="settings-status" class="settings-status"></span>
+    </div>
+  </form>
+
+  <div class="section mt-4">
+    <div class="section-title">Safety</div>
+    <div class="card">
+      <div class="status-row">
+        <span class="status-row-label">Safety mode</span>
+        <span id="settings-safety-mode" class="badge badge-ok">on</span>
+      </div>
+      <p class="text-xs text-muted mt-2">
+        Safety mode is always on and cannot be disabled from settings. No setting can
+        enable blocked actions, loosen the approval system, or expose secrets. Your
+        Anthropic API key lives only in <code>.env</code> and is never shown here.
+      </p>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
