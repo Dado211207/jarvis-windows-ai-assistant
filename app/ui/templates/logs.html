@@ -1,18 +1,23 @@
 {% extends "base.html" %}
 {% block title %}Logs{% endblock %}
+{% block topbar_title %}Activity Logs{% endblock %}
 {% block content %}
 <div id="logs-root">
 
   <div class="page-header">
-    <h1 class="page-title">Activity Logs</h1>
-    <p class="page-subtitle">Recent command and tool execution history.</p>
+    <div class="flex items-center justify-between" style="flex-wrap:wrap;gap:0.5rem;">
+      <div>
+        <h1 class="page-title">Activity Logs</h1>
+        <p class="page-subtitle">Recent command and tool execution history.</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-muted">Last 50 entries</span>
+        <button id="logs-refresh" class="btn btn-ghost btn-sm" type="button">Refresh</button>
+      </div>
+    </div>
   </div>
 
   <div class="card">
-    <div class="flex items-center gap-3 mb-3">
-      <span class="text-sm text-muted">Last 50 entries</span>
-      <button id="logs-refresh" class="btn btn-ghost btn-sm" type="button">Refresh</button>
-    </div>
     <div class="table-wrap">
       <table class="table">
         <thead>

@@ -31,6 +31,34 @@ function setBadge(id, text, type) {
   el.className = `badge badge-${type}`;
 }
 
+// ── Topbar status indicators ──────────────────────────────────────────────────
+
+function setTopbarHealth(healthy) {
+  const dot   = $("topbar-health-dot");
+  const label = $("topbar-health-label");
+  if (!dot || !label) return;
+  if (healthy) {
+    dot.className   = "status-dot status-dot-ok";
+    label.textContent = "healthy";
+  } else {
+    dot.className   = "status-dot status-dot-err";
+    label.textContent = "degraded";
+  }
+}
+
+function setTopbarBrain(configured) {
+  const dot   = $("topbar-brain-dot");
+  const label = $("topbar-brain-label");
+  if (!dot || !label) return;
+  if (configured) {
+    dot.className   = "status-dot status-dot-ok";
+    label.textContent = "Claude AI";
+  } else {
+    dot.className   = "status-dot status-dot-warn";
+    label.textContent = "local mode";
+  }
+}
+
 // ── Dashboard ────────────────────────────────────────────────────────────────
 
 function setStatus(id, text, cssClass) {
@@ -38,6 +66,16 @@ function setStatus(id, text, cssClass) {
   if (!el) return;
   el.textContent = text;
   el.className = `text-sm ${cssClass}`;
+}
+
+function setProgressBar(barId, pct) {
+  const bar = $(barId);
+  if (!bar) return;
+  const capped = Math.min(100, Math.max(0, pct || 0));
+  bar.style.width = capped + "%";
+  if (capped >= 90)      bar.className = "progress-fill progress-fill-err";
+  else if (capped >= 70) bar.className = "progress-fill progress-fill-warn";
+  else                   bar.className = "progress-fill";
 }
 
 async function loadDashboard() {
@@ -48,7 +86,7 @@ async function loadDashboard() {
   ];
   loadingIds.forEach(id => {
     const el = $(id);
-    if (el) { el.textContent = "Loading…"; el.className = "text-sm loading"; }
+    if (el) { el.textContent = "…"; el.className = "metric-card-value loading"; }
   });
 
   try {
@@ -60,6 +98,8 @@ async function loadDashboard() {
 
     if (health.status === "fulfilled") {
       const h = health.value;
+      setTopbarHealth(h.healthy);
+      setTopbarBrain(h.brain_configured);
       setStatus("dash-health", h.healthy ? "OK" : "Degraded",
                 h.healthy ? "text-ok" : "text-err");
       setStatus("dash-db", h.db_accessible ? "Connected" : "Error",
@@ -70,6 +110,7 @@ async function loadDashboard() {
     } else {
       ["dash-health", "dash-db", "dash-brain"].forEach(
         id => setStatus(id, "Error", "text-err"));
+      setTopbarHealth(false);
     }
 
     if (voice.status === "fulfilled") {
@@ -77,18 +118,22 @@ async function loadDashboard() {
       setStatus("dash-tts", v.tts_enabled ? "Enabled" : "Disabled",
                 v.tts_enabled ? "text-ok" : "text-muted");
       const eng = $("dash-tts-engine");
-      if (eng) eng.textContent = v.tts_engine || "";
+      if (eng) { eng.textContent = v.tts_engine || ""; eng.className = "metric-card-sub"; }
     } else {
       setStatus("dash-tts", "Unknown", "text-warn");
     }
 
     if (sys.status === "fulfilled") {
       const s = sys.value;
-      setText("dash-cpu",    s.cpu_percent    != null ? `${s.cpu_percent}%`    : "—");
-      setText("dash-ram",    s.ram_percent    != null ? `${s.ram_percent}%`    : "—");
+      const cpu = s.cpu_percent != null ? s.cpu_percent : null;
+      const ram = s.ram_percent != null ? s.ram_percent : null;
+      setText("dash-cpu",    cpu    != null ? `${cpu}%`    : "—");
+      setText("dash-ram",    ram    != null ? `${ram}%`    : "—");
       setText("dash-uptime", s.uptime         || "—");
-      setText("dash-tools",  s.tools_registered != null ? `${s.tools_registered} registered` : "—");
+      setText("dash-tools",  s.tools_registered != null ? `${s.tools_registered}` : "—");
       setText("dash-phase",  s.phase          || "—");
+      setProgressBar("dash-cpu-bar", cpu);
+      setProgressBar("dash-ram-bar", ram);
     } else {
       ["dash-cpu", "dash-ram", "dash-uptime", "dash-tools", "dash-phase"].forEach(
         id => setText(id, "—"));
@@ -251,21 +296,42 @@ function initChat() {
   if (input) input.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
+
+  // Suggestion chip clicks
+  const suggestions = document.querySelectorAll(".chat-suggestion");
+  suggestions.forEach(chip => {
+    chip.addEventListener("click", () => {
+      if (input) {
+        input.value = chip.textContent;
+        input.focus();
+      }
+    });
+  });
 }
 
 // ── Logs ─────────────────────────────────────────────────────────────────────
+
+const LOG_STATUS_BADGE = {
+  success: "badge-ok",
+  ok:      "badge-ok",
+  error:   "badge-err",
+  failure: "badge-err",
+  blocked: "badge-err",
+  pending: "badge-warn",
+  warning: "badge-warn",
+};
 
 async function loadLogs() {
   const tbody = $("logs-tbody");
   if (!tbody) return;
 
+  tbody.textContent = "";
   const loading = document.createElement("tr");
   const lc = document.createElement("td");
   lc.colSpan = 4;
   lc.className = "empty";
   lc.textContent = "Loading…";
   loading.appendChild(lc);
-  tbody.textContent = "";
   tbody.appendChild(loading);
 
   try {
@@ -287,19 +353,32 @@ async function loadLogs() {
     entries.forEach(entry => {
       const row = document.createElement("tr");
 
-      const cells = [
-        entry.created_at || "—",
-        entry.command    || "—",
-        entry.tool_name  || "—",
-        entry.status     || "—",
-      ];
+      const tdTime = document.createElement("td");
+      tdTime.style.whiteSpace = "nowrap";
+      tdTime.textContent = entry.created_at || "—";
 
-      cells.forEach(val => {
-        const td = document.createElement("td");
-        td.textContent = val;
-        row.appendChild(td);
-      });
+      const tdCmd = document.createElement("td");
+      tdCmd.textContent = entry.command || "—";
 
+      const tdTool = document.createElement("td");
+      tdTool.className = "font-mono text-xs";
+      tdTool.textContent = entry.tool_name || "—";
+
+      const tdStatus = document.createElement("td");
+      const rawStatus = (entry.status || "").toLowerCase();
+      if (rawStatus) {
+        const badge = document.createElement("span");
+        badge.className = "badge " + (LOG_STATUS_BADGE[rawStatus] || "badge-muted");
+        badge.textContent = entry.status;
+        tdStatus.appendChild(badge);
+      } else {
+        tdStatus.textContent = "—";
+      }
+
+      row.appendChild(tdTime);
+      row.appendChild(tdCmd);
+      row.appendChild(tdTool);
+      row.appendChild(tdStatus);
       tbody.appendChild(row);
     });
   } catch (e) {
@@ -328,9 +407,7 @@ async function loadMemory(query) {
 
   list.textContent = "";
   const loading = document.createElement("p");
-  loading.className = "text-sm text-muted";
-  loading.style.textAlign = "center";
-  loading.style.padding = "1.5rem 0";
+  loading.className = "empty";
   loading.textContent = "Loading…";
   list.appendChild(loading);
 
@@ -342,9 +419,7 @@ async function loadMemory(query) {
     list.textContent = "";
     if (!items.length) {
       const empty = document.createElement("p");
-      empty.className = "text-sm text-muted";
-      empty.style.textAlign = "center";
-      empty.style.padding = "1.5rem 0";
+      empty.className = "empty";
       empty.textContent = query ? "No memories match that query." : "No memories saved yet.";
       list.appendChild(empty);
       return;
@@ -369,9 +444,7 @@ async function loadMemory(query) {
   } catch (e) {
     list.textContent = "";
     const err = document.createElement("p");
-    err.className = "text-sm text-muted";
-    err.style.textAlign = "center";
-    err.style.padding = "1.5rem 0";
+    err.className = "empty";
     err.textContent = `Error loading memory: ${e.message}`;
     list.appendChild(err);
   }
@@ -398,31 +471,36 @@ function initMemory() {
 
 async function refreshVoiceStatus() {
   const fields = ["tts-avail", "tts-enabled-val", "tts-engine-val"];
-  fields.forEach(id => { const el = $(id); if (el) { el.textContent = "…"; el.className = "text-sm"; } });
+  fields.forEach(id => {
+    const el = $(id);
+    if (el) { el.textContent = "…"; el.className = "status-row-value"; }
+  });
 
   try {
     const v = await API.get("/voice/status");
 
-    const avail = $(  "tts-avail");
+    const avail   = $("tts-avail");
     const enabled = $("tts-enabled-val");
     const engine  = $("tts-engine-val");
 
     if (avail) {
-      avail.textContent = v.available ? "Yes" : "No";
-      avail.className   = `text-sm ${v.available ? "text-ok" : "text-err"}`;
+      const isAvail = v.tts_available || v.available || false;
+      avail.textContent = isAvail ? "Yes" : "No";
+      avail.className   = `status-row-value ${isAvail ? "text-ok" : "text-err"}`;
     }
     if (enabled) {
-      enabled.textContent = v.enabled ? "Enabled" : "Disabled";
-      enabled.className   = `text-sm ${v.enabled ? "text-ok" : "text-muted"}`;
+      const isEnabled = v.tts_enabled || v.enabled || false;
+      enabled.textContent = isEnabled ? "Enabled" : "Disabled";
+      enabled.className   = `status-row-value ${isEnabled ? "text-ok" : "text-muted"}`;
     }
     if (engine) {
-      engine.textContent = v.engine || "—";
-      engine.className   = "text-sm";
+      engine.textContent = v.tts_engine || v.engine || "—";
+      engine.className   = "status-row-value font-mono";
     }
   } catch (e) {
     fields.forEach(id => {
       const el = $(id);
-      if (el) { el.textContent = "Error"; el.className = "text-sm text-err"; }
+      if (el) { el.textContent = "Error"; el.className = "status-row-value text-err"; }
     });
   }
 }
@@ -595,7 +673,6 @@ function initActions() {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Detect current page from URL and initialise its logic
   const path = window.location.pathname.replace(/\/+$/, "");
 
   if (path === "/ui" || path === "/ui/dashboard" || path === "") {

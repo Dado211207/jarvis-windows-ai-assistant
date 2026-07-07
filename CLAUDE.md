@@ -124,6 +124,23 @@ how Claude Code sessions should work on this codebase.
 - **All Phase 6 tools are SAFE permission level.** None require approval or are blocked.
   No Phase 6 tool deletes files, modifies settings, or sends data externally.
 
+## Phase 7 dashboard rules (non-negotiable)
+
+- **Sidebar layout only.** The dashboard uses a fixed 240 px sidebar replacing the
+  old top-nav bar. Do not revert to top-nav or add a second navigation structure.
+- **CSS design system via custom properties.** All colours, radii, and shadows are
+  defined as `--var` tokens in `:root`. Do not hardcode colour values elsewhere.
+- **No external fonts or CDN resources.** The CSS `style.css` must not contain any
+  `https://` or `http://` URL. All assets are served from `/ui/static/`.
+- **textContent only — still enforced.** All dynamic text injected via JS must use
+  `textContent`. The `innerHTML` property is permanently forbidden.
+- **Topbar status indicators are read-only.** The topbar health/brain dots are updated
+  from `GET /health` data only. They do not expose config values or API keys.
+- **Progress bars are cosmetic only.** CPU/RAM bars display live `GET /system` data.
+  They do not control anything.
+- **Chat suggestions are client-side only.** Suggestion chips populate the input field
+  only; they do not auto-submit or bypass the normal send flow.
+
 ## Phase guide
 
 | Phase | Status      | Scope |
@@ -134,9 +151,10 @@ how Claude Code sessions should work on this codebase.
 | 4     | ✅ Done      | Local browser dashboard: FastAPI + Jinja2 + vanilla JS |
 | 5     | ✅ Done      | Action approval system: pending actions, confirm/cancel, Actions UI |
 | 6     | ✅ Done      | Safe Windows actions: URL opener, folders, notes, disk, network, battery |
-| 7     | Planned     | Screen intelligence / OCR (on-request only, explicit user permission) |
-| 8     | Planned     | Browser automation (approval-gated, no autonomous browsing) |
-| 9     | Planned     | Smart home, health, trading integrations |
+| 7     | ✅ Done      | Professional UI/UX polish: sidebar layout, design system, metric cards |
+| 8     | Planned     | Screen intelligence / OCR (on-request only, explicit user permission) |
+| 9     | Planned     | Browser automation (approval-gated, no autonomous browsing) |
+| 10    | Planned     | Smart home, health, trading integrations |
 
 ## Do NOT implement in this repo (ever, without explicit separate design review)
 

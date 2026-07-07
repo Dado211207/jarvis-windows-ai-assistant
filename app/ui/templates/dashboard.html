@@ -1,67 +1,81 @@
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
+{% block topbar_title %}Dashboard{% endblock %}
 {% block content %}
 <div id="dashboard-root">
 
   <div class="page-header">
-    <h1 class="page-title">Dashboard</h1>
-    <p class="page-subtitle">System overview &mdash; JARVIS Local AI Assistant</p>
+    <h1 class="page-title">Control Center</h1>
+    <p class="page-subtitle">Live system overview &mdash; JARVIS Local AI Assistant</p>
   </div>
 
-  <div class="grid grid-4 mb-4">
-    <div class="card">
-      <div class="card-title">Health</div>
-      <div id="dash-health" class="text-sm loading mt-1">Loading&hellip;</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Database</div>
-      <div id="dash-db" class="text-sm loading mt-1">Loading&hellip;</div>
-    </div>
-    <div class="card">
-      <div class="card-title">AI Brain</div>
-      <div id="dash-brain" class="text-sm loading mt-1">Loading&hellip;</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Tools</div>
-      <div id="dash-tools" class="text-sm loading mt-1">Loading&hellip;</div>
-    </div>
-  </div>
-
-  <div class="grid grid-4 mb-4">
-    <div class="card">
-      <div class="card-title">CPU</div>
-      <div id="dash-cpu" class="text-sm loading mt-1">Loading&hellip;</div>
-    </div>
-    <div class="card">
-      <div class="card-title">RAM</div>
-      <div id="dash-ram" class="text-sm loading mt-1">Loading&hellip;</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Uptime</div>
-      <div id="dash-uptime" class="text-sm loading mt-1">Loading&hellip;</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Voice / TTS</div>
-      <div id="dash-tts" class="text-sm loading mt-1">Loading&hellip;</div>
-      <div id="dash-tts-engine" class="text-xs text-muted mt-1"></div>
+  <div class="section">
+    <div class="section-title">System Health</div>
+    <div class="grid grid-4 mb-4">
+      <div class="metric-card card-glass">
+        <div class="metric-card-label">Health</div>
+        <div id="dash-health" class="metric-card-value loading">&#8230;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">Database</div>
+        <div id="dash-db" class="metric-card-value loading">&#8230;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">AI Brain</div>
+        <div id="dash-brain" class="metric-card-value loading">&#8230;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">Tools</div>
+        <div id="dash-tools" class="metric-card-value loading">&#8230;</div>
+      </div>
     </div>
   </div>
 
-  <div class="grid grid-2 mb-4">
-    <div class="card">
-      <div class="card-title">Version</div>
-      <div id="dash-version" class="text-sm mono loading mt-1">Loading&hellip;</div>
+  <div class="section">
+    <div class="section-title">Performance</div>
+    <div class="grid grid-4 mb-4">
+      <div class="metric-card">
+        <div class="metric-card-label">CPU</div>
+        <div id="dash-cpu" class="metric-card-value loading">&#8230;</div>
+        <div class="progress-bar"><div id="dash-cpu-bar" class="progress-fill" style="width:0%"></div></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">RAM</div>
+        <div id="dash-ram" class="metric-card-value loading">&#8230;</div>
+        <div class="progress-bar"><div id="dash-ram-bar" class="progress-fill" style="width:0%"></div></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">Uptime</div>
+        <div id="dash-uptime" class="metric-card-value loading">&#8230;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">Voice / TTS</div>
+        <div id="dash-tts" class="metric-card-value loading">&#8230;</div>
+        <div id="dash-tts-engine" class="metric-card-sub"></div>
+      </div>
     </div>
-    <div class="card">
-      <div class="card-title">Phase</div>
-      <div id="dash-phase" class="text-sm loading mt-1">Loading&hellip;</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Build</div>
+    <div class="grid grid-2 mb-4">
+      <div class="metric-card">
+        <div class="metric-card-label">Version</div>
+        <div id="dash-version" class="metric-card-value font-mono loading">&#8230;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">Phase</div>
+        <div id="dash-phase" class="metric-card-value loading">&#8230;</div>
+      </div>
     </div>
   </div>
 
   <div class="notice">
-    <div class="local-pill mb-2">&#x25CF; Running locally on 127.0.0.1</div>
-    <div class="text-sm" style="color: var(--text-muted);">
-      JARVIS only runs locally. Your API key, memories, and conversation history never leave this machine.
+    <div class="local-badge mb-2" style="margin: 0 auto 0.5rem;">
+      <span class="local-badge-dot"></span>Running on 127.0.0.1 only
+    </div>
+    <div class="text-sm text-muted">
+      JARVIS runs locally. Your API key, memories, and conversations never leave this machine.
     </div>
   </div>
 

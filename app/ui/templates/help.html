@@ -1,47 +1,46 @@
 {% extends "base.html" %}
 {% block title %}Help{% endblock %}
+{% block topbar_title %}Help &amp; Setup{% endblock %}
 {% block content %}
 <div id="help-root">
 
   <div class="page-header">
     <h1 class="page-title">Help &amp; Setup</h1>
-    <p class="page-subtitle">Getting started with JARVIS.</p>
+    <p class="page-subtitle">Getting started with JARVIS and a full command reference.</p>
   </div>
 
   <div class="section">
-    <h2 class="section-title">Quick Start</h2>
+    <div class="section-title">Quick Start</div>
     <div class="card">
       <ol class="text-sm" style="padding-left: 1.25rem; color: var(--text-muted); line-height: 2.2;">
-        <li>Start JARVIS API: run <code class="mono">START_JARVIS_API.bat</code> or <code class="mono">python -m app.api.server</code></li>
+        <li>Start JARVIS API: run <code>START_JARVIS_API.bat</code> or <code>python -m app.api.server</code></li>
         <li>Open this dashboard: <a href="/ui/">http://127.0.0.1:5555/ui/</a></li>
         <li>Use the <a href="/ui/chat">Chat</a> page to send commands and questions</li>
-        <li>(Optional) Add your Anthropic API key to <code class="mono">.env</code> for AI responses</li>
+        <li>(Optional) Add your Anthropic API key to <code>.env</code> for Claude AI responses</li>
         <li>(Optional) Enable TTS on the <a href="/ui/voice">Voice</a> page</li>
       </ol>
     </div>
   </div>
 
   <div class="section">
-    <h2 class="section-title">Adding Your API Key (Optional)</h2>
+    <div class="section-title">API Key Setup (Optional)</div>
     <div class="card text-sm" style="line-height: 1.8; color: var(--text-muted);">
-      <p>JARVIS works without an API key. All deterministic commands work locally. To enable Claude AI responses:</p>
+      <p>JARVIS works without an API key &mdash; all deterministic commands are local. To enable Claude AI natural-language responses:</p>
       <ol style="margin: 0.75rem 0 0 1.25rem; line-height: 2.2;">
-        <li>Copy <code class="mono">.env.example</code> to <code class="mono">.env</code></li>
-        <li>Open <code class="mono">.env</code> in a text editor</li>
-        <li>Add your key: <code class="mono">ANTHROPIC_API_KEY=your-key-here</code></li>
+        <li>Copy <code>.env.example</code> to <code>.env</code></li>
+        <li>Open <code>.env</code> in a text editor</li>
+        <li>Add: <code>ANTHROPIC_API_KEY=your-key-here</code></li>
         <li>Restart JARVIS</li>
       </ol>
-      <p class="mt-2">
-        Your API key is stored only in <code class="mono">.env</code> on your machine.
+      <p class="mt-3">
+        Your API key is stored only in <code>.env</code> on your machine.
         It is never sent to this browser, never committed to git, and never included in builds.
       </p>
     </div>
   </div>
 
   <div class="section">
-    <h2 class="section-title">Commands</h2>
-
-    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">General</h3>
+    <div class="section-title">Commands — General</div>
     <div class="card">
       <ul class="cmd-list">
         <li><span class="cmd-name">help</span><span class="cmd-desc">List all available tools</span></li>
@@ -49,30 +48,36 @@
         <li><span class="cmd-name">exit</span><span class="cmd-desc">Exit JARVIS CLI</span></li>
       </ul>
     </div>
+  </div>
 
-    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">System Info</h3>
+  <div class="section">
+    <div class="section-title">Commands — System Info</div>
     <div class="card">
       <ul class="cmd-list">
         <li><span class="cmd-name">system status</span><span class="cmd-desc">CPU, RAM, disk, battery summary</span></li>
         <li><span class="cmd-name">disk space</span><span class="cmd-desc">Show disk usage (used / free / total)</span></li>
         <li><span class="cmd-name">network status</span><span class="cmd-desc">Show hostname and local IP (read-only, no scanning)</span></li>
-        <li><span class="cmd-name">battery status</span><span class="cmd-desc">Show battery / power status</span></li>
+        <li><span class="cmd-name">battery status</span><span class="cmd-desc">Show battery level and power status</span></li>
         <li><span class="cmd-name">screenshot</span><span class="cmd-desc">Capture screen to data/screenshots/</span></li>
       </ul>
     </div>
+  </div>
 
-    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Open Apps &amp; URLs</h3>
+  <div class="section">
+    <div class="section-title">Commands — Open Apps &amp; URLs</div>
     <div class="card">
       <ul class="cmd-list">
         <li><span class="cmd-name">open &lt;app&gt;</span><span class="cmd-desc">Launch an allowlisted app (notepad, calculator, chrome, vscode&hellip;)</span></li>
         <li><span class="cmd-name">open file explorer</span><span class="cmd-desc">Open Windows File Explorer</span></li>
         <li><span class="cmd-name">open settings</span><span class="cmd-desc">Open Windows Settings</span></li>
-        <li><span class="cmd-name">open website &lt;url&gt;</span><span class="cmd-desc">Open an http/https URL in your browser (file: and script: schemes blocked)</span></li>
+        <li><span class="cmd-name">open website &lt;url&gt;</span><span class="cmd-desc">Open an http/https URL in your default browser</span></li>
         <li><span class="cmd-name">open dashboard</span><span class="cmd-desc">Open the JARVIS local dashboard in the browser</span></li>
       </ul>
     </div>
+  </div>
 
-    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Open Folders</h3>
+  <div class="section">
+    <div class="section-title">Commands — Open Folders</div>
     <div class="card">
       <ul class="cmd-list">
         <li><span class="cmd-name">open downloads</span><span class="cmd-desc">Open your Downloads folder</span></li>
@@ -82,8 +87,10 @@
         <li><span class="cmd-name">open jarvis folder</span><span class="cmd-desc">Open the JARVIS project folder</span></li>
       </ul>
     </div>
+  </div>
 
-    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Notes &amp; Memory</h3>
+  <div class="section">
+    <div class="section-title">Commands — Notes &amp; Memory</div>
     <div class="card">
       <ul class="cmd-list">
         <li><span class="cmd-name">create note &lt;text&gt;</span><span class="cmd-desc">Save a timestamped note to ~/Documents/JARVIS_Notes/</span></li>
@@ -91,8 +98,10 @@
         <li><span class="cmd-name">memory search &lt;query&gt;</span><span class="cmd-desc">Search saved memories</span></li>
       </ul>
     </div>
+  </div>
 
-    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Voice (TTS)</h3>
+  <div class="section">
+    <div class="section-title">Commands — Voice (TTS)</div>
     <div class="card">
       <ul class="cmd-list">
         <li><span class="cmd-name">speak on</span><span class="cmd-desc">Enable TTS voice output (session only)</span></li>
@@ -102,45 +111,69 @@
         <li><span class="cmd-name">stop speaking</span><span class="cmd-desc">Stop current speech immediately</span></li>
       </ul>
     </div>
+  </div>
 
-    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Approval-Required</h3>
+  <div class="section">
+    <div class="section-title">Approval-Required Actions</div>
     <div class="card">
       <ul class="cmd-list">
-        <li><span class="cmd-name">clear logs</span><span class="cmd-desc">Delete all action log entries — requires confirmation on the Actions page</span></li>
+        <li><span class="cmd-name">clear logs</span><span class="cmd-desc">Delete all action log entries &mdash; requires confirmation on the Actions page</span></li>
       </ul>
+      <p class="text-xs text-muted mt-3">
+        Approval-required commands create a pending action. Use the <a href="/ui/actions">Actions page</a>
+        to confirm or cancel. Pending actions expire after 10 minutes.
+      </p>
     </div>
+  </div>
 
-    <h3 class="section-title" style="font-size: 0.85rem; margin: 1rem 0 0.4rem; color: var(--text-muted);">Permanently Blocked</h3>
-    <div class="card text-sm" style="color: var(--text-muted); line-height: 1.8;">
-      The following are blocked by the permission system and can never execute:
-      <ul style="margin: 0.5rem 0 0 1.25rem;">
+  <div class="section">
+    <div class="section-title">Permanently Blocked</div>
+    <div class="card">
+      <p class="text-sm text-muted mb-3">The following are blocked by the permission system and will never execute:</p>
+      <ul class="text-sm" style="padding-left: 1.25rem; color: var(--text-muted); line-height: 2.1;">
         <li>Arbitrary shell / CMD / PowerShell commands</li>
-        <li>Arbitrary executable paths</li>
+        <li>Arbitrary executable paths (apps not in the allowlist)</li>
         <li>File deletion or mass file operations</li>
-        <li>Registry edits</li>
-        <li>Dangerous URL schemes (file:, javascript:, data:, powershell:)</li>
-        <li>Apps not in the allowlist</li>
+        <li>Windows Registry edits</li>
+        <li>Dangerous URL schemes (<code>file:</code>, <code>javascript:</code>, <code>data:</code>, <code>powershell:</code>)</li>
         <li>Folders not in the allowlist</li>
-        <li>Password / credential extraction</li>
-        <li>Keylogging or screen surveillance</li>
+        <li>Password or credential extraction</li>
+        <li>Keylogging, clipboard snooping, or screen surveillance</li>
+        <li>Network scanning or port scanning</li>
       </ul>
     </div>
   </div>
 
   <div class="section">
-    <h2 class="section-title">API &amp; Docs</h2>
+    <div class="section-title">Planned (Not Yet Implemented)</div>
+    <div class="card text-sm" style="color: var(--text-muted); line-height: 1.8;">
+      The following features are planned for future phases and are <em>not present in this build</em>:
+      <ul style="margin: 0.5rem 0 0 1.25rem; line-height: 2.2;">
+        <li>Microphone input / speech-to-text (planned Phase 8+)</li>
+        <li>Wake word detection (planned Phase 8+)</li>
+        <li>OCR / screen reading (planned Phase 8)</li>
+        <li>Browser automation (approval-gated, planned Phase 9)</li>
+        <li>Smart home and health integrations (Phase 9)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">API &amp; Developer Docs</div>
     <div class="card text-sm" style="color: var(--text-muted);">
-      <p class="mb-2">The local API runs on <code class="mono">http://127.0.0.1:5555</code> and is never exposed to the network.</p>
+      <p class="mb-2">The local API runs on <code>http://127.0.0.1:5555</code> and is never accessible from other devices on your network.</p>
       <p><a href="/docs" target="_blank" rel="noopener noreferrer">Open Swagger API Docs &#8599;</a></p>
     </div>
   </div>
 
   <div class="notice">
-    <div class="local-pill mb-2">&#x25CF; Local-only</div>
-    <div class="text-sm" style="color: var(--text-muted);">
-      JARVIS binds exclusively to <code class="mono">127.0.0.1</code>. It is not accessible from
-      other devices on your network. Your API key, memories, and conversation history never leave your machine.
-      Arbitrary command execution and password extraction are permanently blocked by the permission system.
+    <div class="local-badge mb-3" style="margin: 0 auto 0.6rem;">
+      <span class="local-badge-dot"></span>Local-only
+    </div>
+    <div class="text-sm text-muted">
+      JARVIS binds exclusively to <code>127.0.0.1</code>. It is not accessible from other devices on your network.
+      Your API key, memories, and conversation history never leave your machine.
+      Arbitrary command execution and credential extraction are permanently blocked by the permission system.
     </div>
   </div>
 
