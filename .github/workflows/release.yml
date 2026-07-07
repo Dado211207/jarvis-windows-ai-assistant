@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version tag (e.g. v0.1.0)"
+        description: "Release version tag (e.g. v0.1.6-alpha)"
         required: true
         type: string
 
@@ -75,87 +75,87 @@ jobs:
           Compress-Archive -Path dist\JARVIS -DestinationPath "JARVIS-Windows-$version.zip"
 
       - name: Write release notes
-        shell: pwsh
+        shell: bash
         run: |
-          $version = "${{ github.event.inputs.version }}"
-          $asset   = "JARVIS-Windows-$version.zip"
-          $notes = @"
-## JARVIS $version — Professional UI/UX Polish
+          cat > RELEASE_NOTES.md <<'NOTES'
+          ## JARVIS ${{ github.event.inputs.version }} — Professional UI/UX Polish
 
-This alpha release upgrades the local JARVIS browser dashboard into a more polished premium Windows AI assistant control center while preserving the existing local-only safety model.
+          This alpha release upgrades the local JARVIS browser dashboard into a more polished
+          premium Windows AI assistant control center while preserving the existing local-only
+          safety model.
 
-### Added
-- Premium sidebar app shell across all UI pages
-- Redesigned dark dashboard layout
-- Reusable CSS design system: color tokens, glass cards, metric cards, progress bars, status badges, suggestion chips, improved buttons/forms/tables
-- Topbar status indicators using local health data
-- Dashboard metric cards for system/JARVIS status
-- Chat command suggestion chips
-- Improved Chat empty state and layout
-- Improved Actions page approval messaging
-- Improved Voice page status layout
-- Voice safety notice explaining that microphone/STT/wake word are not included yet
-- Improved Logs page with readable status badges
-- Improved Memory page layout
-- Help page reorganized into grouped command sections
-- Planned-later section for future OCR, browser automation, and voice input
-- 51 new UI-focused tests
+          ### Added
+          - Premium sidebar app shell across all UI pages
+          - Redesigned dark dashboard layout
+          - Reusable CSS design system: color tokens, glass cards, metric cards, progress bars,
+            status badges, suggestion chips, improved buttons/forms/tables
+          - Topbar status indicators using local health data
+          - Dashboard metric cards for system/JARVIS status
+          - Chat command suggestion chips
+          - Improved Chat empty state and layout
+          - Improved Actions page approval messaging
+          - Improved Voice page status layout
+          - Voice safety notice: microphone/STT/wake word are not included yet
+          - Improved Logs page with readable status badges
+          - Improved Memory page layout
+          - Help page reorganized into grouped command sections
+          - Planned-later section for future OCR, browser automation, and voice input
+          - 51 new UI-focused tests
 
-### Changed
-- Replaced the older top navigation with a professional sidebar layout
-- Improved readability, spacing, contrast, and page hierarchy
-- Updated app metadata to ``0.1.6-alpha``
+          ### Changed
+          - Replaced the older top navigation with a professional sidebar layout
+          - Improved readability, spacing, contrast, and page hierarchy
+          - Updated app metadata to 0.1.6-alpha
 
-### Safety
-- No new backend capabilities added
-- No new tools registered — tool count remains 22
-- Approval system and permission system remain intact
-- No arbitrary command execution, shell=True, os.system, CMD, or PowerShell passthrough
-- No browser automation, OCR, microphone, STT, or wake word
-- No external scripts, CDN, or external fonts
-- No analytics or tracking
-- FastAPI remains bound to ``127.0.0.1``; CORS remains local-only
-- No unsafe ``innerHTML`` rendering
+          ### Safety
+          - No new backend capabilities added
+          - No new tools registered — tool count remains 22
+          - Approval system and permission system remain intact
+          - No arbitrary command execution, shell=True, os.system, CMD, or PowerShell passthrough
+          - No browser automation, OCR, microphone, STT, or wake word
+          - No external scripts, CDN, or external fonts
+          - No analytics or tracking
+          - FastAPI remains bound to 127.0.0.1; CORS remains local-only
+          - No unsafe innerHTML rendering
 
-### Included from previous alpha releases
-- Core FastAPI foundation (Phase 1)
-- Claude brain integration (Phase 2)
-- Optional local TTS voice output (Phase 3)
-- Local browser dashboard (Phase 4)
-- Action approval and confirmation system (Phase 5)
-- Safe Windows actions: open website, open allowed apps, open safe folders, create safe notes, disk/network/battery status (Phase 6)
-- Windows executable build/release pipeline
-- Helper scripts and first-run setup files
+          ### Included from previous alpha releases
+          - Core FastAPI foundation (Phase 1)
+          - Claude brain integration (Phase 2)
+          - Optional local TTS voice output (Phase 3)
+          - Local browser dashboard (Phase 4)
+          - Action approval and confirmation system (Phase 5)
+          - Safe Windows actions: open website, open allowed apps, open safe folders,
+            create safe notes, disk/network/battery status (Phase 6)
+          - Windows executable build/release pipeline
+          - Helper scripts and first-run setup files
 
-### First-time setup on Windows
-``````
-REM 1. Unzip $asset into a folder, e.g. C:\JARVIS\
-REM 2. (Optional) Enable Claude AI responses:
-copy JARVIS\.env.example JARVIS\.env
-REM    Edit JARVIS\.env and add:  ANTHROPIC_API_KEY=your-key-here
-REM 3. Run JARVIS:
-JARVIS\JARVIS.exe
-``````
+          ### First-time setup on Windows
 
-### Known limitations
-- Browser automation, OCR/screen intelligence, and microphone/STT/wake word are not included yet
-- Pending actions are in-memory and reset on app restart
+              REM 1. Unzip JARVIS-Windows-${{ github.event.inputs.version }}.zip into C:\JARVIS\
+              REM 2. (Optional) Enable Claude AI responses:
+              copy JARVIS\.env.example JARVIS\.env
+              REM    Edit JARVIS\.env and set: ANTHROPIC_API_KEY=your-key-here
+              REM 3. Run JARVIS:
+              JARVIS\JARVIS.exe
 
-> **Note:** This is an **unsigned** testing build.
-> Windows SmartScreen may warn on first launch — click **More info → Run anyway**.
-> A signed installer is planned for a later phase.
-"@
-          Set-Content -Path notes.txt -Value $notes -Encoding UTF8
+          ### Known limitations
+          - Browser automation, OCR/screen intelligence, and microphone/STT/wake word are not
+            included yet
+          - Pending actions are in-memory and reset on app restart
+
+          > **Note:** This is an **unsigned** testing build.
+          > Windows SmartScreen may warn on first launch — click **More info -> Run anyway**.
+          > A signed installer is planned for a later phase.
+          NOTES
 
       - name: Create GitHub Release and upload asset
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
         run: |
-          $version = "${{ github.event.inputs.version }}"
-          $asset   = "JARVIS-Windows-$version.zip"
-          gh release create $version `
-            --title "JARVIS $version — Professional UI/UX Polish" `
-            --notes-file notes.txt `
-            --prerelease `
-            $asset
+          VERSION="${{ github.event.inputs.version }}"
+          gh release create "$VERSION" \
+            "JARVIS-Windows-$VERSION.zip" \
+            --title "JARVIS $VERSION — Professional UI/UX Polish" \
+            --notes-file RELEASE_NOTES.md \
+            --prerelease
