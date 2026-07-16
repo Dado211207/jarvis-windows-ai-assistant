@@ -55,6 +55,9 @@ def create_app() -> FastAPI:
     from app.api.preferences_routes import router as preferences_router
     app.include_router(preferences_router)
 
+    from app.api.onboarding_routes import router as onboarding_router
+    app.include_router(onboarding_router)
+
     from app.ui.routes import router as ui_router
     app.include_router(ui_router)
 

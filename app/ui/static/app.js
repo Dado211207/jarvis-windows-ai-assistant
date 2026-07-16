@@ -841,7 +841,7 @@ const SETTINGS_FIELDS = [
   "user_display_name", "assistant_name", "preferred_language",
   "preferred_response_style", "preferred_tone", "theme_mode", "compact_mode",
   "dashboard_default_page", "tts_enabled", "tts_rate", "tts_volume", "tts_voice",
-  "pinned_commands",
+  "pinned_commands", "start_with_windows",
 ];
 
 function setSettingsStatus(text, ok) {

@@ -1,0 +1,99 @@
+/* Onboarding wizard — standalone full-screen layout, reuses style.css tokens. */
+
+.onboarding-body {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+
+.onboarding-shell {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.onboarding-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  justify-content: center;
+}
+
+.onboarding-brand-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.onboarding-card {
+  padding: 2rem;
+}
+
+.onboarding-steps {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.onboarding-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border-bright);
+}
+
+.onboarding-dot.active { background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); }
+.onboarding-dot.done   { background: var(--ok); }
+
+.onboarding-title {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 0.75rem;
+}
+
+.onboarding-text {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.onboarding-list {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.7;
+  padding-left: 1.1rem;
+}
+
+.onboarding-list li { margin-bottom: 0.4rem; }
+
+.onboarding-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 1.75rem;
+  flex-wrap: wrap;
+}
+
+.onboarding-key-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.onboarding-key-row .input { flex: 1; }
+
+.onboarding-key-status {
+  min-height: 1.2rem;
+  font-size: 0.82rem;
+  margin-top: 0.6rem;
+}
+
+.onboarding-key-status.status-ok  { color: var(--ok); }
+.onboarding-key-status.status-err { color: var(--err); }
+.onboarding-key-status.status-busy { color: var(--text-muted); }
