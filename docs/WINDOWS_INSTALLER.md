@@ -63,6 +63,38 @@ JARVIS UI itself, not in a terminal or a text editor.
   `SignTool=` directive backed by a certificate provided via CI secrets) can
   be added later without restructuring the installer.
 
+## Silent install / uninstall flags
+
+Standard Inno Setup silent flags work against `JARVIS-Setup-<version>.exe`
+and its generated `unins000.exe`:
+
+| Flag | Effect |
+|---|---|
+| `/VERYSILENT` | No wizard UI at all (installer or uninstaller) |
+| `/SUPPRESSMSGBOXES` | Suppresses message boxes — combined with `/VERYSILENT`, any prompt (including the uninstaller's data-deletion question) takes its **default answer** |
+| `/NORESTART` | Never applicable here (JARVIS never requires a restart) but harmless to pass |
+| `/DIR="X:\path"` | Install to a custom directory instead of the default `%LOCALAPPDATA%\Programs\JARVIS` |
+
+Because the uninstaller's data-deletion prompt defaults to "No", a silent
+uninstall (`/VERYSILENT /SUPPRESSMSGBOXES`) always preserves user data —
+this is exactly what the CI smoke test below relies on and verifies.
+
+## Upgrades
+
+`installer/JARVIS.iss` uses a fixed `AppId` GUID, which is how Inno Setup
+recognises "this is the same app, just a newer version" across runs.
+Running a newer `JARVIS-Setup-<version>.exe` while an older version is
+installed performs an in-place upgrade into the same
+`%LOCALAPPDATA%\Programs\JARVIS` directory — no separate uninstall step is
+needed, and user data is untouched either way (it was never inside the
+program directory to begin with). `[Files]` uses
+`Flags: ignoreversion recursesubdirs createallsubdirs`, so every file is
+replaced on each install rather than being skipped by a per-file version
+comparison — appropriate here since the whole PyInstaller `--onedir` output
+is versioned as one unit. **Do not change the `AppId` GUID** once a real
+build has shipped to users — doing so would make Inno Setup treat the next
+version as a different, unrelated app instead of an upgrade.
+
 ## CI: build, installer compile, and smoke test
 
 `.github/workflows/windows-build.yml` runs on every push/PR against
