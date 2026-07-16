@@ -143,6 +143,18 @@ def test_ui_help_has_commands(api_client):
     assert "system status" in html
 
 
+def test_ui_help_points_to_settings_not_manual_env_editing(api_client):
+    """Help must not tell users to hand-edit .env/.env.example — Settings'
+    AI Provider section is the real path now (dev mode still uses .env, but
+    that's not what an end user reading Help needs to be told)."""
+    r = api_client.get("/ui/help")
+    html = r.text
+    assert "/ui/settings" in html
+    assert ".env.example" not in html
+    assert "text editor" not in html
+    assert "START_JARVIS_API.bat" not in html
+
+
 # ── Security: no API key exposure ────────────────────────────────────────────
 
 def test_ui_no_api_key_in_dashboard(api_client):

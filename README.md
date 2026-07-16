@@ -15,6 +15,9 @@ key, and even then only your typed messages are ever sent.
   where your API key is stored, what binds to what, what's logged.
 - **Building or reviewing the installer?** See
   [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
+- **Testing the installer on real Windows?** See
+  [`docs/WINDOWS_ACCEPTANCE_TEST.md`](docs/WINDOWS_ACCEPTANCE_TEST.md) —
+  every item is unverified until someone actually runs it.
 - **Contributing code?** Keep reading.
 
 ---

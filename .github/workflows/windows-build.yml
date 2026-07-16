@@ -50,6 +50,11 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Build Windows executable
+        # Intentionally does NOT bundle README.md or .env.example — neither is
+        # read at runtime, and doing so would leak dev-oriented files into the
+        # installed app's directory via the Inno Setup step below (which reads
+        # this same dist\JARVIS\ output). Both are added to the portable ZIP
+        # only, in the separate step further down.
         run: >-
           pyinstaller
           --name JARVIS
@@ -62,8 +67,6 @@ jobs:
           --hidden-import pyttsx3.drivers.sapi5
           --hidden-import comtypes
           --hidden-import comtypes.client
-          --add-data "README.md;."
-          --add-data ".env.example;."
           --add-data "app/ui/templates;app/ui/templates"
           --add-data "app/ui/static;app/ui/static"
           run_jarvis.py
@@ -76,8 +79,11 @@ jobs:
           & $iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" installer\JARVIS.iss
 
       - name: Copy portable-ZIP helper files into distribution
+        # Only the portable ZIP gets these — the installer above already ran
+        # against dist\JARVIS\ without them.
         shell: pwsh
         run: |
+          Copy-Item README.md            dist\JARVIS\
           Copy-Item START_JARVIS.bat     dist\JARVIS\
           Copy-Item START_JARVIS_API.bat dist\JARVIS\
           Copy-Item .env.example         dist\JARVIS\
@@ -126,6 +132,14 @@ jobs:
             throw "A .env file was found in the install directory — production install must never require or ship one."
           }
           Write-Host "No .env in the install directory — OK."
+
+          $strayFiles = @(".env.example", "START_JARVIS.bat", "START_JARVIS_API.bat", "DEV_SETUP_FROM_SOURCE.bat")
+          foreach ($f in $strayFiles) {
+            if (Test-Path (Join-Path $installDir $f)) {
+              throw "Found '$f' in the installed app directory — the installer must only ship the app itself, never dev/portable-ZIP helper files."
+            }
+          }
+          Write-Host "No dev/portable helper files leaked into the installed app directory — OK."
 
           $env:JARVIS_APPDATA_OVERRIDE = $appData
           $env:JARVIS_TEST_MODE = "1"
