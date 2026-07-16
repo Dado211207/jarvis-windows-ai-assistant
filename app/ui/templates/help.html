@@ -94,9 +94,44 @@
     <div class="card">
       <ul class="cmd-list">
         <li><span class="cmd-name">create note &lt;text&gt;</span><span class="cmd-desc">Save a timestamped note to ~/Documents/JARVIS_Notes/</span></li>
-        <li><span class="cmd-name">memory add &lt;text&gt;</span><span class="cmd-desc">Save a note to local SQLite memory</span></li>
-        <li><span class="cmd-name">memory search &lt;query&gt;</span><span class="cmd-desc">Search saved memories</span></li>
+        <li><span class="cmd-name">memory add &lt;text&gt;</span><span class="cmd-desc">Save a freeform note to local SQLite memory</span></li>
+        <li><span class="cmd-name">memory search &lt;query&gt;</span><span class="cmd-desc">Search saved freeform notes</span></li>
       </ul>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Commands — Settings (Phase 8)</div>
+    <div class="card">
+      <ul class="cmd-list">
+        <li><span class="cmd-name">settings</span><span class="cmd-desc">Show current settings (also: show settings)</span></li>
+        <li><span class="cmd-name">set my name to &lt;name&gt;</span><span class="cmd-desc">Tell JARVIS what to call you</span></li>
+        <li><span class="cmd-name">set assistant name to &lt;name&gt;</span><span class="cmd-desc">Rename the assistant</span></li>
+        <li><span class="cmd-name">set language to &lt;language&gt;</span><span class="cmd-desc">Set your preferred language</span></li>
+        <li><span class="cmd-name">set response style to &lt;short|balanced|detailed&gt;</span><span class="cmd-desc">Set preferred answer length</span></li>
+        <li><span class="cmd-name">set tone to &lt;friendly|formal|casual|neutral|direct&gt;</span><span class="cmd-desc">Set preferred tone</span></li>
+      </ul>
+      <p class="text-xs text-muted mt-3">
+        Settings persist across restarts in your local database. Edit them visually on the
+        <a href="/ui/settings">Settings</a> page. Secrets and API keys are never stored here.
+      </p>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Commands — Personality Memory (Phase 8)</div>
+    <div class="card">
+      <ul class="cmd-list">
+        <li><span class="cmd-name">remember that &lt;text&gt;</span><span class="cmd-desc">Explicitly save a preference (also: save preference &lt;text&gt;)</span></li>
+        <li><span class="cmd-name">what do you remember</span><span class="cmd-desc">List saved preferences (also: show memory)</span></li>
+        <li><span class="cmd-name">search memory &lt;query&gt;</span><span class="cmd-desc">Search personality memory</span></li>
+        <li><span class="cmd-name">forget &lt;text&gt;</span><span class="cmd-desc">Delete a single saved preference</span></li>
+        <li><span class="cmd-name">clear memory</span><span class="cmd-desc">Delete ALL preferences &mdash; requires approval on the Actions page</span></li>
+      </ul>
+      <p class="text-xs text-muted mt-3">
+        JARVIS only saves memory when you explicitly ask &mdash; never silently, never from
+        ordinary chat. Manage entries on the <a href="/ui/memory">Memory</a> page.
+      </p>
     </div>
   </div>
 
@@ -145,15 +180,36 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Never Stored in Memory or Settings</div>
+    <div class="card">
+      <p class="text-sm text-muted mb-3">
+        Settings and personality memory are for safe preferences only. JARVIS refuses to save
+        the following &mdash; the value is rejected and nothing is written:
+      </p>
+      <ul class="text-sm" style="padding-left: 1.25rem; color: var(--text-muted); line-height: 2.1;">
+        <li>Passwords, passphrases, and PINs</li>
+        <li>API keys (Anthropic, OpenAI, GitHub, Netlify, and others)</li>
+        <li>Access / auth tokens and private keys</li>
+        <li>Cookies and browser session data</li>
+        <li>Contents of your private files</li>
+      </ul>
+      <p class="text-xs text-muted mt-3">
+        There is no hidden monitoring: nothing is inferred and saved automatically, and no
+        screen, browser, microphone, or file scanning takes place.
+      </p>
+    </div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Planned (Not Yet Implemented)</div>
     <div class="card text-sm" style="color: var(--text-muted); line-height: 1.8;">
       The following features are planned for future phases and are <em>not present in this build</em>:
       <ul style="margin: 0.5rem 0 0 1.25rem; line-height: 2.2;">
-        <li>Microphone input / speech-to-text (planned Phase 8+)</li>
-        <li>Wake word detection (planned Phase 8+)</li>
-        <li>OCR / screen reading (planned Phase 8)</li>
-        <li>Browser automation (approval-gated, planned Phase 9)</li>
-        <li>Smart home and health integrations (Phase 9)</li>
+        <li>OCR / screen intelligence (planned, on-request only)</li>
+        <li>Browser automation (planned, approval-gated)</li>
+        <li>Microphone input / speech-to-text / push-to-talk (planned)</li>
+        <li>Wake word detection (planned)</li>
+        <li>Smart home and health integrations (planned)</li>
       </ul>
     </div>
   </div>

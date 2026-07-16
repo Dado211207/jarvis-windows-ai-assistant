@@ -1,32 +1,54 @@
 {% extends "base.html" %}
 {% block title %}Memory{% endblock %}
-{% block topbar_title %}Memory{% endblock %}
+{% block topbar_title %}Personality Memory{% endblock %}
 {% block content %}
 <div id="memory-root">
 
   <div class="page-header">
-    <h1 class="page-title">Memory</h1>
+    <h1 class="page-title">Personality Memory</h1>
     <p class="page-subtitle">
-      Notes saved with <code class="mono">memory add &lt;text&gt;</code>.
-      Stored in local SQLite &mdash; never sent to any external server.
+      What JARVIS remembers about your preferences. Saved <strong>only</strong> when you
+      ask &mdash; e.g. <code class="mono">remember that I prefer short answers</code>.
+      Stored locally in SQLite; never sent anywhere. Secrets are never stored.
     </p>
   </div>
 
   <div class="card mb-3">
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2" style="flex-wrap:wrap;">
       <input
         id="memory-search"
         class="input"
         type="text"
-        placeholder="Search memories&hellip;"
+        placeholder="Search preferences&hellip;"
         autocomplete="off"
-        aria-label="Memory search"
+        aria-label="Search preferences"
+        style="flex:1;min-width:180px;"
       >
       <button id="memory-search-btn" class="btn btn-ghost" type="button">Search</button>
+      <button id="memory-refresh-btn" class="btn btn-ghost" type="button">Refresh</button>
+    </div>
+    <div class="chat-suggestions" id="memory-category-filters" style="margin-top:0.75rem;">
+      <button class="chat-suggestion memory-cat active" type="button" data-category="">All</button>
+      <button class="chat-suggestion memory-cat" type="button" data-category="profile">profile</button>
+      <button class="chat-suggestion memory-cat" type="button" data-category="style">style</button>
+      <button class="chat-suggestion memory-cat" type="button" data-category="voice">voice</button>
+      <button class="chat-suggestion memory-cat" type="button" data-category="ui">ui</button>
+      <button class="chat-suggestion memory-cat" type="button" data-category="command">command</button>
+      <button class="chat-suggestion memory-cat" type="button" data-category="general_preference">general</button>
     </div>
   </div>
 
   <div id="memory-list"></div>
+
+  <div class="info-box mt-4">
+    JARVIS never collects memory silently. Nothing here is inferred from ordinary chat &mdash;
+    every entry was saved by an explicit request. Deleting is never immediate: click
+    <strong>Forget</strong> then <strong>Confirm delete</strong> to remove a single item here
+    (or <strong>Cancel</strong> to keep it), or say <code>forget &lt;text&gt;</code> to confirm on
+    the <a href="/ui/actions">Actions</a> page. To wipe everything, say
+    <code>clear memory</code> &mdash; that also requires confirmation on the Actions page.
+    Passwords, API keys, tokens, cookies, and browser data are never stored.
+  </div>
 
 </div>
 {% endblock %}

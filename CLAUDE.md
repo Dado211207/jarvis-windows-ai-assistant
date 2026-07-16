@@ -141,6 +141,27 @@ how Claude Code sessions should work on this codebase.
 - **Chat suggestions are client-side only.** Suggestion chips populate the input field
   only; they do not auto-submit or bypass the normal send flow.
 
+## Phase 8 settings & personality memory rules (non-negotiable)
+
+- **Explicit memory only.** Preferences are written ONLY when the user clearly asks
+  (`remember that…`, `save preference…`, or the Settings/Memory UI). Never infer and
+  save silently, never auto-collect from ordinary chat, never from background activity.
+- **No secrets in settings or memory — ever.** Every value written to `settings` or
+  `preferences` passes through `app/core/secret_guard.py`. API keys (`sk-ant-`, etc.),
+  GitHub/Netlify/AWS/Google tokens, private keys, and password/token assignments are
+  rejected and never persisted. The Anthropic API key lives only in `.env`.
+- **Settings are an allowlist.** Only keys defined in `settings_service.SETTINGS_SPECS`
+  may be set; values are length-limited and type/enum-validated. Unknown keys are rejected.
+- **`safety_mode` is locked.** It is always reported as `on` and can never be disabled
+  through settings or the API. No setting may enable a blocked action or weaken approval.
+- **Destructive memory is approval-gated.** `clear_preferences` (clear all memory) is
+  `APPROVAL_REQUIRED` and runs only via the confirm endpoint. There is no API route that
+  wipes all memory directly. Single-item forget/delete is targeted and SAFE.
+- **Local-only storage.** Settings and preferences live in the local SQLite DB. No cloud
+  sync, no external services, no analytics, no tracking.
+- **No new capability surface.** Phase 8 adds preferences/settings only — no OCR, no
+  browser automation, no microphone/STT/wake word, no computer control.
+
 ## Phase guide
 
 | Phase | Status      | Scope |
@@ -152,9 +173,10 @@ how Claude Code sessions should work on this codebase.
 | 5     | ✅ Done      | Action approval system: pending actions, confirm/cancel, Actions UI |
 | 6     | ✅ Done      | Safe Windows actions: URL opener, folders, notes, disk, network, battery |
 | 7     | ✅ Done      | Professional UI/UX polish: sidebar layout, design system, metric cards |
-| 8     | Planned     | Screen intelligence / OCR (on-request only, explicit user permission) |
-| 9     | Planned     | Browser automation (approval-gated, no autonomous browsing) |
-| 10    | Planned     | Smart home, health, trading integrations |
+| 8     | ✅ Done      | Persistent settings & personality memory (local, explicit-only, no secrets) |
+| 9     | Planned     | Screen intelligence / OCR (on-request only, explicit user permission) |
+| 10    | Planned     | Browser automation (approval-gated, no autonomous browsing) |
+| 11    | Planned     | Smart home, health, trading integrations |
 
 ## Do NOT implement in this repo (ever, without explicit separate design review)
 

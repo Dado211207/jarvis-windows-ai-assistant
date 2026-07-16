@@ -30,6 +30,8 @@ class Brain:
         create_tables()
 
         from app.core import memory as memory_module
+        from app.core import preferences as preferences_module
+        from app.core import settings_service
         from app.desktop import apps, folders, maintenance, notes, screenshots, system, web
         from app.voice import tts as tts_module
 
@@ -42,6 +44,8 @@ class Brain:
         web.register_tools(registry)
         folders.register_tools(registry)
         notes.register_tools(registry)
+        settings_service.register_tools(registry)
+        preferences_module.register_tools(registry)
         self._register_utility_tools()
 
         self._ready = True

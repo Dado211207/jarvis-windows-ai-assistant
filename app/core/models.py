@@ -77,3 +77,16 @@ class ActionLog(BaseModel):
     status: str
     message: str
     created_at: Optional[datetime] = None
+
+
+class Preference(BaseModel):
+    """A single explicit personality / preference memory entry (Phase 8)."""
+
+    id: Optional[int] = None
+    title: str
+    value: str
+    category: str = "general_preference"
+    source: str = "user"
+    is_sensitive: bool = False
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
