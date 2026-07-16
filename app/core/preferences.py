@@ -155,33 +155,66 @@ def search_preferences(query: str) -> dict:
     }
 
 
-def forget_preference(text: str) -> dict:
+def preview_forget(text: str) -> dict:
+    """Resolve which single preference a `forget <text>` refers to.
+
+    Returns a status the router uses to decide whether to create an approval:
+      empty     — no text supplied
+      none      — nothing matches (benign; nothing to delete)
+      ambiguous — several match (ask the user to be more specific)
+      single    — exactly one match (gate its deletion behind approval)
+    """
     text = (text or "").strip()
     if not text:
-        return {"success": False, "message": "Tell me which preference to forget.",
-                "data": None}
+        return {"status": "empty",
+                "message": "Tell me which preference to forget.", "matches": []}
     from db.database import get_db
 
-    db = get_db()
-    matches = db.search_preferences(text)
+    matches = get_db().search_preferences(text)
     if not matches:
-        return {"success": True,
-                "message": f"I have no saved preference matching '{text}'.", "data": []}
+        return {"status": "none",
+                "message": f"I have no saved preference matching '{text}'.", "matches": []}
     if len(matches) > 1:
         lines = [f"That matches {len(matches)} preferences — please be more specific:"]
         for p in matches:
             lines.append(f"  • {p.value}")
-        return {"success": False, "message": "\n".join(lines),
-                "data": [_format_preference(p) for p in matches]}
+        return {"status": "ambiguous", "message": "\n".join(lines), "matches": matches}
+    return {"status": "single", "matches": matches, "preference": matches[0]}
 
-    pref = matches[0]
+
+def forget_preference(text: str = None, pref_id: int = None) -> dict:
+    """Delete a single preference. Registered APPROVAL_REQUIRED.
+
+    Normal flow: the router resolves the target and stores ``pref_id``; the
+    confirm endpoint then calls this via ``execute_approved`` to delete exactly
+    that one entry. A ``text`` fallback is kept for direct/legacy callers.
+    """
+    from db.database import get_db
+
+    db = get_db()
+
+    if pref_id is not None:
+        pref = db.get_preference(pref_id)
+        if pref is None:
+            return {"success": False,
+                    "message": "That preference no longer exists — nothing was deleted.",
+                    "data": None}
+        db.delete_preference(pref_id)
+        logger.info("Preference forgotten via approval (id=%s)", pref_id)
+        return {"success": True, "message": f"Forgotten: {pref.value}", "data": {"id": pref_id}}
+
+    preview = preview_forget(text)
+    status = preview["status"]
+    if status in ("empty", "none"):
+        return {"success": status == "none", "message": preview["message"], "data": []}
+    if status == "ambiguous":
+        return {"success": False, "message": preview["message"],
+                "data": [_format_preference(p) for p in preview["matches"]]}
+
+    pref = preview["preference"]
     db.delete_preference(pref.id)
     logger.info("Preference forgotten (id=%s)", pref.id)
-    return {
-        "success": True,
-        "message": f"Forgotten: {pref.value}",
-        "data": {"id": pref.id},
-    }
+    return {"success": True, "message": f"Forgotten: {pref.value}", "data": {"id": pref.id}}
 
 
 def clear_preferences() -> dict:
@@ -229,8 +262,8 @@ def register_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="forget_preference",
-            description="Forget (delete) a single named preference from memory.",
-            permission_level=PermissionLevel.SAFE,
+            description="Forget (delete) a single named preference from memory. Requires approval.",
+            permission_level=PermissionLevel.APPROVAL_REQUIRED,
             category=ToolCategory.MEMORY,
         ),
         forget_preference,

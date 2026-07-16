@@ -191,6 +191,13 @@ _PENDING_ACTION_META: Dict[str, Dict[str, str]] = {
         ),
         "risk_level": "high",
     },
+    # Fallback only — the real, value-specific description is built in
+    # CommandRouter._dispatch_forget() once a single preference is resolved.
+    "forget_preference": {
+        "action_name": "Forget Preference",
+        "description": "Permanently deletes a saved preference. This action cannot be undone.",
+        "risk_level": "medium",
+    },
 }
 
 
@@ -250,6 +257,12 @@ class CommandRouter:
     def _dispatch(self, tool_name: str, raw_cmd: str, **kwargs) -> CommandResponse:
         from db.database import get_db
 
+        # forget_preference needs its target resolved BEFORE gating: an
+        # ambiguous or no-match lookup deletes nothing either way, so only a
+        # single resolved match should ever become a pending approval.
+        if tool_name == "forget_preference":
+            return self._dispatch_forget(raw_cmd, kwargs.get("text", ""))
+
         # Check permission before executing — intercept APPROVAL_REQUIRED to
         # create a pending action instead of failing silently.
         tool = self._registry.get(tool_name)
@@ -273,14 +286,75 @@ class CommandRouter:
             tool_used=tool_name,
         )
 
-    def _create_pending_action(self, tool_name: str, raw_cmd: str, **kwargs) -> CommandResponse:
-        """Create a pending approval action instead of executing immediately."""
+    def _dispatch_forget(self, raw_cmd: str, text: str) -> CommandResponse:
+        """Resolve a `forget <text>` command to a specific preference, then gate.
+
+        Only a genuine single match becomes a pending approval — its preview
+        names the exact preference so the user knows what they're confirming.
+        No-match and ambiguous lookups are read-only (nothing is deleted
+        either way) and return directly, without creating an approval.
+        """
+        from app.core.preferences import preview_forget
+
+        preview = preview_forget(text)
+        status = preview["status"]
+
+        if status in ("empty", "none"):
+            return CommandResponse(
+                success=(status == "none"),
+                message=preview["message"],
+                tool_used="forget_preference",
+            )
+
+        if status == "ambiguous":
+            matches = preview["matches"]
+            return CommandResponse(
+                success=False,
+                message=preview["message"],
+                data=[
+                    {"id": p.id, "title": p.title, "value": p.value, "category": p.category}
+                    for p in matches
+                ],
+                tool_used="forget_preference",
+            )
+
+        pref = preview["preference"]
+        return self._create_pending_action(
+            "forget_preference",
+            raw_cmd,
+            action_name="Forget Preference",
+            description=(
+                f'Permanently deletes this saved preference: "{pref.value}" '
+                f"(category: {pref.category}). This action cannot be undone."
+            ),
+            risk_level="medium",
+            pref_id=pref.id,
+        )
+
+    def _create_pending_action(
+        self,
+        tool_name: str,
+        raw_cmd: str,
+        action_name: Optional[str] = None,
+        description: Optional[str] = None,
+        risk_level: Optional[str] = None,
+        **kwargs,
+    ) -> CommandResponse:
+        """Create a pending approval action instead of executing immediately.
+
+        ``action_name``/``description``/``risk_level`` override the static
+        ``_PENDING_ACTION_META`` defaults when the caller has already resolved
+        a value-specific preview (e.g. naming exactly which preference will be
+        deleted). Remaining ``kwargs`` become the tool's execution parameters —
+        keep this metadata out of ``kwargs`` or it will be (wrongly) passed to
+        the tool handler at confirm time.
+        """
         from app.core.pending_actions import pending_store
 
         meta = _PENDING_ACTION_META.get(tool_name, {})
-        action_name = meta.get("action_name", tool_name.replace("_", " ").title())
-        description = meta.get("description", f"Execute tool '{tool_name}'.")
-        risk_level = meta.get("risk_level", "medium")
+        action_name = action_name or meta.get("action_name", tool_name.replace("_", " ").title())
+        description = description or meta.get("description", f"Execute tool '{tool_name}'.")
+        risk_level = risk_level or meta.get("risk_level", "medium")
 
         action = pending_store.create(
             command=raw_cmd,

@@ -480,12 +480,31 @@ function buildMemoryCard(item) {
   cat.className = "badge badge-info";
   cat.textContent = item.category || "general_preference";
 
+  // Forget requires a visible two-step confirmation — clicking "Forget" never
+  // deletes by itself. It only deletes on the second click of "Confirm delete".
+  const actions = document.createElement("div");
+  actions.className = "memory-actions";
+
   const forget = document.createElement("button");
   forget.className = "btn btn-ghost btn-sm";
   forget.textContent = "Forget";
 
+  const confirmBtn = document.createElement("button");
+  confirmBtn.className = "btn btn-danger btn-sm";
+  confirmBtn.textContent = "Confirm delete";
+  confirmBtn.style.display = "none";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn btn-ghost btn-sm";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.style.display = "none";
+
+  actions.appendChild(forget);
+  actions.appendChild(confirmBtn);
+  actions.appendChild(cancelBtn);
+
   head.appendChild(cat);
-  head.appendChild(forget);
+  head.appendChild(actions);
 
   const text = document.createElement("div");
   text.className = "memory-text";
@@ -499,16 +518,32 @@ function buildMemoryCard(item) {
   card.appendChild(text);
   if (meta.textContent) card.appendChild(meta);
 
-  forget.addEventListener("click", async () => {
-    forget.disabled = true;
+  function resetForgetState() {
+    forget.style.display = "";
+    confirmBtn.style.display = "none";
+    cancelBtn.style.display = "none";
+  }
+
+  forget.addEventListener("click", () => {
+    forget.style.display = "none";
+    confirmBtn.style.display = "";
+    cancelBtn.style.display = "";
+  });
+
+  cancelBtn.addEventListener("click", resetForgetState);
+
+  confirmBtn.addEventListener("click", async () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
     try {
       await API.del("/preferences/" + item.id);
       if (card.parentNode) card.parentNode.removeChild(card);
       const list = $("memory-list");
       if (list && !list.querySelector(".memory-item")) renderMemoryEmpty(list, false);
     } catch (e) {
-      forget.disabled = false;
-      forget.textContent = "Error";
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+      confirmBtn.textContent = "Error — retry?";
     }
   });
 

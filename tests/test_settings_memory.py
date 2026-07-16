@@ -291,10 +291,121 @@ def test_clear_memory_does_not_execute_without_confirm(api_client):
     assert len(list_preferences()["data"]) == 1
 
 
-def test_forget_is_not_approval_gated(api_client):
+def test_forget_no_match_is_not_approval_gated(api_client):
+    # Nothing would be deleted either way, so a no-match lookup stays ungated.
     r = api_client.post("/command", json={"command": "forget nonexistent-xyz"})
     assert r.status_code == 200
     assert r.json().get("requires_approval", False) is False
+
+
+def test_forget_single_match_requires_approval(api_client):
+    from app.core.preferences import remember_preference
+    remember_preference("I prefer short answers")
+    r = api_client.post("/command", json={"command": "forget short answers"})
+    body = r.json()
+    assert body["requires_approval"] is True
+    assert body["pending_action_id"]
+
+
+def test_forget_approval_preview_names_the_preference(api_client):
+    from app.core.preferences import remember_preference
+    remember_preference("call me Dragan")
+    r = api_client.post("/command", json={"command": "forget Dragan"})
+    body = r.json()
+    assert body["requires_approval"] is True
+    assert "call me Dragan" in body["data"]["description"]
+    assert body["data"]["parameters"] == {"pref_id": body["data"]["parameters"]["pref_id"]}
+    assert "pref_id" in body["data"]["parameters"]
+
+
+def test_forget_ambiguous_is_not_approval_gated(api_client):
+    from app.core.preferences import remember_preference
+    remember_preference("I prefer short answers")
+    remember_preference("I prefer short meetings")
+    r = api_client.post("/command", json={"command": "forget short"})
+    body = r.json()
+    assert body.get("requires_approval", False) is False
+    assert len(body["data"]) == 2  # both candidates listed, neither deleted
+
+
+def test_forget_cancel_does_not_delete(api_client):
+    from app.core.preferences import remember_preference, list_preferences
+    remember_preference("I prefer dark mode")
+    r = api_client.post("/command", json={"command": "forget dark mode"})
+    action_id = r.json()["pending_action_id"]
+
+    cancel = api_client.post(f"/actions/{action_id}/cancel")
+    assert cancel.json()["success"] is True
+    assert cancel.json()["status"] == "cancelled"
+
+    # Still present — cancel must never delete.
+    assert len(list_preferences()["data"]) == 1
+
+
+def test_forget_confirm_deletes_exactly_one(api_client):
+    from app.core.preferences import remember_preference, list_preferences
+    remember_preference("I prefer dark mode")
+    remember_preference("I prefer short answers")
+    r = api_client.post("/command", json={"command": "forget dark mode"})
+    action_id = r.json()["pending_action_id"]
+
+    confirm = api_client.post(f"/actions/{action_id}/confirm")
+    body = confirm.json()
+    assert body["success"] is True
+    assert body["status"] == "executed"
+
+    remaining = list_preferences()["data"]
+    assert len(remaining) == 1
+    assert remaining[0]["value"] == "I prefer short answers"
+
+
+def test_forget_double_confirm_is_blocked(api_client):
+    from app.core.preferences import remember_preference
+    remember_preference("I prefer dark mode")
+    r = api_client.post("/command", json={"command": "forget dark mode"})
+    action_id = r.json()["pending_action_id"]
+
+    first = api_client.post(f"/actions/{action_id}/confirm")
+    assert first.json()["success"] is True
+
+    second = api_client.post(f"/actions/{action_id}/confirm")
+    body = second.json()
+    assert body["success"] is False
+    assert body["status"] == "executed"  # cannot re-confirm an already-executed action
+
+
+def test_forget_confirm_after_cancel_is_blocked(api_client):
+    from app.core.preferences import remember_preference, list_preferences
+    remember_preference("I prefer dark mode")
+    r = api_client.post("/command", json={"command": "forget dark mode"})
+    action_id = r.json()["pending_action_id"]
+
+    api_client.post(f"/actions/{action_id}/cancel")
+    confirm_after_cancel = api_client.post(f"/actions/{action_id}/confirm")
+    body = confirm_after_cancel.json()
+    assert body["success"] is False
+    assert body["status"] == "cancelled"
+
+    # Cancelled-then-confirmed must still never delete.
+    assert len(list_preferences()["data"]) == 1
+
+
+@pytest.mark.parametrize("cmd", [
+    "what do you remember",
+    "show memory",
+    "search memory short",
+    "show settings",
+])
+def test_readonly_memory_and_settings_commands_stay_safe(api_client, cmd):
+    r = api_client.post("/command", json={"command": cmd})
+    assert r.json().get("requires_approval", False) is False
+
+
+def test_clear_memory_still_requires_approval_after_forget_change(api_client):
+    r = api_client.post("/command", json={"command": "clear memory"})
+    body = r.json()
+    assert body["requires_approval"] is True
+    assert body["pending_action_id"]
 
 
 # ── /settings API ─────────────────────────────────────────────────────────────
@@ -395,6 +506,21 @@ def test_memory_page_explicit_local_wording(api_client):
     assert "local" in html
     assert "explicit" in html or "only when you ask" in html or "only" in html
     assert "never" in html
+
+
+def test_memory_page_forget_has_confirmation_wording(api_client):
+    html = api_client.get("/ui/memory").text.lower()
+    assert "confirm delete" in html or "confirm" in html
+    assert "cancel" in html
+
+
+def test_js_forget_has_two_step_confirm_control(api_client):
+    js = api_client.get("/ui/static/app.js").text
+    assert "confirmBtn" in js
+    assert "cancelBtn" in js
+    assert "Confirm delete" in js
+    # No window.confirm() / browser-native confirm dialogs — must be inline UI state.
+    assert "confirm(" not in js
 
 
 def test_memory_page_keeps_ids(api_client):

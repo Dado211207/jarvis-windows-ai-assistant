@@ -638,6 +638,11 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   gap: 0.5rem;
   margin-bottom: 0.5rem;
 }
+.memory-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
 
 /* Active state for suggestion chips reused as category filters. */
 .chat-suggestion.active {
