@@ -155,6 +155,39 @@
   </form>
 
   <div class="section mt-4">
+    <div class="section-title">AI Provider</div>
+    <div class="card">
+      <div class="status-row">
+        <span class="status-row-label">Status</span>
+        <span id="provider-status" class="badge badge-muted">&mdash;</span>
+      </div>
+      <div class="status-row" id="provider-masked-row" hidden>
+        <span class="status-row-label">Current key</span>
+        <span class="status-row-value" id="provider-masked-key">&mdash;</span>
+      </div>
+
+      <label class="settings-field" style="margin-top:0.75rem;">
+        <span class="settings-label">Anthropic API key</span>
+        <div class="onboarding-key-row">
+          <input class="input" type="password" id="provider-api-key" autocomplete="off"
+                 spellcheck="false" placeholder="Paste your Anthropic API key" aria-label="Anthropic API key">
+          <button type="button" class="btn btn-ghost btn-sm" id="provider-key-toggle" aria-label="Show API key">Show</button>
+        </div>
+      </label>
+      <p id="provider-key-status" class="onboarding-key-status"></p>
+
+      <div class="btn-row mt-2">
+        <button type="button" class="btn btn-primary" id="provider-key-save">Save key</button>
+        <button type="button" class="btn btn-danger" id="provider-key-remove" hidden>Remove key</button>
+      </div>
+      <p class="text-xs text-muted mt-2">
+        Validated with Anthropic before saving, then stored securely (Windows DPAPI on the
+        installed app) &mdash; never in plain text, and never shown here again in full.
+      </p>
+    </div>
+  </div>
+
+  <div class="section mt-4">
     <div class="section-title">About &amp; Updates</div>
     <div class="card">
       <div class="status-row"><span class="status-row-label">Current version</span><span class="status-row-value" id="update-current-version">&mdash;</span></div>
@@ -179,7 +212,8 @@
       <p class="text-xs text-muted mt-2">
         Safety mode is always on and cannot be disabled from settings. No setting can
         enable blocked actions, loosen the approval system, or expose secrets. Your
-        Anthropic API key lives only in <code>.env</code> and is never shown here.
+        Anthropic API key is never stored in plain text and is never returned to this
+        page in full &mdash; see the AI Provider section above.
       </p>
     </div>
   </div>

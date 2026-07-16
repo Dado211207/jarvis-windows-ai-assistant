@@ -37,12 +37,21 @@ you through a short setup:
    (system status, app launcher, screenshots, memory, notes) works either
    way; only open-ended AI conversation needs a key. If you add one, it's
    validated against Anthropic before being saved, and it's never stored as
-   plain text — see [`SECURITY.md`](SECURITY.md).
+   plain text — see [`SECURITY.md`](SECURITY.md). If you skip it, JARVIS
+   says so plainly on the finish screen and in Chat ("AI chat not
+   configured") instead of implying it's fully set up — you haven't lost
+   anything by skipping, and nothing repeats the wizard on you for it.
 4. **Voice** — turn on/off spoken replies (local text-to-speech; JARVIS
    never listens through your microphone).
 5. **Startup** — whether JARVIS should start automatically when you sign in
    to Windows.
-6. **Finish** — JARVIS opens the normal dashboard.
+6. **Finish** — JARVIS opens the normal dashboard. If you added a key, it
+   confirms AI chat is ready; if you skipped it, it says so and points you
+   at Settings.
+
+Skipped setup and want AI chat later? Open **Settings → AI Provider** any
+time — paste your key there and it's validated and saved the same way, no
+need to redo the wizard.
 
 If setup doesn't finish (you close the window, lose your connection while
 validating a key, etc.), JARVIS simply shows the wizard again next time you

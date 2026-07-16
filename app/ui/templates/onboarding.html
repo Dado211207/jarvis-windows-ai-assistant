@@ -60,9 +60,10 @@
     <section class="onboarding-panel" data-panel="api_key" hidden>
       <h1 class="onboarding-title">Connect Claude AI (optional)</h1>
       <p class="onboarding-text">
-        Add an Anthropic API key so JARVIS can hold natural conversations. Without one,
-        JARVIS still works for every built-in command — you'll just get simpler local replies
-        for open-ended chat. You can add or change this later in Settings.
+        Add an Anthropic API key so JARVIS can hold natural conversations. Every built-in
+        command (system status, opening apps, memory, and more) works either way — but
+        without a key, open-ended chat will let you know it isn't set up yet instead of
+        answering. You can add, replace, or remove your key anytime from Settings.
       </p>
 
       <label class="settings-field" style="margin-top:1rem;">
@@ -125,8 +126,8 @@
 
     <!-- Finish -->
     <section class="onboarding-panel" data-panel="finish" hidden>
-      <h1 class="onboarding-title">You're all set</h1>
-      <p class="onboarding-text">JARVIS is ready. Opening your dashboard&hellip;</p>
+      <h1 class="onboarding-title" id="ob-finish-title">You're all set</h1>
+      <p class="onboarding-text" id="ob-finish-text">Opening your dashboard&hellip;</p>
       <div class="onboarding-actions">
         <button type="button" class="btn btn-primary" id="ob-finish">Open JARVIS</button>
       </div>

@@ -212,7 +212,7 @@ async function loadAssistantName() {
   }
 }
 
-function addMessage(role, text, toolUsed) {
+function addMessage(role, text, toolUsed, meta) {
   const list = $("chat-messages");
   if (!list) return;
 
@@ -240,6 +240,15 @@ function addMessage(role, text, toolUsed) {
     wrap.appendChild(tool);
   }
 
+  // This reply came from Brain's local fallback, not a real AI answer —
+  // say so plainly instead of letting it look like a genuine response.
+  if (toolUsed === "brain" && meta && meta.used_api === false) {
+    const notice = document.createElement("div");
+    notice.className = "msg-tool text-warn";
+    notice.textContent = "AI chat isn't configured yet — add an API key in Settings for a real answer.";
+    wrap.appendChild(notice);
+  }
+
   list.appendChild(wrap);
   list.scrollTop = list.scrollHeight;
 }
@@ -262,7 +271,7 @@ async function sendChat() {
       addApprovalCard(data.pending_action_id, data);
     } else {
       const reply = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
-      addMessage("assistant", reply, data.tool_used || null);
+      addMessage("assistant", reply, data.tool_used || null, data.data || null);
     }
   } catch (e) {
     addMessage("assistant", "Error: " + e.message, null);
@@ -354,10 +363,22 @@ function addApprovalCard(actionId, data) {
   list.scrollTop = list.scrollHeight;
 }
 
+async function loadAiNotice() {
+  const notice = $("chat-ai-notice");
+  if (!notice) return;
+  try {
+    const h = await API.get("/health");
+    notice.style.display = h.brain_configured ? "none" : "";
+  } catch (e) {
+    // leave hidden — a health-check failure is surfaced elsewhere (topbar)
+  }
+}
+
 function initChat() {
   const btn   = $("chat-send");
   const input = $("chat-input");
   loadAssistantName();
+  loadAiNotice();
   if (btn)   btn.addEventListener("click", sendChat);
   if (input) input.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
@@ -915,6 +936,98 @@ function initSettings() {
   const updateBtn = $("update-check-btn");
   if (updateBtn) updateBtn.addEventListener("click", checkForUpdates);
   checkForUpdates();
+
+  initProviderSection();
+}
+
+// ── AI Provider (Settings page) ─────────────────────────────────────────────
+// Reuses the same backend as onboarding (/onboarding/api-key etc.) so a user
+// who postponed setup during onboarding has a direct way to finish it later,
+// without re-running the whole wizard.
+
+function setProviderKeyStatus(text, kind) {
+  const el = $("provider-key-status");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "onboarding-key-status" + (kind ? ` status-${kind}` : "");
+}
+
+async function loadProviderStatus() {
+  try {
+    const state = await API.get("/onboarding/state");
+    const configured = state.api_key_status === "validated";
+    setBadge("provider-status", configured ? "configured" : "not configured", configured ? "ok" : "warn");
+    const maskedRow = $("provider-masked-row");
+    const removeBtn = $("provider-key-remove");
+    if (configured && state.api_key_masked) {
+      setText("provider-masked-key", state.api_key_masked);
+      if (maskedRow) maskedRow.hidden = false;
+      if (removeBtn) removeBtn.hidden = false;
+    } else {
+      if (maskedRow) maskedRow.hidden = true;
+      if (removeBtn) removeBtn.hidden = true;
+    }
+  } catch (e) {
+    setProviderKeyStatus("Could not load provider status: " + e.message, "err");
+  }
+}
+
+function initProviderSection() {
+  const keyInput = $("provider-api-key");
+  const keyToggle = $("provider-key-toggle");
+  const saveBtn = $("provider-key-save");
+  const removeBtn = $("provider-key-remove");
+
+  if (keyToggle) {
+    keyToggle.addEventListener("click", () => {
+      const hidden = keyInput.type === "password";
+      keyInput.type = hidden ? "text" : "password";
+      keyToggle.textContent = hidden ? "Hide" : "Show";
+    });
+  }
+
+  if (saveBtn) {
+    saveBtn.addEventListener("click", async () => {
+      const value = keyInput.value.trim();
+      if (!value) {
+        setProviderKeyStatus("Enter a key to save.", "err");
+        return;
+      }
+      saveBtn.disabled = true;
+      setProviderKeyStatus("Validating with Anthropic…", "busy");
+      try {
+        const result = await API.post("/onboarding/api-key", { api_key: value });
+        if (result.success) {
+          setProviderKeyStatus("Key validated and saved securely.", "ok");
+          keyInput.value = "";
+          loadProviderStatus();
+        } else {
+          setProviderKeyStatus(result.error || "Could not validate that key.", "err");
+        }
+      } catch (e) {
+        setProviderKeyStatus("Could not reach JARVIS to validate the key.", "err");
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+  }
+
+  if (removeBtn) {
+    removeBtn.addEventListener("click", async () => {
+      removeBtn.disabled = true;
+      try {
+        await API.del("/onboarding/api-key");
+        setProviderKeyStatus("Key removed.", "ok");
+        loadProviderStatus();
+      } catch (e) {
+        setProviderKeyStatus("Could not remove the key: " + e.message, "err");
+      } finally {
+        removeBtn.disabled = false;
+      }
+    });
+  }
+
+  loadProviderStatus();
 }
 
 function setUpdateStatus(text, ok) {

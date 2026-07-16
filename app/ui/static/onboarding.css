@@ -81,19 +81,6 @@
   flex-wrap: wrap;
 }
 
-.onboarding-key-row {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.onboarding-key-row .input { flex: 1; }
-
-.onboarding-key-status {
-  min-height: 1.2rem;
-  font-size: 0.82rem;
-  margin-top: 0.6rem;
-}
-
-.onboarding-key-status.status-ok  { color: var(--ok); }
-.onboarding-key-status.status-err { color: var(--err); }
-.onboarding-key-status.status-busy { color: var(--text-muted); }
+/* .onboarding-key-row / .onboarding-key-status moved to style.css so the
+   Settings page's API-key section can reuse them too (base.html only
+   links style.css, not this file). */

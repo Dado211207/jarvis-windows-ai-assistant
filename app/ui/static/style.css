@@ -673,6 +673,19 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   font-size: 0.8rem;
   align-self: center;
 }
+.onboarding-key-row {
+  display: flex;
+  gap: 0.5rem;
+}
+.onboarding-key-row .input { flex: 1; }
+.onboarding-key-status {
+  min-height: 1.2rem;
+  font-size: 0.82rem;
+  margin-top: 0.6rem;
+}
+.onboarding-key-status.status-ok   { color: var(--ok); }
+.onboarding-key-status.status-err  { color: var(--err); }
+.onboarding-key-status.status-busy { color: var(--text-muted); }
 select.input {
   cursor: pointer;
   appearance: none;

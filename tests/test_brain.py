@@ -61,7 +61,7 @@ def test_generate_response_local_fallback_when_no_key():
 
     assert result.used_api is False
     assert result.provider == "local"
-    assert "Claude AI is not configured" in result.content
+    assert "AI chat is not configured" in result.content
     assert result.error is None
 
 

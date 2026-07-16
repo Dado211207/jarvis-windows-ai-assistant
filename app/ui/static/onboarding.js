@@ -44,6 +44,28 @@ function showStep(step) {
     d.classList.toggle("done", i < idx);
   });
   API.post("/onboarding/step", { step }).catch(() => {});
+  if (step === "finish") updateFinishText();
+}
+
+// Never claim full readiness when the API key step was postponed —
+// reflect the real, current state instead of a generic "all set" message.
+async function updateFinishText() {
+  const titleEl = $("ob-finish-title");
+  const textEl = $("ob-finish-text");
+  if (!titleEl || !textEl) return;
+  try {
+    const state = await API.get("/onboarding/state");
+    if (state.api_key_status === "validated") {
+      titleEl.textContent = "You're all set";
+      textEl.textContent = "JARVIS is ready, including AI chat. Opening your dashboard…";
+    } else {
+      titleEl.textContent = "Almost there";
+      textEl.textContent = "JARVIS is ready for all built-in commands. AI chat isn't set up yet " +
+        "— add an API key anytime from Settings. Opening your dashboard…";
+    }
+  } catch (e) {
+    // Leave the default wording rather than block on a state-fetch failure.
+  }
 }
 
 function setKeyStatus(text, kind) {

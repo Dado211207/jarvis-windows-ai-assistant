@@ -111,11 +111,22 @@ class Brain:
     # --- private helpers ---
 
     def _local_fallback(self, command: str) -> BrainResponse:
-        """Return a polite message when no API key is set or the call fails."""
+        """Return a polite message when no API key is set or the call fails.
+
+        Every built-in command still works normally regardless — this only
+        covers the open-ended, natural-language path that needs the AI.
+        """
+        from app.core import paths
+
+        how_to_configure = (
+            "Add one from the Settings page."
+            if paths.is_frozen()
+            else "Add your ANTHROPIC_API_KEY to .env to enable AI responses."
+        )
         msg = (
             f"I received your message: \"{command}\"\n"
-            "Claude AI is not configured. "
-            "Add your ANTHROPIC_API_KEY to .env to enable AI responses."
+            f"AI chat is not configured, so I can't answer that. {how_to_configure} "
+            "Built-in commands (status, open apps, memory, etc.) work normally either way."
         )
         return BrainResponse(
             content=msg,
