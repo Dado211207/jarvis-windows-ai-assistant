@@ -6,6 +6,11 @@
 
 const $ = id => document.getElementById(id);
 
+// Server-rendered per-launch session token — see app/core/session_token.py.
+function _jarvisToken() {
+  return window.__JARVIS_TOKEN__ || "";
+}
+
 const API = {
   async get(path) {
     const r = await fetch(path);
@@ -15,14 +20,14 @@ const API = {
   async post(path, body) {
     const r = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Jarvis-Token": _jarvisToken() },
       body: JSON.stringify(body || {}),
     });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },
   async del(path) {
-    const r = await fetch(path, { method: "DELETE" });
+    const r = await fetch(path, { method: "DELETE", headers: { "X-Jarvis-Token": _jarvisToken() } });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },

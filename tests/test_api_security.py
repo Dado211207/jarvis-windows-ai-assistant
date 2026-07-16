@@ -1,0 +1,291 @@
+"""Tests for the local API request-protection layer:
+- app/core/session_token.py (per-launch random token)
+- app/api/local_guard.py (Host/Origin allowlist + token enforcement)
+- CORS configuration (no wildcard, regex-based dynamic-port allowlist)
+
+See docs/SECURITY.md for the full threat model and exact boundaries. These
+tests intentionally issue raw requests with explicit headers (bypassing the
+conftest.py shim that auto-attaches a valid token) to exercise the actual
+rejection paths a real attacker would hit.
+"""
+
+from unittest.mock import patch
+
+import pytest
+
+from app.api import local_guard
+from app.core import session_token
+
+
+@pytest.fixture
+def api_client():
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+    with TestClient(jarvis_app, raise_server_exceptions=True) as client:
+        yield client
+
+
+# --- session_token.py ---
+
+def test_token_is_generated_and_nonempty():
+    token = session_token.generate_token()
+    assert isinstance(token, str)
+    assert len(token) >= 32
+
+
+def test_token_changes_every_time_it_is_generated():
+    first = session_token.generate_token()
+    second = session_token.generate_token()
+    assert first != second
+
+
+def test_is_valid_true_for_current_token():
+    token = session_token.generate_token()
+    assert session_token.is_valid(token) is True
+
+
+def test_is_valid_false_for_wrong_token():
+    session_token.generate_token()
+    assert session_token.is_valid("not-the-token") is False
+
+
+def test_is_valid_false_for_empty_or_none():
+    session_token.generate_token()
+    assert session_token.is_valid("") is False
+    assert session_token.is_valid(None) is False
+
+
+def test_is_valid_false_when_no_token_ever_generated():
+    session_token._token = ""  # simulate a fresh, never-started process
+    assert session_token.is_valid("anything") is False
+
+
+# --- local_guard.py pure functions ---
+
+@pytest.mark.parametrize("host,expected", [
+    ("127.0.0.1", True),
+    ("127.0.0.1:5555", True),
+    ("localhost", True),
+    ("localhost:8080", True),
+    ("testserver", True),  # Starlette TestClient's fixed default — see module docstring
+    ("evil.com", False),
+    ("evil.com:5555", False),
+    ("", False),
+    ("127.0.0.1.evil.com", False),
+])
+def test_is_allowed_host(host, expected):
+    assert local_guard.is_allowed_host(host) is expected
+
+
+@pytest.mark.parametrize("origin,expected", [
+    ("http://127.0.0.1", True),
+    ("http://127.0.0.1:5555", True),
+    ("http://localhost:5555", True),
+    ("https://127.0.0.1:5555", False),   # wrong scheme
+    ("http://evil.com", False),
+    ("http://evil.com:5555", False),
+    ("null", False),
+    ("file://", False),
+    ("", False),
+])
+def test_is_allowed_origin(origin, expected):
+    assert local_guard.is_allowed_origin(origin) is expected
+
+
+# --- integration: trusted request succeeds ---
+
+def test_trusted_request_with_valid_token_succeeds(api_client):
+    token = session_token.get_token()
+    r = api_client.post(
+        "/command",
+        json={"command": "status"},
+        headers={"X-Jarvis-Token": token, "Origin": "http://127.0.0.1:5555"},
+    )
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+
+
+# --- missing / incorrect token fails ---
+
+def test_missing_token_rejected(api_client):
+    r = api_client.post("/command", json={"command": "status"}, headers={"X-Jarvis-Token": ""})
+    assert r.status_code == 401
+
+
+def test_incorrect_token_rejected(api_client):
+    r = api_client.post("/command", json={"command": "status"}, headers={"X-Jarvis-Token": "wrong-token-value"})
+    assert r.status_code == 401
+
+
+def test_incorrect_token_rejected_on_settings_patch(api_client):
+    r = api_client.patch("/settings", json={"values": {"assistant_name": "Nope"}}, headers={"X-Jarvis-Token": "wrong"})
+    assert r.status_code == 401
+
+
+def test_incorrect_token_rejected_on_onboarding_complete(api_client):
+    r = api_client.post("/onboarding/complete", headers={"X-Jarvis-Token": "wrong"})
+    assert r.status_code == 401
+
+
+def test_incorrect_token_rejected_on_preferences_delete(api_client):
+    r = api_client.delete("/preferences/1", headers={"X-Jarvis-Token": "wrong"})
+    assert r.status_code == 401
+
+
+def test_incorrect_token_rejected_on_action_confirm(api_client):
+    r = api_client.post("/actions/does-not-exist/confirm", headers={"X-Jarvis-Token": "wrong"})
+    assert r.status_code == 401
+
+
+def test_incorrect_token_rejected_on_diagnostics_open_logs(api_client):
+    r = api_client.post("/diagnostics/open-logs-folder", headers={"X-Jarvis-Token": "wrong"})
+    assert r.status_code == 401
+
+
+# --- foreign Origin fails ---
+
+def test_foreign_origin_rejected_even_with_valid_token(api_client):
+    token = session_token.get_token()
+    r = api_client.post(
+        "/command",
+        json={"command": "status"},
+        headers={"X-Jarvis-Token": token, "Origin": "https://evil.com"},
+    )
+    assert r.status_code == 403
+
+
+def test_null_origin_rejected(api_client):
+    token = session_token.get_token()
+    r = api_client.post(
+        "/command",
+        json={"command": "status"},
+        headers={"X-Jarvis-Token": token, "Origin": "null"},
+    )
+    assert r.status_code == 403
+
+
+# --- unexpected Host fails ---
+
+def test_unexpected_host_rejected(api_client):
+    r = api_client.get("/health", headers={"Host": "evil.com"})
+    assert r.status_code == 400
+
+
+def test_unexpected_host_rejected_for_state_changing_request(api_client):
+    token = session_token.get_token()
+    r = api_client.post(
+        "/command",
+        json={"command": "status"},
+        headers={"X-Jarvis-Token": token, "Host": "evil.com"},
+    )
+    assert r.status_code == 400
+
+
+# --- no wildcard CORS ---
+
+def test_cors_reflects_specific_origin_not_wildcard(api_client):
+    r = api_client.options(
+        "/command",
+        headers={
+            "Origin": "http://127.0.0.1:5555",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,x-jarvis-token",
+        },
+    )
+    acao = r.headers.get("access-control-allow-origin")
+    assert acao is not None
+    assert acao != "*"
+    assert acao == "http://127.0.0.1:5555"
+
+
+def test_cors_rejects_foreign_origin_preflight(api_client):
+    r = api_client.options(
+        "/command",
+        headers={
+            "Origin": "https://evil.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,x-jarvis-token",
+        },
+    )
+    assert r.headers.get("access-control-allow-origin") is None
+
+
+def test_no_route_ever_sets_wildcard_cors_header(api_client):
+    # Even for an allowed same-origin request, the reflected value must
+    # never be the literal wildcard.
+    r = api_client.get("/health", headers={"Origin": "http://127.0.0.1:5555"})
+    assert r.headers.get("access-control-allow-origin") != "*"
+
+
+# --- token changes after restart ---
+
+def test_token_differs_across_separate_app_lifespans():
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+
+    with TestClient(jarvis_app):
+        first = session_token.get_token()
+    with TestClient(jarvis_app):
+        second = session_token.get_token()
+    assert first != second
+    assert first and second
+
+
+# --- token is never logged ---
+
+def test_token_never_appears_in_logs(api_client, caplog):
+    caplog.set_level("DEBUG")
+    token = session_token.get_token()
+    api_client.post("/command", json={"command": "status"}, headers={"X-Jarvis-Token": token})
+    api_client.post("/command", json={"command": "status"}, headers={"X-Jarvis-Token": "wrong-value-xyz"})
+    assert token not in caplog.text
+
+
+# --- read-only health check remains usable ---
+
+def test_health_check_works_without_any_token(api_client):
+    r = api_client.get("/health", headers={"X-Jarvis-Token": ""})
+    assert r.status_code == 200
+
+
+def test_health_check_works_with_no_origin_header(api_client):
+    r = api_client.get("/health")
+    assert r.status_code == 200
+
+
+# --- CLI path remains functional (no HTTP layer involved at all) ---
+
+def test_cli_brain_process_bypasses_http_entirely():
+    from app.core.brain import brain
+    response = brain.process("status")
+    assert response.success is True
+
+
+# --- a malicious webpage cannot submit a state-changing request ---
+
+def test_malicious_webpage_simple_request_is_rejected(api_client):
+    """Simulates the actual bypass a malicious site would attempt: a
+    cross-origin fetch with a CORS-safelisted content type (no preflight
+    triggered) and no way to know the real token."""
+    r = api_client.post(
+        "/command",
+        content='{"command": "open notepad"}',
+        headers={
+            "Content-Type": "text/plain",  # safelisted -> browser sends it without a preflight
+            "Origin": "https://evil.com",
+            "X-Jarvis-Token": "",  # attacker cannot read this page's token
+        },
+    )
+    assert r.status_code in (401, 403)
+
+
+def test_malicious_webpage_preflight_never_succeeds(api_client):
+    r = api_client.options(
+        "/onboarding/complete",
+        headers={
+            "Origin": "https://evil.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "x-jarvis-token,content-type",
+        },
+    )
+    assert r.headers.get("access-control-allow-origin") is None

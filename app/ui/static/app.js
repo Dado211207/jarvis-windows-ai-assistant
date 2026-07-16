@@ -2,6 +2,15 @@
 
 const $ = id => document.getElementById(id);
 
+// This page's per-launch session token (see app/core/session_token.py),
+// rendered server-side into the page by app/ui/routes.py — never fetched
+// over the network, never stored in a cookie/localStorage/URL. Required on
+// every state-changing request; a page from another origin has no way to
+// read this value.
+function _jarvisToken() {
+  return window.__JARVIS_TOKEN__ || "";
+}
+
 const API = {
   async get(path) {
     const r = await fetch(path);
@@ -11,7 +20,7 @@ const API = {
   async post(path, body) {
     const r = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Jarvis-Token": _jarvisToken() },
       body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
@@ -20,14 +29,14 @@ const API = {
   async patch(path, body) {
     const r = await fetch(path, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Jarvis-Token": _jarvisToken() },
       body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },
   async del(path) {
-    const r = await fetch(path, { method: "DELETE" });
+    const r = await fetch(path, { method: "DELETE", headers: { "X-Jarvis-Token": _jarvisToken() } });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.core import onboarding
+from app.core import onboarding, session_token
 from app.logging_config import get_logger
 
 logger = get_logger("ui.routes")
@@ -27,6 +27,14 @@ def _onboarding_redirect():
     return None
 
 
+def _ctx(page: str) -> dict:
+    """Template context shared by every page: which nav item is active, and
+    the current per-launch session token (see app/core/session_token.py) —
+    rendered server-side so it never appears in a URL and is never
+    reachable by a page from a different origin."""
+    return {"page": page, "jarvis_token": session_token.get_token()}
+
+
 def _templates_dir() -> Path:
     """Return the templates directory — handles both source and PyInstaller bundle."""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
@@ -39,50 +47,50 @@ templates = Jinja2Templates(directory=str(_templates_dir()))
 
 @router.get("/onboarding", response_class=HTMLResponse, include_in_schema=False)
 async def onboarding_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "onboarding.html", {"page": "onboarding"})
+    return templates.TemplateResponse(request, "onboarding.html", _ctx("onboarding"))
 
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 async def dashboard(request: Request):
-    return _onboarding_redirect() or templates.TemplateResponse(request, "dashboard.html", {"page": "dashboard"})
+    return _onboarding_redirect() or templates.TemplateResponse(request, "dashboard.html", _ctx("dashboard"))
 
 
 @router.get("/chat", response_class=HTMLResponse, include_in_schema=False)
 async def chat(request: Request):
-    return _onboarding_redirect() or templates.TemplateResponse(request, "chat.html", {"page": "chat"})
+    return _onboarding_redirect() or templates.TemplateResponse(request, "chat.html", _ctx("chat"))
 
 
 @router.get("/logs", response_class=HTMLResponse, include_in_schema=False)
 async def logs(request: Request):
-    return _onboarding_redirect() or templates.TemplateResponse(request, "logs.html", {"page": "logs"})
+    return _onboarding_redirect() or templates.TemplateResponse(request, "logs.html", _ctx("logs"))
 
 
 @router.get("/memory", response_class=HTMLResponse, include_in_schema=False)
 async def memory(request: Request):
-    return _onboarding_redirect() or templates.TemplateResponse(request, "memory.html", {"page": "memory"})
+    return _onboarding_redirect() or templates.TemplateResponse(request, "memory.html", _ctx("memory"))
 
 
 @router.get("/voice", response_class=HTMLResponse, include_in_schema=False)
 async def voice(request: Request):
-    return _onboarding_redirect() or templates.TemplateResponse(request, "voice.html", {"page": "voice"})
+    return _onboarding_redirect() or templates.TemplateResponse(request, "voice.html", _ctx("voice"))
 
 
 @router.get("/actions", response_class=HTMLResponse, include_in_schema=False)
 async def actions_page(request: Request):
-    return _onboarding_redirect() or templates.TemplateResponse(request, "actions.html", {"page": "actions"})
+    return _onboarding_redirect() or templates.TemplateResponse(request, "actions.html", _ctx("actions"))
 
 
 @router.get("/settings", response_class=HTMLResponse, include_in_schema=False)
 async def settings_page(request: Request):
-    return _onboarding_redirect() or templates.TemplateResponse(request, "settings.html", {"page": "settings"})
+    return _onboarding_redirect() or templates.TemplateResponse(request, "settings.html", _ctx("settings"))
 
 
 @router.get("/help", response_class=HTMLResponse, include_in_schema=False)
 async def help_page(request: Request):
-    return _onboarding_redirect() or templates.TemplateResponse(request, "help.html", {"page": "help"})
+    return _onboarding_redirect() or templates.TemplateResponse(request, "help.html", _ctx("help"))
 
 
 @router.get("/diagnostics", response_class=HTMLResponse, include_in_schema=False)
 async def diagnostics_page(request: Request):
-    return _onboarding_redirect() or templates.TemplateResponse(request, "diagnostics.html", {"page": "diagnostics"})
+    return _onboarding_redirect() or templates.TemplateResponse(request, "diagnostics.html", _ctx("diagnostics"))

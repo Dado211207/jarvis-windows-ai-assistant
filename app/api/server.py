@@ -18,6 +18,17 @@ logger = get_logger("api.server")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    from app.core import session_token
+    token = session_token.generate_token()  # fresh every launch; never persisted, never logged
+    # Deliberate trusted path for --api / dev use: the token is only ever
+    # printed to an interactive console the caller explicitly opened
+    # themselves (never to the rotating log file — see session_token.py).
+    # The production launcher never sets this flag; its only consumer is
+    # the browser tab it opens itself, which gets the token server-rendered
+    # into the page (see app/ui/routes.py) instead.
+    if getattr(app.state, "print_token_on_startup", False) and sys.stdout is not None:
+        print(f"JARVIS local API session token (this run only): {token}")
+        print("Pass it as the X-Jarvis-Token header on state-changing requests (POST/PUT/PATCH/DELETE).")
     logger.info("JARVIS API starting up — %s %s", __version__, __phase__)
     from app.core.brain import brain
     brain.initialise()
@@ -35,13 +46,21 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Local-only CORS: only allow requests from the same machine
+    # Local-only CORS: only allow requests from this machine, on any port.
+    # (allow_origins does exact/literal matching, not glob — a hardcoded
+    # "http://127.0.0.1:*" would never match a real Origin header at all;
+    # allow_origin_regex is the correct mechanism for a variable port.)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:*", "http://localhost:*"],
-        allow_methods=["GET", "POST"],
+        allow_origin_regex=r"^http://(127\.0\.0\.1|localhost)(:\d+)?$",
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["*"],
     )
+
+    # Host/Origin allowlist + per-launch session token for state-changing
+    # requests — see app/api/local_guard.py and docs/SECURITY.md.
+    from app.api.local_guard import LocalOnlyGuardMiddleware
+    app.add_middleware(LocalOnlyGuardMiddleware)
 
     from app.api.routes import router
     app.include_router(router)
@@ -90,6 +109,10 @@ def run_api() -> None:
     setup_logging()
     from app.core import runtime_state
     runtime_state.set_actual_port(settings.jarvis_port)
+    # Deliberate trusted path: --api is always started explicitly from a
+    # console the caller already controls, so printing the session token
+    # there (never to the log file) is safe — see the lifespan handler above.
+    app.state.print_token_on_startup = True
     logger.info(
         "Starting JARVIS API on http://%s:%s",
         settings.jarvis_host,
