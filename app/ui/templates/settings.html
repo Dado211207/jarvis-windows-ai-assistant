@@ -155,6 +155,21 @@
   </form>
 
   <div class="section mt-4">
+    <div class="section-title">About &amp; Updates</div>
+    <div class="card">
+      <div class="status-row"><span class="status-row-label">Current version</span><span class="status-row-value" id="update-current-version">&mdash;</span></div>
+      <div class="btn-row mt-2">
+        <button type="button" class="btn btn-ghost" id="update-check-btn">Check for updates</button>
+        <span id="update-status" class="settings-status"></span>
+      </div>
+      <p id="update-unsupported-note" class="text-xs text-muted mt-2" hidden></p>
+      <div id="update-available-box" class="mt-2" hidden>
+        <a id="update-download-link" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm">Download the new version</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="section mt-4">
     <div class="section-title">Safety</div>
     <div class="card">
       <div class="status-row">

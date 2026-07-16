@@ -902,6 +902,54 @@ function initSettings() {
   if (form)   form.addEventListener("submit", saveSettings);
   if (reload) reload.addEventListener("click", loadSettings);
   loadSettings();
+
+  const updateBtn = $("update-check-btn");
+  if (updateBtn) updateBtn.addEventListener("click", checkForUpdates);
+  checkForUpdates();
+}
+
+function setUpdateStatus(text, ok) {
+  const el = $("update-status");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "settings-status " + (ok === true ? "text-ok" : ok === false ? "text-err" : "");
+}
+
+async function checkForUpdates() {
+  const btn = $("update-check-btn");
+  const note = $("update-unsupported-note");
+  const box = $("update-available-box");
+  const link = $("update-download-link");
+  if (btn) btn.disabled = true;
+  setUpdateStatus("Checking…", null);
+  try {
+    const r = await API.get("/update/check");
+    setText("update-current-version", r.current_version || "—");
+    if (box) box.hidden = true;
+    if (note) note.hidden = true;
+
+    if (!r.checked) {
+      setUpdateStatus("", null);
+      if (note) {
+        note.textContent = r.reason || "Update checking is unavailable.";
+        note.hidden = false;
+      }
+      if (btn) btn.disabled = !r.reason || !r.reason.startsWith("Could not reach");
+      return;
+    }
+
+    if (r.update_available) {
+      setUpdateStatus(`A new version is available: ${r.latest_version}`, true);
+      if (link) link.href = r.download_url;
+      if (box) box.hidden = false;
+    } else {
+      setUpdateStatus("You're on the latest version.", true);
+    }
+  } catch (e) {
+    setUpdateStatus("Could not check for updates: " + e.message, false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
