@@ -149,6 +149,29 @@ def test_show_error_dialog_swallows_platform_errors():
         launcher.show_error_dialog("Title", "Message")  # must not raise
 
 
+# --- test mode / console hiding ---
+
+def test_is_test_mode_false_by_default(monkeypatch):
+    monkeypatch.delenv("JARVIS_TEST_MODE", raising=False)
+    assert launcher.is_test_mode() is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "True", "yes"])
+def test_is_test_mode_true_when_set(monkeypatch, value):
+    monkeypatch.setenv("JARVIS_TEST_MODE", value)
+    assert launcher.is_test_mode() is True
+
+
+def test_hide_console_window_noop_on_non_windows():
+    launcher._hide_console_window()  # must not raise on Linux CI
+
+
+def test_hide_console_window_never_raises_without_real_ctypes():
+    with patch("app.core.launcher.sys.platform", "win32"), \
+         patch("builtins.__import__", side_effect=ImportError("no ctypes here")):
+        launcher._hide_console_window()  # must not raise
+
+
 # --- run_production orchestration (fully mocked collaborators) ---
 
 def test_run_production_bring_existing_to_foreground():
@@ -180,6 +203,23 @@ def test_run_production_happy_path():
     mock_open.assert_called_once_with(5555)
     mock_thread.join.assert_called_once_with()
     mock_release.assert_called_once()
+
+
+def test_run_production_test_mode_skips_browser_open(monkeypatch):
+    monkeypatch.setenv("JARVIS_TEST_MODE", "1")
+    mock_server = MagicMock()
+    mock_thread = MagicMock()
+    with patch("app.core.launcher.find_free_port", return_value=5555), \
+         patch("app.core.launcher.try_acquire_lock", return_value=None), \
+         patch("app.core.launcher._build_server", return_value=mock_server), \
+         patch("app.core.launcher._serve_in_thread", return_value=mock_thread), \
+         patch("app.core.launcher._install_signal_handlers"), \
+         patch("app.core.launcher.wait_for_health", return_value=True), \
+         patch("app.core.launcher.open_browser") as mock_open, \
+         patch("app.core.launcher.release_lock"):
+        code = launcher.run_production()
+    assert code == 0
+    mock_open.assert_not_called()
 
 
 def test_run_production_health_timeout_shows_dialog_and_stops_server():

@@ -7,8 +7,20 @@ waits for the health check, opens the dashboard in the default browser, then
 blocks until the server thread exits. There is deliberately no subprocess
 here, so there is no child process that could ever be orphaned.
 
-Assumes the frozen executable is built with PyInstaller's windowed/noconsole
-mode — this module does not itself hide any console window.
+The build stays in PyInstaller's normal console mode (not --windowed) so the
+existing --cli/--api flags keep working with real stdin/stdout for support
+and debugging. Instead, run_production() hides its own console window at
+startup (ShowWindow/GetConsoleWindow) — this gives the same "no visible
+console in normal use" result without the tradeoffs of a windowed-only build
+(swallowed tracebacks, sys.stdout/stderr becoming None everywhere).
+
+JARVIS_TEST_MODE=1 disables the browser auto-open step only, for CI smoke
+testing on windows-latest (see .github/workflows/windows-build.yml). Combined
+with JARVIS_APPDATA_OVERRIDE (app.core.paths) and JARVIS_PORT, this is the
+narrowly-scoped Windows test mode: it changes nothing about security, never
+touches secrets, and never enables arbitrary execution — it only skips
+popping open a browser tab in a headless CI session. It is off unless
+explicitly set and logs loudly when active.
 """
 
 import json
@@ -128,6 +140,28 @@ def open_browser(port: int, path: str = "/ui/") -> None:
     webbrowser.open(f"http://127.0.0.1:{port}{path}")
 
 
+def is_test_mode() -> bool:
+    """JARVIS_TEST_MODE=1 — CI-only, disables browser auto-open. See the
+    module docstring for exactly what this does and does not change."""
+    return os.environ.get("JARVIS_TEST_MODE", "").strip().lower() in ("1", "true", "yes")
+
+
+def _hide_console_window() -> None:
+    """Best-effort, Windows-only, never raises. A brief console flash before
+    this runs is possible and acceptable — the alternative (a --windowed
+    PyInstaller build) would break --cli/--api's real stdin/stdout instead."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            SW_HIDE = 0
+            ctypes.windll.user32.ShowWindow(hwnd, SW_HIDE)
+    except Exception:
+        pass
+
+
 def show_error_dialog(title: str, message: str) -> None:
     """User-readable failure surface. Never raises — startup failures must
     still be logged even if the dialog itself can't be shown."""
@@ -180,9 +214,12 @@ def run_production() -> int:
     Returns a process exit code — never raises. Every failure path is logged
     and surfaced via show_error_dialog() before returning.
     """
+    _hide_console_window()
     paths.seed_production_env()
     setup_logging()
     logger.info("JARVIS production launcher starting.")
+    if is_test_mode():
+        logger.warning("JARVIS_TEST_MODE active — browser auto-open is disabled. Never enable this in a normal install.")
 
     from app.core import migration
     migration_result = migration.migrate_if_needed()
@@ -224,7 +261,8 @@ def run_production() -> int:
             thread.join(timeout=5.0)
             return 1
 
-        open_browser(port)
+        if not is_test_mode():
+            open_browser(port)
         thread.join()
         return 0
     except Exception as exc:

@@ -63,24 +63,76 @@ JARVIS UI itself, not in a terminal or a text editor.
   `SignTool=` directive backed by a certificate provided via CI secrets) can
   be added later without restructuring the installer.
 
+## CI: build, installer compile, and smoke test
+
+`.github/workflows/windows-build.yml` runs on every push/PR against
+`windows-latest` and:
+
+1. Runs the full test suite and `compileall` (unchanged from before this
+   effort).
+2. Extracts the version from `app/__init__.py` (`python -c "import app;
+   print(app.__version__)"`) — the one place the version is read from.
+3. Builds the PyInstaller `--onedir` output.
+4. Installs Inno Setup via `choco install innosetup` and compiles
+   `installer/JARVIS.iss` into `JARVIS-Setup-<version>.exe`, passing the
+   extracted version via `/DMyAppVersion=`.
+5. Packages the same PyInstaller output into an optional
+   `JARVIS-Portable-<version>.zip` (for users who prefer not to install
+   anything — includes `START_JARVIS.bat` / `START_JARVIS_API.bat` /
+   `.env.example`, not the primary path).
+6. Generates `SHA256SUMS.txt` over both artifacts.
+7. Runs an installer smoke test (see below) and uploads all three as build
+   artifacts. **Nothing here publishes a GitHub Release or is reachable by
+   end users** — see `docs/release-process.md` for the separate, manual,
+   tag-triggered release workflow this does not touch.
+
+### Windows Runtime Test Mode
+
+The smoke test never touches a real user's `%LOCALAPPDATA%` and never pops
+up a browser tab on the CI runner. Two env vars, both no-ops unless
+explicitly set, make this possible:
+
+- `JARVIS_APPDATA_OVERRIDE` (`app/core/paths.py`) — redirects every
+  production path (data, logs, cache, backups, config) under a throwaway
+  directory instead of the real per-user AppData root.
+- `JARVIS_TEST_MODE=1` (`app/core/launcher.py`) — skips only the browser
+  auto-open step; logs a warning while active. Nothing about security,
+  secret storage, or process execution changes — see the module docstring
+  for the exact scope.
+
+The smoke test: silently installs (`/VERYSILENT /SUPPRESSMSGBOXES
+/DIR=<temp>`), launches the installed exe with both variables set, polls
+`/health` until ready, confirms `/ui/onboarding` responds, confirms the
+SQLite database was created under the isolated AppData dir (not the install
+dir), confirms no `.env` is required or present, stops the process, then
+silently uninstalls and confirms the install directory is gone while the
+(isolated) user data directory is preserved — exercising the same
+"preserve data by default" path a real user's default uninstall takes,
+since `/VERYSILENT` accepts the uninstaller prompt's default answer ("No,
+don't delete my data").
+
 ## Not yet built here
 
-- CI wiring to actually run `iscc` and produce `JARVIS-Setup-<version>.exe`
-  as a build artifact (tracked separately; the script above is ready to be
-  invoked but is not yet exercised by CI on `windows-latest`).
-- A branded `.ico` — the current build uses Inno Setup's default icon; the
-  PyInstaller build also does not yet set `--icon`. Cosmetic, not blocking.
-- Silent-install/uninstall smoke testing, update-check UI, and the remaining
-  documentation split (`README.md`, `docs/USER_GUIDE.md`, `docs/SECURITY.md`)
-  are tracked as separate follow-up work on the same branch.
+- A branded `.ico` — the current build uses Inno Setup's default icon, and
+  the PyInstaller build does not yet set `--icon` or a Windows version
+  resource (`--version-file`) for the exe's file properties. Cosmetic, not
+  blocking.
+- Update-check UI and the remaining documentation split (`README.md` full
+  rewrite, `docs/USER_GUIDE.md`, `docs/SECURITY.md`) are tracked as
+  separate follow-up work on the same branch.
 
 ## Manual verification
 
 This repository's automation runs in a Linux container with no access to a
-real Windows machine or a licensed/installed Inno Setup Compiler, so
-`installer/JARVIS.iss` has **not** been compiled or run end-to-end as part of
-this change. It is designed to be exercised by `windows-latest` GitHub
-Actions runners (which do have `iscc` available via the `chocolatey`/
-`innosetup` package or a dedicated setup action) — wiring that up is the
-next step, not yet done in this change. Until CI actually compiles and smoke
-tests it, treat this script as reviewed-but-unverified.
+real Windows machine and no licensed/installed Inno Setup Compiler — every
+piece above (`installer/JARVIS.iss`, the CI workflow's PowerShell smoke
+test, `app/core/launcher.py`'s console-hiding and test-mode code) was
+written and unit-tested (with the Windows-specific branches mocked out) but
+has **not** been executed end-to-end on real Windows from this environment.
+`windows-latest` GitHub Actions runners are the actual Windows execution
+this relies on for real verification; until a CI run on that runner has
+gone green, treat this whole pipeline as reviewed-but-CI-unverified, not as
+confirmed working. A real Windows machine is additionally required for the
+interactive, visual parts no automation can cover — the installer wizard's
+look, the onboarding UI's appearance, and SmartScreen's actual prompt —
+none of which this branch's automation attempts to substitute for.
