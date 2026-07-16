@@ -68,6 +68,12 @@ def is_sqlite_db_valid(path: Path) -> bool:
         return False
 
 
+def get_marker() -> Optional[dict]:
+    """Public read-only accessor for Diagnostics — what migrate_if_needed()
+    last recorded, or None if it has never run."""
+    return _read_marker()
+
+
 def find_legacy_db() -> Optional[Path]:
     for candidate in paths.legacy_db_candidates():
         if candidate.exists():

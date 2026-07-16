@@ -58,6 +58,9 @@ def create_app() -> FastAPI:
     from app.api.onboarding_routes import router as onboarding_router
     app.include_router(onboarding_router)
 
+    from app.api.diagnostics_routes import router as diagnostics_router
+    app.include_router(diagnostics_router)
+
     from app.ui.routes import router as ui_router
     app.include_router(ui_router)
 
@@ -82,6 +85,8 @@ def run_api() -> None:
     import uvicorn
 
     setup_logging()
+    from app.core import runtime_state
+    runtime_state.set_actual_port(settings.jarvis_port)
     logger.info(
         "Starting JARVIS API on http://%s:%s",
         settings.jarvis_host,

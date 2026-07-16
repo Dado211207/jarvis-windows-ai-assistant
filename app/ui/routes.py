@@ -81,3 +81,8 @@ async def settings_page(request: Request):
 @router.get("/help", response_class=HTMLResponse, include_in_schema=False)
 async def help_page(request: Request):
     return _onboarding_redirect() or templates.TemplateResponse(request, "help.html", {"page": "help"})
+
+
+@router.get("/diagnostics", response_class=HTMLResponse, include_in_schema=False)
+async def diagnostics_page(request: Request):
+    return _onboarding_redirect() or templates.TemplateResponse(request, "diagnostics.html", {"page": "diagnostics"})

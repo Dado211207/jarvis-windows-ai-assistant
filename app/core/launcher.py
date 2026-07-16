@@ -207,6 +207,9 @@ def run_production() -> int:
         return 0
 
     try:
+        from app.core import runtime_state
+        runtime_state.set_actual_port(port)
+
         server = _build_server(app_settings.jarvis_host, port)
         thread = _serve_in_thread(server)
         _install_signal_handlers(server)
