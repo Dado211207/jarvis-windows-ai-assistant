@@ -10,3 +10,4 @@ anthropic>=0.20.0
 pyttsx3>=2.90
 pytest>=7.4.0
 httpx>=0.25.0
+pywin32>=306; sys_platform == "win32"
