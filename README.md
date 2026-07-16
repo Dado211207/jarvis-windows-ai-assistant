@@ -168,18 +168,28 @@ The following are **not** in the current release. Some are planned for later pha
 
 ### Windows (recommended)
 
+Download `JARVIS-Setup-<version>.exe` from the latest release and run it —
+no Administrator rights required. See `docs/USER_GUIDE.md` for the full
+first-run walkthrough. (This installer is being built out on the
+`feat/windows-installer-onboarding` branch; see `docs/WINDOWS_INSTALLER.md`
+for its current status.)
+
+### Contributing / running from source
+
 ```bat
 git clone https://github.com/dado211207/jarvis-windows-ai-assistant.git
 cd jarvis-windows-ai-assistant
-installer\JARVIS_SETUP.bat
+installer\DEV_SETUP_FROM_SOURCE.bat
 ```
 
 Or with PowerShell:
 
 ```powershell
 cd jarvis-windows-ai-assistant
-.\installer\install.ps1
+.\installer\dev_setup_from_source.ps1
 ```
+
+These are developer environment scripts, not the end-user install method.
 
 ### Manual / Linux / macOS (development)
 

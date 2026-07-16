@@ -1,12 +1,14 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    JARVIS Phase 1 setup script for Windows PowerShell.
+    JARVIS DEVELOPER environment setup script (run from source).
 .DESCRIPTION
-    Checks Python version, creates a virtual environment, installs
-    requirements, and prepares the data directory layout.
-    Does NOT install Python automatically, does NOT request admin rights,
-    does NOT modify system settings.
+    This is NOT the normal install method — if you just want to use JARVIS,
+    download JARVIS-Setup-<version>.exe instead (see docs/USER_GUIDE.md).
+    This script is for contributors: it checks the Python version, creates a
+    virtual environment, installs requirements, and prepares the data
+    directory layout. Does NOT install Python automatically, does NOT
+    request admin rights, does NOT modify system settings.
 #>
 
 Set-StrictMode -Version Latest
@@ -18,7 +20,8 @@ function Write-Fail([string]$msg) { Write-Host "[ERROR]  $msg" -ForegroundColor 
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  JARVIS Setup — Personal Windows AI Assistant (Phase 1)   " -ForegroundColor Cyan
+Write-Host "  JARVIS - DEVELOPER environment setup (run from source)    " -ForegroundColor Cyan
+Write-Host "  Not the normal install method - see docs/USER_GUIDE.md    " -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
