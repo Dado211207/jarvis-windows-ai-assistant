@@ -27,7 +27,8 @@ from app.core import launcher
 def _isolated(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JARVIS_APPDATA_OVERRIDE", str(tmp_path))
-    with patch("app.core.launcher.paths.is_frozen", return_value=True):
+    with patch("app.core.launcher.paths.is_frozen", return_value=True), \
+         patch("app.core.migration.migrate_if_needed", return_value={"status": "no_legacy_found"}):
         yield
 
 

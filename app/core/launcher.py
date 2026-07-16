@@ -184,6 +184,10 @@ def run_production() -> int:
     setup_logging()
     logger.info("JARVIS production launcher starting.")
 
+    from app.core import migration
+    migration_result = migration.migrate_if_needed()
+    logger.info("Legacy DB migration check: %s", migration_result.get("status"))
+
     from app.config import settings as app_settings
 
     try:
