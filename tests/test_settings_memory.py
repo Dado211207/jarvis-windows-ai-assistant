@@ -390,6 +390,76 @@ def test_forget_confirm_after_cancel_is_blocked(api_client):
     assert len(list_preferences()["data"]) == 1
 
 
+def test_forget_concurrent_confirm_deletes_exactly_once(api_client):
+    """Two genuinely concurrent /confirm requests on the same pending action
+    must not both succeed and must not delete twice. pending_store.confirm()
+    performs its pending->confirmed check-and-set under a single lock, so
+    exactly one request should observe success.
+    """
+    import threading
+    from app.core.preferences import remember_preference, list_preferences
+
+    remember_preference("I prefer dark mode")
+    r = api_client.post("/command", json={"command": "forget dark mode"})
+    action_id = r.json()["pending_action_id"]
+
+    results = []
+    barrier = threading.Barrier(2)
+
+    def fire():
+        barrier.wait()  # maximise the chance both threads race the same instant
+        results.append(api_client.post(f"/actions/{action_id}/confirm").json())
+
+    threads = [threading.Thread(target=fire) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    successes = [r for r in results if r["success"] is True]
+    assert len(successes) == 1, f"expected exactly one success, got: {results}"
+    assert len(list_preferences()["data"]) == 0  # deleted exactly once, not twice
+
+
+def test_forget_stale_pending_action_does_not_hit_a_new_record_with_same_text(api_client):
+    """A pending action is bound to a resolved, AUTOINCREMENT preference id —
+    never to raw text. If that exact row is deleted through another path
+    before the pending action is confirmed, confirming it must be a safe
+    no-op, even if a brand new preference with identical text now exists.
+    """
+    from app.core.preferences import remember_preference, list_preferences
+    from db.database import get_db
+
+    remember_preference("I prefer dark mode")
+    r = api_client.post("/command", json={"command": "forget dark mode"})
+    action_id = r.json()["pending_action_id"]
+    original_pref_id = r.json()["data"]["parameters"]["pref_id"]
+
+    # Simulate the original row being removed through a different path
+    # (e.g. the UI's direct DELETE /preferences/{id}) before this stale
+    # approval is ever confirmed.
+    get_db().delete_preference(original_pref_id)
+
+    # A new preference with the exact same text — SQLite AUTOINCREMENT
+    # guarantees it gets a fresh id, never reusing original_pref_id.
+    remember_preference("I prefer dark mode")
+    new_matches = list_preferences()["data"]
+    assert len(new_matches) == 1
+    new_pref_id = new_matches[0]["id"]
+    assert new_pref_id != original_pref_id
+
+    # Confirming the stale action must not touch the new record.
+    confirm = api_client.post(f"/actions/{action_id}/confirm")
+    body = confirm.json()
+    assert body["success"] is False
+    assert "no longer exists" in body["message"].lower()
+
+    # The new preference (same text, different id) must still be present.
+    remaining = list_preferences()["data"]
+    assert len(remaining) == 1
+    assert remaining[0]["id"] == new_pref_id
+
+
 @pytest.mark.parametrize("cmd", [
     "what do you remember",
     "show memory",
