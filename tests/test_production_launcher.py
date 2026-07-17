@@ -139,8 +139,44 @@ def test_open_browser_opens_expected_url():
     mock_open.assert_called_once_with("http://127.0.0.1:5555/ui/")
 
 
-def test_show_error_dialog_never_raises():
-    launcher.show_error_dialog("Title", "Something went wrong.")  # must not raise
+def test_show_error_dialog_never_raises_on_non_windows():
+    # Forces the non-Windows branch explicitly rather than relying on
+    # whatever sys.platform happens to be wherever this test runs — see
+    # test_show_error_dialog_calls_messagebox_on_windows for why the
+    # win32 branch must never be exercised unmocked (real MessageBoxW is
+    # a blocking modal call with no one there to click it on CI).
+    with patch("app.core.launcher.sys.platform", "linux"):
+        launcher.show_error_dialog("Title", "Something went wrong.")  # must not raise
+
+
+def test_show_error_dialog_calls_messagebox_on_windows():
+    """A real (unmocked) MessageBoxW call previously hung the Windows CI
+    runner for 6 real hours until GitHub force-cancelled the job — it's a
+    blocking modal dialog with no one to click it on an unattended runner.
+    This exercises the real win32 code path for the first time, safely, by
+    injecting a fake ctypes module instead of relying on sys.platform
+    happening to be win32 (which it never is in this Linux sandbox, and
+    genuinely is on the real windows-latest CI runner)."""
+    captured = {}
+
+    def fake_message_box_w(hwnd, text, caption, mb_type):
+        captured["hwnd"] = hwnd
+        captured["text"] = text
+        captured["caption"] = caption
+        captured["mb_type"] = mb_type
+        return 1
+
+    fake_user32 = type("FakeUser32", (), {"MessageBoxW": staticmethod(fake_message_box_w)})
+    fake_windll = type("FakeWindll", (), {"user32": fake_user32})
+    fake_ctypes = type("FakeCtypes", (), {"windll": fake_windll})
+
+    with patch("app.core.launcher.sys.platform", "win32"), \
+         patch.dict("sys.modules", {"ctypes": fake_ctypes}):
+        launcher.show_error_dialog("JARVIS could not start", "Something went wrong.")
+
+    assert captured["text"] == "Something went wrong."
+    assert captured["caption"] == "JARVIS could not start"
+    assert captured["mb_type"] == 0x10  # MB_ICONERROR
 
 
 def test_show_error_dialog_swallows_platform_errors():
@@ -163,13 +199,66 @@ def test_is_test_mode_true_when_set(monkeypatch, value):
 
 
 def test_hide_console_window_noop_on_non_windows():
-    launcher._hide_console_window()  # must not raise on Linux CI
+    with patch("app.core.launcher.sys.platform", "linux"):
+        launcher._hide_console_window()  # must not raise
 
 
 def test_hide_console_window_never_raises_without_real_ctypes():
     with patch("app.core.launcher.sys.platform", "win32"), \
          patch("builtins.__import__", side_effect=ImportError("no ctypes here")):
         launcher._hide_console_window()  # must not raise
+
+
+def test_hide_console_window_calls_showwindow_on_windows():
+    """GetConsoleWindow/ShowWindow are quick, non-modal Win32 calls (unlike
+    MessageBoxW) — safe to exercise for real, but still done via a fake
+    ctypes module so this never depends on an actual console existing."""
+    captured = {}
+
+    def fake_get_console_window():
+        return 0xDEADBEEF
+
+    def fake_show_window(hwnd, cmd):
+        captured["hwnd"] = hwnd
+        captured["cmd"] = cmd
+        return 1
+
+    fake_kernel32 = type("FakeKernel32", (), {"GetConsoleWindow": staticmethod(fake_get_console_window)})
+    fake_user32 = type("FakeUser32", (), {"ShowWindow": staticmethod(fake_show_window)})
+    fake_windll = type("FakeWindll", (), {"kernel32": fake_kernel32, "user32": fake_user32})
+    fake_ctypes = type("FakeCtypes", (), {"windll": fake_windll})
+
+    with patch("app.core.launcher.sys.platform", "win32"), \
+         patch.dict("sys.modules", {"ctypes": fake_ctypes}):
+        launcher._hide_console_window()
+
+    assert captured["hwnd"] == 0xDEADBEEF
+    assert captured["cmd"] == 0  # SW_HIDE
+
+
+def test_hide_console_window_noop_when_no_console_handle():
+    """A frozen --windowed-style build (or any process with no attached
+    console) has GetConsoleWindow() return 0 — must not call ShowWindow at
+    all in that case (nothing to hide, and hwnd=0 has special OS meaning)."""
+    show_window_calls = []
+
+    def fake_get_console_window():
+        return 0
+
+    def fake_show_window(hwnd, cmd):
+        show_window_calls.append((hwnd, cmd))
+        return 1
+
+    fake_kernel32 = type("FakeKernel32", (), {"GetConsoleWindow": staticmethod(fake_get_console_window)})
+    fake_user32 = type("FakeUser32", (), {"ShowWindow": staticmethod(fake_show_window)})
+    fake_windll = type("FakeWindll", (), {"kernel32": fake_kernel32, "user32": fake_user32})
+    fake_ctypes = type("FakeCtypes", (), {"windll": fake_windll})
+
+    with patch("app.core.launcher.sys.platform", "win32"), \
+         patch.dict("sys.modules", {"ctypes": fake_ctypes}):
+        launcher._hide_console_window()
+
+    assert show_window_calls == []
 
 
 # --- run_production orchestration (fully mocked collaborators) ---
