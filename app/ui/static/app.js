@@ -120,8 +120,9 @@ async function loadDashboard() {
   });
 
   try {
-    const [health, voice, sys] = await Promise.allSettled([
+    const [health, root, voice, sys] = await Promise.allSettled([
       API.get("/health"),
+      API.get("/"),
       API.get("/voice/status"),
       API.get("/system"),
     ]);
@@ -129,18 +130,24 @@ async function loadDashboard() {
     if (health.status === "fulfilled") {
       const h = health.value;
       setTopbarHealth(h.healthy);
-      setTopbarBrain(h.brain_configured);
       setStatus("dash-health", h.healthy ? "OK" : "Degraded",
                 h.healthy ? "text-ok" : "text-err");
-      setStatus("dash-db", h.db_accessible ? "Connected" : "Error",
-                h.db_accessible ? "text-ok" : "text-err");
-      setStatus("dash-brain", h.brain_configured ? "Claude AI" : "Local fallback",
-                h.brain_configured ? "text-ok" : "text-warn");
       setText("dash-version", h.version || "—");
     } else {
-      ["dash-health", "dash-db", "dash-brain"].forEach(
-        id => setStatus(id, "Error", "text-err"));
+      setStatus("dash-health", "Error", "text-err");
       setTopbarHealth(false);
+    }
+
+    if (root.status === "fulfilled") {
+      const r = root.value;
+      setTopbarBrain(r.brain_configured);
+      setStatus("dash-db", r.db_accessible ? "Connected" : "Error",
+                r.db_accessible ? "text-ok" : "text-err");
+      setStatus("dash-brain", r.brain_configured ? "Claude AI" : "Local fallback",
+                r.brain_configured ? "text-ok" : "text-warn");
+    } else {
+      ["dash-db", "dash-brain"].forEach(id => setStatus(id, "Error", "text-err"));
+      setTopbarBrain(false);
     }
 
     if (voice.status === "fulfilled") {
@@ -367,8 +374,8 @@ async function loadAiNotice() {
   const notice = $("chat-ai-notice");
   if (!notice) return;
   try {
-    const h = await API.get("/health");
-    notice.style.display = h.brain_configured ? "none" : "";
+    const r = await API.get("/");
+    notice.style.display = r.brain_configured ? "none" : "";
   } catch (e) {
     // leave hidden — a health-check failure is surfaced elsewhere (topbar)
   }

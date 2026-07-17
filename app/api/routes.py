@@ -25,17 +25,21 @@ class StatusResponse(BaseModel):
     phase: str
     tools_registered: int
     brain_configured: bool
+    db_accessible: bool
     ai_provider: str
     ai_model: str
 
 
 class HealthResponse(BaseModel):
+    """Deliberately minimal — this is the one JSON endpoint that stays
+    reachable without a session token (see app/api/local_guard.py), so it
+    must never carry database status, provider/API-key status, or anything
+    else beyond "is the process up." Version/phase are software identity,
+    not application data, so they stay — everything richer (DB integrity,
+    brain_configured, provider) lives on the token-protected `/` and
+    `/diagnostics` endpoints instead."""
     status: str
     healthy: bool
-    db: str
-    db_accessible: bool
-    brain: str
-    brain_configured: bool
     version: str
     phase: str
 
@@ -54,19 +58,7 @@ class SystemStatusResponse(BaseModel):
 @router.get("/", response_model=StatusResponse)
 def root() -> StatusResponse:
     from app.config import settings
-    return StatusResponse(
-        status="running",
-        version=__version__,
-        phase=__phase__,
-        tools_registered=len(registry),
-        brain_configured=brain.is_configured(),
-        ai_provider=settings.jarvis_ai_provider,
-        ai_model=settings.jarvis_ai_model,
-    )
 
-
-@router.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
     db_ok = False
     try:
         from db.database import get_db
@@ -74,17 +66,22 @@ def health() -> HealthResponse:
         db_ok = True
     except Exception:
         pass
-    brain_ok = brain.is_configured()
-    return HealthResponse(
-        status="ok",
-        healthy=True,
-        db="ok" if db_ok else "error",
-        db_accessible=db_ok,
-        brain="claude" if brain_ok else "local",
-        brain_configured=brain_ok,
+
+    return StatusResponse(
+        status="running",
         version=__version__,
         phase=__phase__,
+        tools_registered=len(registry),
+        brain_configured=brain.is_configured(),
+        db_accessible=db_ok,
+        ai_provider=settings.jarvis_ai_provider,
+        ai_model=settings.jarvis_ai_model,
     )
+
+
+@router.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    return HealthResponse(status="ok", healthy=True, version=__version__, phase=__phase__)
 
 
 @router.get("/system", response_model=SystemStatusResponse)

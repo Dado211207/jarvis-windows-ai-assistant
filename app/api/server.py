@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app import __phase__, __version__
@@ -46,19 +45,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Local-only CORS: only allow requests from this machine, on any port.
-    # (allow_origins does exact/literal matching, not glob — a hardcoded
-    # "http://127.0.0.1:*" would never match a real Origin header at all;
-    # allow_origin_regex is the correct mechanism for a variable port.)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origin_regex=r"^http://(127\.0\.0\.1|localhost)(:\d+)?$",
-        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        allow_headers=["*"],
-    )
-
-    # Host/Origin allowlist + per-launch session token for state-changing
-    # requests — see app/api/local_guard.py and docs/SECURITY.md.
+    # Host/Origin allowlist (anchored to the exact active port), CORS, and
+    # the per-launch session token for every private endpoint — handled
+    # natively in one place rather than Starlette's CORSMiddleware, which
+    # has no way to check the allowed origin's port at request time (its
+    # config is fixed at app-startup, before the real port is known). See
+    # app/api/local_guard.py and docs/SECURITY.md.
     from app.api.local_guard import LocalOnlyGuardMiddleware
     app.add_middleware(LocalOnlyGuardMiddleware)
 

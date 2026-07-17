@@ -225,10 +225,13 @@ def test_health_includes_phase(api_client):
     assert "Phase" in body["phase"]
 
 
-def test_health_includes_db_string(api_client):
+def test_health_stays_minimal(api_client):
+    """/health is the one endpoint reachable without a session token — it
+    must never carry DB status, provider status, or anything else beyond
+    process-is-up (see app/api/local_guard.py's is_public_path)."""
     r = api_client.get("/health")
     body = r.json()
-    assert body["db"] in ("ok", "error")
+    assert set(body.keys()) == {"status", "healthy", "version", "phase"}
 
 
 def test_ui_chat_post_command_roundtrip(api_client):

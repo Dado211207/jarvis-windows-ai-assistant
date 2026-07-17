@@ -347,12 +347,10 @@ def test_api_command_local_fallback(api_client):
 def test_health_does_not_expose_api_key(api_client):
     r = api_client.get("/health")
     assert r.status_code == 200
-    body = r.json()
     raw = r.text
     assert "anthropic_api_key" not in raw
     assert "ANTHROPIC_API_KEY" not in raw
     assert "sk-" not in raw
-    assert "brain_configured" in body
 
 
 def test_root_does_not_expose_api_key(api_client):
@@ -378,9 +376,31 @@ def test_root_includes_brain_status(api_client):
     assert isinstance(body["brain_configured"], bool)
 
 
-def test_health_includes_brain_configured(api_client):
+def test_root_includes_db_accessible(api_client):
+    """db_accessible (DB connectivity status) lives on the token-protected
+    `/` endpoint — same as brain_configured — never on public /health."""
+    r = api_client.get("/")
+    assert r.status_code == 200
+    body = r.json()
+    assert "db_accessible" in body
+    assert isinstance(body["db_accessible"], bool)
+
+
+def test_health_does_not_include_brain_configured(api_client):
+    """brain_configured (API-key status) moved off /health — see
+    test_root_includes_brain_status for where it's now tested, on the
+    token-protected `/` endpoint."""
     r = api_client.get("/health")
     assert r.status_code == 200
     body = r.json()
-    assert "brain_configured" in body
-    assert isinstance(body["brain_configured"], bool)
+    assert "brain_configured" not in body
+
+
+def test_health_does_not_include_db_accessible(api_client):
+    """db_accessible (database information) moved off /health — see
+    test_root_includes_db_accessible for where it's now tested, on the
+    token-protected `/` endpoint."""
+    r = api_client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert "db_accessible" not in body
