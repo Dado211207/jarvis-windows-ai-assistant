@@ -13,6 +13,10 @@ key, and even then only your typed messages are ever sent.
   first run, everyday use, Settings, Diagnostics, uninstall.
 - **Want the security model?** See [`docs/SECURITY.md`](docs/SECURITY.md) —
   where your API key is stored, what binds to what, what's logged.
+- **Thinking about a hosted/web version?** Read
+  [`docs/WEB_SECURITY_ARCHITECTURE.md`](docs/WEB_SECURITY_ARCHITECTURE.md)
+  first — the desktop app's localhost security model is not a starting
+  point for that, and this document is a hard boundary, not a suggestion.
 - **Building or reviewing the installer?** See
   [`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md).
 - **Testing the installer on real Windows?** See
@@ -144,7 +148,8 @@ db/
   database.py          — SQLite access layer
   migrations.py         — Schema creation
 installer/             — Inno Setup script + dev-only setup scripts (not the install method)
-docs/                   — WINDOWS_INSTALLER.md, USER_GUIDE.md, SECURITY.md, release-process.md
+docs/                   — WINDOWS_INSTALLER.md, USER_GUIDE.md, SECURITY.md,
+                          WEB_SECURITY_ARCHITECTURE.md, release-process.md
 tests/                  — Pytest suite
 run_jarvis.py           — PyInstaller entry point (--cli / --api / production launcher)
 ```
