@@ -3,17 +3,18 @@
 const $ = id => document.getElementById(id);
 
 // This page's per-launch session token (see app/core/session_token.py),
-// rendered server-side into the page by app/ui/routes.py — never fetched
-// over the network, never stored in a cookie/localStorage/URL. Required on
-// every state-changing request; a page from another origin has no way to
-// read this value.
+// rendered server-side into the page by app/ui/routes.py as a data
+// attribute (not an inline <script>, so the page needs no script-src
+// 'unsafe-inline' CSP allowance) — never fetched over the network, never
+// stored in a cookie/localStorage/URL. Required on every private request;
+// a page from another origin has no way to read this value.
 function _jarvisToken() {
-  return window.__JARVIS_TOKEN__ || "";
+  return document.body.dataset.jarvisToken || "";
 }
 
 const API = {
   async get(path) {
-    const r = await fetch(path);
+    const r = await fetch(path, { headers: { "X-Jarvis-Token": _jarvisToken() } });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },

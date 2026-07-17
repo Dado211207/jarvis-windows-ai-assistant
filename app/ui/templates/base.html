@@ -6,8 +6,7 @@
   <title>{% block title %}JARVIS{% endblock %} — Local AI Assistant</title>
   <link rel="stylesheet" href="/ui/static/style.css">
 </head>
-<body>
-<script>window.__JARVIS_TOKEN__ = "{{ jarvis_token }}";</script>
+<body data-jarvis-token="{{ jarvis_token }}">
 
 <aside class="sidebar">
   <div class="sidebar-brand">

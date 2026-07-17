@@ -3,13 +3,15 @@
 const $ = id => document.getElementById(id);
 
 // Server-rendered per-launch session token — see app/core/session_token.py.
+// Delivered as a data attribute on <body>, not an inline <script>, so this
+// page needs no script-src 'unsafe-inline' CSP allowance.
 function _jarvisToken() {
-  return window.__JARVIS_TOKEN__ || "";
+  return document.body.dataset.jarvisToken || "";
 }
 
 const API = {
   async get(path) {
-    const r = await fetch(path);
+    const r = await fetch(path, { headers: { "X-Jarvis-Token": _jarvisToken() } });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },

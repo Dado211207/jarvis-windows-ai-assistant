@@ -337,3 +337,117 @@ def test_malicious_webpage_preflight_never_succeeds(api_client):
         },
     )
     assert r.headers.get("access-control-allow-origin") is None
+
+
+# --- security response headers (app/api/local_guard.py's SECURITY_HEADERS) ---
+
+@pytest.mark.parametrize("path", ["/ui/", "/health", "/settings"])
+def test_security_headers_present_on_every_response(api_client, path):
+    """Success responses — HTML page shells, the public JSON endpoint, and a
+    private JSON endpoint alike — all carry the full header set. One place
+    sets these (local_guard.py), so there's no route-by-route opt-in to get
+    wrong."""
+    r = api_client.get(path)
+    assert r.status_code == 200
+    for header in local_guard.SECURITY_HEADERS:
+        assert header in r.headers, f"{path} is missing {header}"
+
+
+def test_security_headers_present_on_rejection_responses(api_client):
+    """A 401/403/400 rejection is still a response a browser renders (e.g.
+    the JSON body in dev tools) — it must be hardened too, not just the
+    happy path."""
+    r = api_client.get("/settings", headers={"X-Jarvis-Token": "wrong"})
+    assert r.status_code == 401
+    for header in local_guard.SECURITY_HEADERS:
+        assert header in r.headers, f"401 response is missing {header}"
+
+
+def test_security_headers_present_on_cors_preflight(api_client):
+    r = api_client.options(
+        "/settings",
+        headers={
+            "Origin": "http://127.0.0.1:5555",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    for header in local_guard.SECURITY_HEADERS:
+        assert header in r.headers, f"preflight response is missing {header}"
+
+
+def test_csp_blocks_iframe_embedding_two_ways(api_client):
+    """Both the modern (frame-ancestors) and legacy (X-Frame-Options)
+    mechanisms are set, so an older engine that ignores CSP is still
+    covered."""
+    r = api_client.get("/ui/")
+    csp = r.headers.get("content-security-policy", "")
+    assert "frame-ancestors 'none'" in csp
+    assert r.headers.get("x-frame-options") == "DENY"
+
+
+def test_csp_has_no_unsafe_eval_and_no_wildcard_script_source(api_client):
+    r = api_client.get("/ui/")
+    csp = r.headers.get("content-security-policy", "")
+    assert "unsafe-eval" not in csp
+    assert "script-src 'self'" in csp
+    # Only style-src carries 'unsafe-inline' (existing inline style="" attrs
+    # — see the comment on SECURITY_HEADERS); script-src must never have it.
+    script_src_clause = [c.strip() for c in csp.split(";") if c.strip().startswith("script-src")][0]
+    assert "unsafe-inline" not in script_src_clause
+
+
+def test_csp_locks_down_base_uri_object_src_form_action(api_client):
+    r = api_client.get("/ui/")
+    csp = r.headers.get("content-security-policy", "")
+    assert "base-uri 'none'" in csp
+    assert "object-src 'none'" in csp
+    assert "form-action 'self'" in csp
+
+
+def test_permissions_policy_denies_microphone_and_camera(api_client):
+    """Phase 3 TTS is output-only — JARVIS never requests browser
+    microphone/camera access, so both are denied outright, not merely
+    restricted to 'self' (see CLAUDE.md's Phase 3 rules)."""
+    r = api_client.get("/ui/")
+    pp = r.headers.get("permissions-policy", "")
+    assert "microphone=()" in pp
+    assert "camera=()" in pp
+
+
+def test_referrer_policy_and_content_type_options(api_client):
+    r = api_client.get("/ui/")
+    assert r.headers.get("referrer-policy") == "no-referrer"
+    assert r.headers.get("x-content-type-options") == "nosniff"
+
+
+def test_no_csp_reporting_endpoint_configured():
+    """No report-uri/report-to directive exists anywhere — so there is no
+    channel through which a CSP violation report (which could otherwise
+    include page context) is ever sent anywhere, local or remote."""
+    csp = local_guard.SECURITY_HEADERS["Content-Security-Policy"]
+    assert "report-uri" not in csp
+    assert "report-to" not in csp
+
+
+@pytest.mark.parametrize("path", [
+    "/ui/", "/ui/chat", "/ui/actions", "/ui/voice", "/ui/logs",
+    "/ui/memory", "/ui/settings", "/ui/help", "/ui/diagnostics", "/ui/onboarding",
+])
+def test_no_ui_page_has_inline_script_tag(api_client, path):
+    """CSP's script-src is 'self' only, no unsafe-inline — every page must
+    load JS exclusively via <script src="/ui/static/...">, never an inline
+    <script> block (the session token itself moved to a data-* attribute
+    for exactly this reason — see templates/base.html)."""
+    r = api_client.get(path)
+    assert r.status_code == 200
+    assert "<script>" not in r.text
+
+
+@pytest.mark.parametrize("filename", ["app.js", "onboarding.js", "diagnostics.js"])
+def test_served_js_has_no_eval_or_document_write(api_client, filename):
+    r = api_client.get(f"/ui/static/{filename}")
+    assert r.status_code == 200
+    js = r.text
+    assert "eval(" not in js
+    assert "new Function(" not in js
+    assert "document.write(" not in js

@@ -23,6 +23,11 @@ module is both:
    has no way to make its allowed-origin decision at request time against
    a port only known after the server starts).
 
+3. **Response hardening.** ``SECURITY_HEADERS`` (CSP, frame-ancestors,
+   X-Content-Type-Options, Referrer-Policy, Permissions-Policy, ...) are
+   applied to every response — success, rejection, and preflight alike —
+   plus ``Cache-Control: no-store`` on anything token-bearing.
+
 See docs/SECURITY.md for the full threat model and exact boundaries.
 """
 
@@ -133,8 +138,54 @@ def is_allowed_origin(origin: str) -> bool:
     return port == expected_port
 
 
+# Applied to every response this middleware touches — HTML pages, JSON API
+# responses, and rejections alike, so there's exactly one place to update.
+#
+# style-src allows 'unsafe-inline': the templates use ~30 inline style=""
+# attributes for one-off layout tweaks (margin/padding/width on a specific
+# element). CSP has no nonce/hash mechanism for style *attributes* (only for
+# <style> elements), so the only way to drop this would be moving every one
+# of those into a CSS class. Inline styles cannot execute script by
+# themselves in any modern browser, which is the actual thing CSP defends
+# against — script-src stays 'self' only, with no relaxation at all: the
+# session token is delivered via a data-* attribute specifically so no page
+# needs an inline <script>, and nothing else does either (see
+# app/ui/routes.py, templates/base.html, templates/onboarding.html).
+#
+# Permissions-Policy denies microphone/camera outright, not just restricts
+# them to 'self': Phase 3 TTS is output-only, JARVIS never requests
+# microphone or camera access from the browser and never will (see
+# CLAUDE.md's Phase 3 rules) — there is no feature here that needs them.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self'; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'none'; "
+        "object-src 'none'; "
+        "form-action 'self'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",  # legacy fallback for browsers that predate frame-ancestors
+    "Permissions-Policy": (
+        "microphone=(), camera=(), geolocation=(), usb=(), payment=(), interest-cohort=()"
+    ),
+}
+
+
+def _add_security_headers(response: Response) -> Response:
+    for key, value in SECURITY_HEADERS.items():
+        response.headers[key] = value
+    return response
+
+
 def _reject(status_code: int, detail: str) -> JSONResponse:
-    return JSONResponse({"detail": detail}, status_code=status_code)
+    return _add_security_headers(JSONResponse({"detail": detail}, status_code=status_code))
 
 
 def _cors_preflight_response(origin: str) -> Response:
@@ -146,7 +197,7 @@ def _cors_preflight_response(origin: str) -> Response:
     resp.headers["Access-Control-Max-Age"] = "600"
     # Never Access-Control-Allow-Credentials — JARVIS uses no cookies, and
     # never pair credentials with a reflected origin.
-    return resp
+    return _add_security_headers(resp)
 
 
 class LocalOnlyGuardMiddleware(BaseHTTPMiddleware):
@@ -199,4 +250,4 @@ class LocalOnlyGuardMiddleware(BaseHTTPMiddleware):
             response.headers["Cache-Control"] = "no-store, private"
             response.headers["Pragma"] = "no-cache"
 
-        return response
+        return _add_security_headers(response)

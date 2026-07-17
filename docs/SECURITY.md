@@ -245,6 +245,47 @@ mechanism must ship with its own tests before it ships at all. No such
 mechanism exists today, and none should be added without updating this
 document.
 
+## Security response headers
+
+`app/api/local_guard.py`'s `SECURITY_HEADERS` are applied to **every**
+response the middleware touches — success, rejection (400/401/403), and
+CORS preflight alike, HTML pages and JSON API responses alike — from one
+place, so there's no per-route opt-in to forget:
+
+| Header | Value | Purpose |
+|---|---|---|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'` | No remote scripts/styles/fonts/images/XHR targets of any kind; cannot be framed; no `<base>` retargeting; no plugins; forms only submit back to JARVIS itself |
+| `X-Content-Type-Options` | `nosniff` | Browser must not guess a different content type than what JARVIS declares |
+| `Referrer-Policy` | `no-referrer` | Following a link out of JARVIS (e.g. "API Docs") never leaks the referring URL |
+| `X-Frame-Options` | `DENY` | Legacy fallback for engines that don't honor `frame-ancestors` |
+| `Permissions-Policy` | `microphone=(), camera=(), geolocation=(), usb=(), payment=(), interest-cohort=()` | Denied outright, not merely restricted to `'self'` — JARVIS's TTS is output-only (Phase 3) and never requests any of these from the browser |
+
+Two deliberate, narrow relaxations, both explained in code comments right
+next to `SECURITY_HEADERS`:
+
+- **`style-src 'unsafe-inline'`.** The templates use a couple dozen inline
+  `style="..."` attributes for one-off layout tweaks. CSP has no
+  nonce/hash mechanism for style *attributes* (only for `<style>`
+  elements), so avoiding this would mean moving every one of them into a
+  CSS class — inline styles cannot execute script by themselves in any
+  modern browser, which is the actual thing CSP defends against.
+  `script-src` carries no such relaxation: it is `'self'` only, full stop.
+- **No inline `<script>` anywhere, by construction, not by CSP exception.**
+  The one thing every page previously needed inline script for — handing
+  the session token to the page's own JS — now happens via a `data-*`
+  attribute on `<body>` (`templates/base.html`, `templates/onboarding.html`)
+  instead of `<script>window.__JARVIS_TOKEN__ = "...";</script>`. So
+  `script-src` needed no exception at all, rather than trading one down.
+
+No `report-uri`/`report-to` directive is configured, so there is no channel
+through which a CSP violation report — which can otherwise include page
+URLs and blocked-resource details — is ever sent anywhere, local or remote.
+`tests/test_api_security.py` proves the header set is present on success,
+rejection, and preflight responses; that `frame-ancestors`/`X-Frame-Options`
+both block framing; that `script-src` carries no `unsafe-inline`/`unsafe-eval`;
+that no shipped template contains an inline `<script>` tag; and that none of
+the shipped JS uses `eval(`, `new Function(`, or `document.write(`.
+
 ## Where your Anthropic API key is stored
 
 | Mode | Storage | Plaintext? |

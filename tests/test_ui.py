@@ -176,6 +176,32 @@ def test_ui_js_uses_textcontent_not_innerhtml(api_client):
     assert "innerHTML" not in js
 
 
+def test_ui_page_delivers_token_via_data_attribute_not_inline_script(api_client):
+    """The session token must reach the page as a data-* attribute on
+    <body>, not an inline <script> block — so the CSP's script-src can stay
+    'self' only, with no unsafe-inline allowance (see app/api/local_guard.py's
+    security headers and docs/SECURITY.md)."""
+    from app.core import session_token
+
+    r = api_client.get("/ui/")
+    html = r.text
+    token = session_token.get_token()
+    assert f'data-jarvis-token="{token}"' in html
+    assert "<script>" not in html
+    assert "__JARVIS_TOKEN__" not in html
+
+
+def test_onboarding_page_delivers_token_via_data_attribute_not_inline_script(api_client):
+    from app.core import session_token
+
+    r = api_client.get("/ui/onboarding")
+    html = r.text
+    token = session_token.get_token()
+    assert f'data-jarvis-token="{token}"' in html
+    assert "<script>" not in html
+    assert "__JARVIS_TOKEN__" not in html
+
+
 # ── New API endpoints ─────────────────────────────────────────────────────────
 
 def test_system_endpoint_returns_200(api_client):
