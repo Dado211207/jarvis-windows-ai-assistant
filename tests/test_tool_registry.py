@@ -81,3 +81,33 @@ def test_tool_handler_exception_is_caught():
     result = reg.execute("crasher")
     assert result["success"] is False
     assert "Tool error" in result["message"]
+
+
+def test_tool_handler_exception_message_is_redacted():
+    """A path-based tool (create_note, open_folder, ...) failing with a
+    real OSError/PermissionError would otherwise put the Windows username
+    straight into a chat message — see app.core.redact.redact_text, applied
+    at this exact chokepoint."""
+    reg = ToolRegistry()
+
+    def bad_handler():
+        raise PermissionError(
+            r"[Errno 13] Permission denied: 'C:\Users\JohnDoe\Documents\JARVIS_Notes\x.txt'"
+        )
+
+    reg.register(_make_def("note_writer"), bad_handler)
+    result = reg.execute("note_writer")
+    assert result["success"] is False
+    assert "JohnDoe" not in result["message"]
+
+
+def test_approved_tool_handler_exception_message_is_redacted():
+    reg = ToolRegistry()
+
+    def bad_handler():
+        raise OSError(r"cannot access 'C:\Users\JohnDoe\AppData\Roaming\JARVIS\data'")
+
+    reg.register(_make_def("privileged_action", PermissionLevel.APPROVAL_REQUIRED), bad_handler)
+    result = reg.execute_approved("privileged_action")
+    assert result["success"] is False
+    assert "JohnDoe" not in result["message"]

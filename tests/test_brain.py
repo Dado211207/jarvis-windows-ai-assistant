@@ -162,6 +162,36 @@ def test_generate_response_falls_back_on_api_error():
     assert "401" in result.error
 
 
+def test_generate_response_error_is_redacted():
+    """A raw SDK/network exception could in principle embed a path, a
+    partial header, or similar — result.error reaches the frontend via
+    CommandResponse.data["error"] (see router.py's _brain_response), so it
+    must go through app.core.redact.redact_text like every other exception
+    message JARVIS didn't compose itself."""
+    from app.core.brain import Brain
+    b = Brain()
+
+    with patch("app.core.brain.settings") as s, \
+         patch("anthropic.Anthropic") as mock_anthropic_cls:
+        s.has_anthropic_key = True
+        s.anthropic_api_key = "sk-bad-key"
+        s.jarvis_ai_provider = "anthropic"
+        s.jarvis_ai_model = "claude-haiku-4-5-20251001"
+        s.jarvis_ai_max_tokens = 250
+        s.jarvis_ai_timeout_seconds = 20
+
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = Exception(
+            r"connection failed near C:\Users\JohnDoe\AppData\Roaming\JARVIS\config"
+        )
+
+        result = b.generate_response("hello")
+
+    assert result.used_api is False
+    assert "JohnDoe" not in result.error
+
+
 def test_generate_response_falls_back_on_timeout():
     from app.core.brain import Brain
     import socket

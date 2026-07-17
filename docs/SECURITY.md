@@ -345,9 +345,77 @@ Administrator rights, which normal JARVIS installation never needs.
 Logs are structured, rotating, and bounded (`app/logging_config.py`:
 5 MB per file, 3 backups kept) — they cannot grow without limit. Log
 messages never include the Anthropic API key, `.env` values, or full
-request/response bodies that could contain a key. The Diagnostics page's
-"Copy sanitized report" button assembles a report from booleans, counts,
-and paths only — never secret material (see `app/core/diagnostics.py`).
+request/response bodies that could contain a key.
+
+## Privacy and data minimization
+
+What the frontend receives is deliberately smaller than what the backend
+itself knows. Two boundaries matter here, and they're enforced differently:
+
+**What's private by default (Sections 2-4 above).** Every API response —
+onboarding, Settings, Memory, Diagnostics, update-checks, `/health` —
+carries only what that specific page needs, gated by the session token per
+the endpoint classification in `app/api/local_guard.py`. `/health` in
+particular never carries database status, provider/API-key status, or
+anything else beyond "the process is up" (see `HealthResponse` in
+`app/api/routes.py`); everything richer lives on the token-protected `/`
+and `/diagnostics` endpoints instead. Nothing here ever returns the
+Anthropic API key itself (masked at most — `secret_store.mask_api_key()`),
+an encrypted key blob, DPAPI-internal metadata, the session token, or a
+complete `Authorization` header.
+
+**What's redacted because JARVIS doesn't fully control its shape
+(`app/core/redact.py`).** Some text JARVIS shows the user or hands back
+over the API originates from an OS/SDK exception, not from JARVIS's own
+code — a failed tool call, a failed AI-provider request, a failed
+migration, a failed "open logs folder." Unlike everything else in this
+app's user-facing text, that text cannot be trusted by construction to be
+free of a Windows username (which turns up in nearly every real Windows
+path — `C:\Users\<name>\...`), an accidentally-embedded key/token, or an
+email address. `redact_text()` is applied at every point one of these
+crosses into a user-facing response:
+
+- `app/core/tool_registry.py`'s `execute()`/`execute_approved()` — a tool
+  handler's exception message, which becomes the chat message the user
+  sees for a failed command.
+- `app/core/brain.py`'s `generate_response()` — a failed Anthropic API
+  call's exception, which reaches the frontend via
+  `CommandResponse.data["error"]`.
+- `app/core/diagnostics.py`'s `open_logs_folder()` — a failed
+  file-manager launch.
+- `app/core/diagnostics.py`'s `get_report_text()` — the Diagnostics page's
+  "Copy report" button. This is the one place the distinction between
+  "safe to *display*" and "safe to *copy elsewhere*" matters explicitly:
+  `get_report()` (backing the page's own on-screen fields) still shows the
+  real database/log paths, since that's the user's own machine and a real
+  path is useful for their own troubleshooting; `get_report_text()` (what
+  "Copy report" actually copies, served from the separate, token-protected
+  `GET /diagnostics/report-text`) redacts the same fields plus the legacy-
+  migration marker's `source`/`error`, which can carry the same kind of
+  path — because that text is meant to be pasted into a bug report, a
+  chat, somewhere JARVIS has no visibility into and no control over who
+  reads it next.
+
+Paths where an exception is already curated instead of raw needed no
+change: `app/core/onboarding.py`'s API-key validation classifies every
+`anthropic.*` exception into one of a handful of fixed, generic messages
+(`_classify_error`) rather than ever using `str(exc)`, and
+`app/core/secret_store.py`'s `SecretStoreError` messages are either fixed
+strings or `type(exc).__name__` only (the exception's class name, never
+its message). `app/core/update_check.py` follows the same pattern for
+network failures. FastAPI itself runs without `debug=True`, so an
+unhandled exception anywhere else returns a generic 500 with no traceback,
+never framework-level exception detail.
+
+`tests/test_diagnostics.py` adversarially exercises `redact_text()` with
+API-key-like strings, bearer tokens, `Authorization` header values (both
+plain and JSON/dict-repr style), email addresses, Windows *and* Unix
+home-directory paths, a multiline exception/traceback with a path buried
+partway through, and an HTML/JS-like value that must pass through
+unmangled (not a targeted category, but must not crash or corrupt). The
+same fixtures are re-used at each of the four call sites above to confirm
+the redaction actually reaches the response, not just the shared helper in
+isolation.
 
 ## Uninstall data handling
 

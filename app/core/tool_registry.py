@@ -6,6 +6,7 @@ from app.core.permissions import (
     PermissionDeniedError,
     check_permission,
 )
+from app.core.redact import redact_text
 from app.logging_config import get_logger
 
 logger = get_logger("tool_registry")
@@ -63,7 +64,7 @@ class ToolRegistry:
             return {"success": True, "message": str(result), "data": result}
         except Exception as exc:
             logger.error("Tool '%s' raised an error: %s", name, exc, exc_info=True)
-            return {"success": False, "message": f"Tool error: {exc}", "data": None}
+            return {"success": False, "message": f"Tool error: {redact_text(str(exc))}", "data": None}
 
     def execute_approved(self, name: str, **kwargs) -> dict:
         """Execute a tool that has been explicitly approved by the user.
@@ -83,7 +84,7 @@ class ToolRegistry:
             return {"success": True, "message": str(result), "data": result}
         except Exception as exc:
             logger.error("Approved tool '%s' raised an error: %s", name, exc, exc_info=True)
-            return {"success": False, "message": f"Tool error: {exc}", "data": None}
+            return {"success": False, "message": f"Tool error: {redact_text(str(exc))}", "data": None}
 
     def __len__(self) -> int:
         return len(self._tools)

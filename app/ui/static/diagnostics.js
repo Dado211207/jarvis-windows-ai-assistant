@@ -72,34 +72,6 @@ function applyReport(report) {
   setText("diag-migration", m ? m.status : "not applicable");
 }
 
-function formatReportText(report) {
-  const lines = [
-    `JARVIS Diagnostics Report`,
-    `Version: ${report.version} (${report.phase})`,
-    `Installed app: ${report.frozen}`,
-    `OS: ${report.os}`,
-    `Python: ${report.python_version}`,
-    `Onboarding complete: ${report.onboarding.complete}`,
-    ``,
-    `Host: ${report.host}`,
-    `Configured port: ${report.configured_port}`,
-    `Actual port: ${report.actual_port}`,
-    `AI provider: ${report.brain.provider} (model: ${report.brain.model})`,
-    `AI configured: ${report.brain.configured}`,
-    `Tools registered: ${report.tools_registered}`,
-    ``,
-    `Database path: ${report.paths.db_path}`,
-    `Database exists: ${report.database.exists}`,
-    `Database integrity ok: ${report.database.integrity_ok}`,
-    `Log folder: ${report.paths.logs_dir}`,
-    `Secure key storage backend: ${report.secure_storage.backend}`,
-    `Secure key storage available: ${report.secure_storage.available}`,
-    `API key configured: ${report.secure_storage.api_key_stored}`,
-    `Legacy DB migration: ${report.migration ? JSON.stringify(report.migration) : "not applicable"}`,
-  ];
-  return lines.join("\n");
-}
-
 async function loadDiagnostics() {
   try {
     const report = await API.get("/diagnostics");
@@ -112,8 +84,11 @@ async function loadDiagnostics() {
 
 async function copyReport() {
   if (!lastReport) return;
-  const text = formatReportText(lastReport);
   try {
+    // Redacted server-side (app.core.diagnostics.get_report_text) — never
+    // built from lastReport client-side, so the copy-safe rendering has
+    // exactly one implementation, and it's the one with test coverage.
+    const { text } = await API.get("/diagnostics/report-text");
     await navigator.clipboard.writeText(text);
     setDiagStatus("Report copied to clipboard.", true);
   } catch (e) {

@@ -7,6 +7,7 @@ Phase 2: unknown commands fall through to the Anthropic API when a key is presen
 
 from app.config import settings
 from app.core.models import BrainResponse, CommandResponse
+from app.core.redact import redact_text
 from app.core.system_prompt import SYSTEM_PROMPT
 from app.core.tool_registry import registry
 from app.logging_config import get_logger
@@ -105,7 +106,7 @@ class Brain:
                 provider=settings.jarvis_ai_provider,
                 model=model,
                 used_api=False,
-                error=str(exc),
+                error=redact_text(str(exc)),
             )
 
     # --- private helpers ---
