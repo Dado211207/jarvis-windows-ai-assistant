@@ -71,6 +71,13 @@ jobs:
           --add-data "app/ui/static;app/ui/static"
           run_jarvis.py
 
+      - name: Scan PyInstaller output for leaked secrets/dev files
+        # Both the installer and the portable ZIP are built from this exact
+        # tree — catching a leak here before either artifact exists finds
+        # it at the source, rather than twice further down.
+        shell: pwsh
+        run: installer\scan_artifacts.ps1 -Path dist\JARVIS -Label "PyInstaller output (pre-packaging)"
+
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
@@ -91,6 +98,18 @@ jobs:
       - name: Package portable ZIP
         shell: pwsh
         run: Compress-Archive -Path dist\JARVIS -DestinationPath "JARVIS-Portable-${{ steps.version.outputs.version }}.zip"
+
+      - name: Scan portable ZIP contents for leaked secrets/dev files
+        # .env.example is expected here (it's the whole point of the
+        # portable ZIP being the dev/portable artifact, not the
+        # recommended installer — see docs/WINDOWS_INSTALLER.md) — still
+        # content-scanned like everything else, just not treated as an
+        # unexpected file by itself.
+        shell: pwsh
+        run: |
+          $expandDir = Join-Path $env:RUNNER_TEMP "portable-zip-scan"
+          Expand-Archive -Path "JARVIS-Portable-${{ steps.version.outputs.version }}.zip" -DestinationPath $expandDir
+          installer\scan_artifacts.ps1 -Path $expandDir -Label "Portable ZIP contents" -AllowPortableExtras
 
       - name: Generate SHA-256 checksums
         shell: pwsh
@@ -128,18 +147,12 @@ jobs:
           }
           Write-Host "Install OK: $exePath"
 
-          if (Test-Path (Join-Path $installDir ".env")) {
-            throw "A .env file was found in the install directory — production install must never require or ship one."
-          }
-          Write-Host "No .env in the install directory — OK."
-
-          $strayFiles = @(".env.example", "START_JARVIS.bat", "START_JARVIS_API.bat", "DEV_SETUP_FROM_SOURCE.bat")
-          foreach ($f in $strayFiles) {
-            if (Test-Path (Join-Path $installDir $f)) {
-              throw "Found '$f' in the installed app directory — the installer must only ship the app itself, never dev/portable-ZIP helper files."
-            }
-          }
-          Write-Host "No dev/portable helper files leaked into the installed app directory — OK."
+          # Full secret/dev-artifact scan of the *actual installed result* —
+          # the most authoritative check available, since this is the
+          # installer's own genuine output on disk, not a re-parsed guess
+          # at its internal format. Exits the whole step non-zero on any
+          # finding (see installer/scan_artifacts.ps1).
+          installer\scan_artifacts.ps1 -Path $installDir -Label "Installed application directory"
 
           $env:JARVIS_APPDATA_OVERRIDE = $appData
           $env:JARVIS_TEST_MODE = "1"

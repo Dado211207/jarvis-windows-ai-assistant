@@ -417,6 +417,65 @@ same fixtures are re-used at each of the four call sites above to confirm
 the redaction actually reaches the response, not just the shared helper in
 isolation.
 
+## Installer and artifact secret scanning
+
+Two independent scanners, covering two independent things that must never
+ship:
+
+**`scripts/secret_scan.py`** runs in every CI job (`ci.yml`, "Secret scan
+(tracked files)", right after the compile check) against every
+`git ls-files`-tracked file: Anthropic/generic API keys, GitHub tokens
+(classic and fine-grained PATs, OAuth/app/refresh tokens), AWS access key
+IDs, Slack tokens, and private-key headers. `tests/` is excluded from the
+*blocking* result and scanned in report-only mode instead — this project's
+own security tests deliberately construct secret-*shaped* strings (see
+"Privacy and data minimization" above) to prove redaction works, which is
+the normal, expected content of an adversarial test fixture, not a leak.
+Everything outside `tests/` is blocking: any match fails the job.
+
+**`installer/scan_artifacts.ps1`** runs three times in the Windows build
+(`windows-build.yml`), against the actual, on-disk result of each stage
+rather than a re-parsed guess at a packaging format:
+
+1. `dist\JARVIS\` right after the PyInstaller build, before either the
+   installer or the portable ZIP is packaged from it — catches anything
+   PyInstaller bundled that shouldn't be there before it can reach either
+   artifact.
+2. The real installed directory the smoke test's silent install already
+   produced — the most authoritative check for what the installer actually
+   ships, since it's the installer's own genuine output.
+3. An `Expand-Archive`-extracted copy of the portable ZIP.
+
+Both scanners check for the same two categories, adapted to what a
+built/installed tree can actually contain (Python source isn't present —
+PyInstaller compiles it away):
+
+- **Forbidden files/directories, by name**: `.env`, `jarvis.db` (and its
+  `-shm`/`-wal` siblings), any `.log` file, `.coverage`/`htmlcov\`, any
+  `screenshots\` directory, JUnit/pytest-report-shaped XML files, and dev
+  caches (`__pycache__`, `.pytest_cache`, `.git`).
+- **Secret-shaped content**, in every text-like file: the same pattern set
+  as `scripts/secret_scan.py` (API keys, GitHub tokens, AWS keys, private
+  key headers).
+
+`.env.example`, `README.md`, `START_JARVIS.bat`, and `START_JARVIS_API.bat`
+are the one deliberate exception, gated behind `-AllowPortableExtras`: they
+are the exact files the portable-ZIP packaging step copies in on purpose
+(see `docs/WINDOWS_INSTALLER.md`), so the portable ZIP is unambiguously the
+developer/portable artifact, never the recommended installer — the
+installer scans (steps 1 and 2 above) run *without* that flag, so none of
+those four are permitted to reach an actual install. `DEV_SETUP_FROM_SOURCE.bat`
+is never permitted in either artifact — no packaging step ever copies it
+anywhere under `dist\JARVIS\`, so its presence would mean something leaked
+in outside the intended build process.
+
+Neither scanner ever prints a matched secret *value* to output, in a log,
+or into an uploaded artifact — only the file path and which named pattern
+matched. A GitHub Actions log is not a safe place to put the very thing
+these scanners exist to keep out of a shipped artifact; if a real
+credential is ever found this way, the fix is to revoke it immediately
+(it's already in git/build history), not just delete the file.
+
 ## Uninstall data handling
 
 Uninstalling JARVIS removes the installed program files only. Your data

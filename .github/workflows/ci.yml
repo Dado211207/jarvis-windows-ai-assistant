@@ -27,6 +27,9 @@ jobs:
       - name: Compile check (app + db)
         run: python -m compileall app db
 
+      - name: Secret scan (tracked files)
+        run: python scripts/secret_scan.py
+
       - name: Run tests
         run: pytest
         env:
