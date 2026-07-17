@@ -48,8 +48,14 @@ if (-not (Test-Path $Path)) {
     throw "scan_artifacts.ps1: path does not exist: $Path"
 }
 
-$allFiles = Get-ChildItem -Path $Path -Recurse -File
-$allDirs  = Get-ChildItem -Path $Path -Recurse -Directory
+# -Force is required, not optional: without it, Get-ChildItem silently
+# excludes dotfiles (.env, .git, .pytest_cache, ...) on this PowerShell
+# runtime — which would make the single most important check this script
+# has (rejecting .env) never see the file at all. Confirmed by direct
+# testing: the exact same Get-ChildItem call with vs without -Force
+# produces a different file list for a directory containing a real .env.
+$allFiles = Get-ChildItem -Path $Path -Recurse -File -Force
+$allDirs  = Get-ChildItem -Path $Path -Recurse -Directory -Force
 
 # --- 1. Forbidden filenames / dev-artifact directories -----------------
 
@@ -116,13 +122,27 @@ if (-not $failed) {
 # broad heuristic).
 
 $patterns = [ordered]@{
-    "anthropic-api-key"       = "sk-ant-[A-Za-z0-9_-]{10,}"
-    "generic-sk-api-key"      = "\bsk-[A-Za-z0-9_-]{20,}"
-    "github-pat-classic"      = "ghp_[A-Za-z0-9]{36}"
-    "github-pat-fine-grained" = "github_pat_[A-Za-z0-9_]{20,}"
-    "github-oauth-token"      = "gh[ousr]_[A-Za-z0-9]{36,}"
-    "aws-access-key-id"       = "AKIA[0-9A-Z]{16}"
-    "private-key-header"      = "-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"
+    "anthropic-api-key"       = 'sk-ant-[A-Za-z0-9_-]{10,}'
+    "generic-sk-api-key"      = '\bsk-[A-Za-z0-9_-]{20,}'
+    "github-pat-classic"      = 'ghp_[A-Za-z0-9]{36}'
+    "github-pat-fine-grained" = 'github_pat_[A-Za-z0-9_]{20,}'
+    "github-oauth-token"      = 'gh[ousr]_[A-Za-z0-9]{36,}'
+    "aws-access-key-id"       = 'AKIA[0-9A-Z]{16}'
+    "private-key-header"      = '-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'
+    # Windows/Unix home-directory username embedded in a path — a real
+    # session token (secrets.token_urlsafe(32), generated fresh in memory
+    # at runtime — see app/core/session_token.py) can never legitimately
+    # appear in a *build* artifact at all, since it doesn't exist until
+    # long after packaging; a local absolute path baked into a shipped file
+    # is the actual realistic leak this category catches (a dev/CI
+    # machine's own path ending up in generated output).
+    "windows-or-unix-user-path" = '[\\/](?:Users|home)[\\/][^\\/"'']+[\\/]'
+    # The one credential-shaped thing that *could* leak from JARVIS's own
+    # runtime into a stray debug/log file that ended up in a build
+    # directory: the literal header name with a real, token-shaped value
+    # attached — not the bare header name alone, which legitimately appears
+    # in this project's own source/docs/comments (including this file).
+    "jarvis-session-token" = 'X-Jarvis-Token["''\]\s:=]{1,6}[A-Za-z0-9_-]{40,}'
 }
 
 $textExtensions = @(".py", ".txt", ".md", ".json", ".cfg", ".ini", ".yml", ".yaml",

@@ -10,6 +10,7 @@ conftest.py shim that auto-attaches a valid token) to exercise the actual
 rejection paths a real attacker would hit.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -412,6 +413,49 @@ def test_permissions_policy_denies_microphone_and_camera(api_client):
     pp = r.headers.get("permissions-policy", "")
     assert "microphone=()" in pp
     assert "camera=()" in pp
+
+
+# --- microphone=() is denying nothing that's actually used ---
+#
+# CLAUDE.md's Phase 3 rule ("Output only. No microphone input... ever") is a
+# policy statement; these two tests verify it's true of the actual shipped
+# code, not just asserted in a doc — so microphone=() (a maximally
+# restrictive empty allowlist, denying every origin including 'self', not
+# merely "restricted to self") is the *correct* policy for the real
+# architecture, not an accidental regression against a feature that
+# secretly needs the mic.
+
+_MIC_API_PATTERNS = (
+    "getUserMedia", "SpeechRecognition", "webkitSpeechRecognition",
+    "mediaDevices", "MediaRecorder",
+)
+
+
+@pytest.mark.parametrize("filename", ["app.js", "onboarding.js", "diagnostics.js", "voice.js"])
+def test_served_js_never_calls_a_browser_microphone_api(api_client, filename):
+    """If this ever starts failing, it means JS was added that requests
+    microphone access — at which point microphone=() would be a real
+    regression and must be relaxed to microphone=(self) (never a foreign
+    origin) alongside actually implementing the feature; today, nothing
+    calls any of these APIs, which is what makes the current deny-all
+    policy correct rather than merely convenient."""
+    r = api_client.get(f"/ui/static/{filename}")
+    if r.status_code == 404:
+        pytest.skip(f"{filename} does not exist in this build")
+    js = r.text
+    for pattern in _MIC_API_PATTERNS:
+        assert pattern not in js, f"{filename} references {pattern} — voice architecture has changed"
+
+
+def test_no_audio_capture_dependency_is_installed():
+    """The strongest possible proof voice is output-only: no library capable
+    of capturing audio (speech_recognition, pyaudio, sounddevice, whisper,
+    ...) is even a dependency — so server-side STT isn't just unused, it's
+    not possible without first adding a new dependency (a change that would
+    itself need to touch this test and the Permissions-Policy together)."""
+    requirements = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text().lower()
+    for forbidden in ("pyaudio", "speechrecognition", "speech_recognition", "sounddevice", "whisper"):
+        assert forbidden not in requirements, f"{forbidden} found in requirements.txt"
 
 
 def test_referrer_policy_and_content_type_options(api_client):

@@ -53,7 +53,24 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
         "private-key-header",
         re.compile(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
     ),
+    # The literal header name with a real, token-shaped value attached —
+    # not the bare header name alone, which legitimately appears throughout
+    # this project's own source/docs/comments (including this file).
+    ("jarvis-session-token", re.compile(r'X-Jarvis-Token["\'\]\s:=]{1,6}[A-Za-z0-9_-]{40,}', re.IGNORECASE)),
 ]
+
+# installer/scan_artifacts.ps1 (the *built-artifact* scanner) additionally
+# blocks on a Windows/Unix username embedded in a path
+# ("[\\/](?:Users|home)[\\/]..."). That pattern is deliberately NOT mirrored
+# here: PyInstaller output never legitimately contains prose *about* that
+# pattern, but this repository's own tracked source does — extensively, in
+# docs/SECURITY.md, app/core/redact.py's docstring, app/desktop/apps.py's
+# real allowlisted paths, and several tests — so it would block on this
+# project's own already-reviewed code, not on an actual leak. A real
+# session token can never appear in a *build* artifact in the first place
+# (see the jarvis-session-token comment above); a real, unexpected local
+# absolute path in *tracked source* is a much rarer, much more ambiguous
+# signal than in a compiled binary tree with no legitimate source of its own.
 
 # Excluded wholesale: never source text, or (tests/) covered separately in
 # report-only mode above.
