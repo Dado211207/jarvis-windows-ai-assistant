@@ -1,7 +1,8 @@
 """Tests for the local API request-protection layer:
 - app/core/session_token.py (per-launch random token)
-- app/api/local_guard.py (Host/Origin allowlist + token enforcement)
-- CORS configuration (no wildcard, regex-based dynamic-port allowlist)
+- app/api/local_guard.py (Host/Origin allowlist + token enforcement + native
+  CORS, anchored to the exact active port — see test_private_endpoint_protection.py
+  for the default-private GET classification and exact-port pinning tests)
 
 See docs/SECURITY.md for the full threat model and exact boundaries. These
 tests intentionally issue raw requests with explicit headers (bypassing the
@@ -33,6 +34,32 @@ def test_token_is_generated_and_nonempty():
     assert len(token) >= 32
 
 
+def test_token_has_at_least_256_bits_of_entropy():
+    """generate_token() must use secrets.token_urlsafe(32) — 32 random bytes
+    (256 bits) — not just a long-looking string. Decodes the actual
+    base64url payload back to bytes and checks its length directly, rather
+    than trusting the string length (a weaker/shorter encoding could still
+    produce a long string)."""
+    import base64
+
+    token = session_token.generate_token()
+    padded = token + "=" * (-len(token) % 4)
+    raw = base64.urlsafe_b64decode(padded)
+    assert len(raw) * 8 >= 256
+
+
+def test_token_uses_cryptographic_rng_not_arbitrary_random():
+    """generate_token() must call secrets.token_urlsafe specifically (a
+    CSPRNG), not random/uuid or anything seedable — patches the exact call
+    site to prove it's what's actually used, not just plausible-looking
+    output."""
+    with patch("app.core.session_token.secrets.token_urlsafe") as mock_gen:
+        mock_gen.return_value = "fake-token-value"
+        result = session_token.generate_token()
+    mock_gen.assert_called_once_with(32)
+    assert result == "fake-token-value"
+
+
 def test_token_changes_every_time_it_is_generated():
     first = session_token.generate_token()
     second = session_token.generate_token()
@@ -53,6 +80,27 @@ def test_is_valid_false_for_empty_or_none():
     session_token.generate_token()
     assert session_token.is_valid("") is False
     assert session_token.is_valid(None) is False
+
+
+def test_token_value_never_appears_in_logs(api_client, caplog):
+    """Rejections are the highest-risk moment for a token to leak into logs
+    (an unwary implementation might log "expected X got Y") — hit several
+    rejection paths with a *wrong* token, and confirm the real one never
+    shows up in anything captured at any log level."""
+    real_token = session_token.get_token()
+    with caplog.at_level("DEBUG"):
+        api_client.get("/settings", headers={"X-Jarvis-Token": "attacker-guess"})
+        api_client.post(
+            "/command",
+            json={"command": "status"},
+            headers={"X-Jarvis-Token": "another-wrong-value"},
+        )
+        api_client.get(
+            "/settings",
+            headers={"X-Jarvis-Token": real_token, "Origin": "http://evil.example"},
+        )
+    for record in caplog.records:
+        assert real_token not in record.getMessage()
 
 
 def test_is_valid_false_when_no_token_ever_generated():
