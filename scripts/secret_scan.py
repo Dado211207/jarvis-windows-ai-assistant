@@ -9,12 +9,14 @@ here for two different reasons:
    should never have been committed" bug, regardless of what gets built
    from it. ``tests/`` is excluded from the *failing* scan: this repo's
    security tests (see docs/SECURITY.md's "Privacy and data minimization"
-   section) deliberately construct secret-*shaped* strings
-   (``sk-ant-api03-abcdefghijklmnopqrstuvwxyz``, literally the alphabet) to
-   prove redaction actually works — that is the normal, expected shape of
-   an adversarial test fixture, not a leak. tests/ is still scanned, just
-   in report-only mode, so a genuine accidental paste is still visible
-   without making every new adversarial fixture a CI failure.
+   section) deliberately construct secret-*shaped* strings — an Anthropic
+   key prefix followed by the alphabet, for example — to prove redaction
+   actually works. That is the normal, expected shape of an adversarial
+   test fixture, not a leak (and deliberately not spelled out literally
+   right here, or this docstring would trip its own scanner). tests/ is
+   still scanned, just in report-only mode, so a genuine accidental paste
+   is still visible without making every new adversarial fixture a CI
+   failure.
 
 2. **Build artifacts** (the portable ZIP's contents, the installer's
    actually-installed output) get the *same* pattern set applied by

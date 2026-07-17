@@ -294,34 +294,95 @@ the shipped JS uses `eval(`, `new Function(`, or `document.write(`.
 | Installed Windows app | `%LOCALAPPDATA%\JARVIS\config\secret.bin`, encrypted with Windows DPAPI (`app/core/secret_store.py`) | No |
 
 The installed app never writes the key to `.env`, the SQLite database, a
-log file, browser storage, or a crash report. The onboarding UI uses a
-password-style input with an explicit show/hide toggle, and the key is
-validated against Anthropic (a single lightweight API call) without ever
-being logged. The API never returns the full key to the browser — only a
-masked form (`sk-ant-…wxyz`) for display.
+log file, browser storage, or a crash report — there is no separate
+"crash report" feature at all (FastAPI runs without `debug=True`, so an
+unhandled exception returns a generic 500 with no traceback; see "Privacy
+and data minimization" above), so there's no secondary export path a key
+could leak through that way. The onboarding UI uses a password-style input
+with an explicit show/hide toggle, and the key is validated against
+Anthropic (a single lightweight API call) without ever being logged. The
+API never returns the full key to the browser — only a masked form
+(`sk-ant-…wxyz`, `secret_store.mask_api_key()`) for display; the one place
+the raw key is read back (`onboarding.get_state()`) passes it through that
+mask before it's ever placed in a response.
 
 ### Threat model for DPAPI storage
 
-DPAPI (`CryptProtectData`/`CryptUnprotectData`) ties decryption to the
-Windows user account that encrypted the data. This protects against:
+DPAPI (`CryptProtectData`/`CryptUnprotectData`) protects the secret **at
+rest** — the encrypted bytes sitting in `secret.bin` while nothing is
+actively reading them — by tying decryption to the Windows user account
+that encrypted the data. This protects against:
 
 - Casual inspection of the JARVIS install/data directory (another app, a
   backup tool, browsing the filesystem).
-- Other Windows user accounts on the same machine.
+- Other ordinary Windows user accounts on the same machine — a second
+  account, even an administrator's, cannot decrypt this blob without that
+  user's own logged-in session.
 - The key ending up in any of the plaintext locations listed above (all
   explicitly disallowed).
 
-It does **not** protect against:
+It does **not** protect against, and this is not a claim of absolute
+protection:
 
 - Malware or another process already running as the same Windows user —
-  DPAPI decrypts transparently in that context.
+  DPAPI decrypts transparently in that context. This is a property of what
+  DPAPI *is* (a per-user encryption primitive), not a bug in how JARVIS
+  calls it.
 - An attacker with an unlocked, logged-in session as you.
-- JARVIS's own process reading its own decrypted key (necessarily true of
-  any local app that needs to use the key).
+- **The key after JARVIS has legitimately decrypted it into process memory**
+  to make an Anthropic API call — at that point it's plaintext in RAM like
+  any in-use secret in any process, for as long as that call takes. DPAPI
+  protects the file on disk; it was never meant to protect the moment the
+  application actually uses the thing it decrypted.
+- **Revocation.** DPAPI can keep a stolen *file* useless to anyone without
+  the matching Windows account, but it cannot un-leak a key that already
+  reached Anthropic in a request, or was captured from memory by something
+  already running as you. API keys must still be revocable by the
+  provider — if a key is ever suspected compromised, only revoking it at
+  [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys)
+  actually neutralizes it; DPAPI is not a substitute for that, and nothing
+  about local encryption changes when or whether you should revoke.
+
+Beyond the encryption itself:
+
+- **No plaintext fallback, ever.** `save_api_key()` raises
+  `SecretStoreError` if secure storage isn't available rather than writing
+  plaintext; `load_api_key()` returns `None` on any failure (unavailable,
+  corrupted blob, wrong Windows user) rather than a plaintext fallback.
+  Fail-closed, not fail-open.
+- **No test-mode fallback in production.** `JARVIS_TEST_MODE` (used only
+  to disable the production launcher's browser auto-open for CI smoke
+  tests) has zero effect on `secret_store.py` — there is no env var or
+  build flag anywhere that weakens or bypasses DPAPI.
+- **Replacement is atomic.** `save_api_key()` writes the new encrypted blob
+  to a sibling `.tmp` file, then swaps it into place with `os.replace()`
+  (atomic on both Windows and POSIX). A crash or power loss between those
+  two steps leaves either the untouched previous key or a stray `.tmp`
+  file — never a half-written, corrupted `secret.bin`.
+- **Removal is a normal file delete, not a secure-overwrite.**
+  `delete_api_key()` calls the standard OS delete
+  (`Path.unlink()`; the Inno Setup uninstaller's opt-in data wipe uses
+  `DelTree` the same way). This is a deliberate choice, not an oversight:
+  overwrite-before-delete is unreliable on modern SSDs (wear-leveling and
+  TRIM mean the "overwritten" sectors often aren't the physical ones
+  actually holding old data) and provides no real additional protection
+  here anyway, since the file was ciphertext, not plaintext, the entire
+  time it existed.
+- **Uninstall preserves or removes data per an explicit choice, not a
+  default.** The Inno Setup uninstaller (`installer/JARVIS.iss`) prompts
+  "Also delete your JARVIS data ... and your stored API key?" with **No**
+  as the default answer (`MB_DEFBUTTON2`), so a silent/scripted uninstall
+  or an accidental Enter keypress preserves `%LOCALAPPDATA%\JARVIS`
+  (including `secret.bin`) rather than deleting it. Deletion only happens
+  if the user explicitly answers Yes.
 
 This is the same trust boundary most desktop apps that store a local API
 key operate under, made explicit rather than left implicit. See
-`app/core/secret_store.py`'s module docstring for the same detail in code.
+`app/core/secret_store.py`'s module docstring for the same detail in code,
+and `tests/test_secret_store_fail_closed.py` for the tests backing every
+claim above (fail-closed behaviour, atomic replacement, test-mode
+non-interference — all exercised via fake `win32crypt` module injection,
+since this suite doesn't run on real Windows).
 
 ## Where everything else lives
 

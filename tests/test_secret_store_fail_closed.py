@@ -102,6 +102,53 @@ def test_only_the_dpapi_wrapper_output_is_ever_written(tmp_path):
     assert b"verysecretvalue000000" not in written
 
 
+# --- replacement is atomic: no half-written file, no leftover temp file ---
+
+def test_save_leaves_no_leftover_tmp_file_on_success():
+    path = secret_store._secret_file_path()
+    with patch("app.core.secret_store.is_available", return_value=True), \
+         patch("app.core.secret_store._dpapi_protect", return_value=b"ciphertext"):
+        secret_store.save_api_key("sk-ant-verysecretvalue000000")
+
+    assert path.exists()
+    tmp_path = path.with_name(path.name + ".tmp")
+    assert not tmp_path.exists()
+
+
+def test_save_replaces_via_os_replace_not_direct_write():
+    """The atomicity guarantee only holds if the final swap actually goes
+    through os.replace() — assert that's the real call site, not just that
+    the end state happens to look right."""
+    with patch("app.core.secret_store.is_available", return_value=True), \
+         patch("app.core.secret_store._dpapi_protect", return_value=b"ciphertext"), \
+         patch("app.core.secret_store.os.replace") as mock_replace:
+        secret_store.save_api_key("sk-ant-verysecretvalue000000")
+
+    mock_replace.assert_called_once()
+    src, dst = mock_replace.call_args[0]
+    assert str(src).endswith(".tmp")
+    assert dst == secret_store._secret_file_path()
+
+
+def test_save_preserves_previous_key_if_encryption_fails_before_replace():
+    """A failure between the old key existing and the new one being ready
+    must never destroy the old one — save_api_key only ever touches the
+    real file via the atomic replace at the very end."""
+    with patch("app.core.secret_store.is_available", return_value=True), \
+         patch("app.core.secret_store._dpapi_protect", return_value=b"original-ciphertext"):
+        secret_store.save_api_key("sk-ant-original0000000000000")
+
+    path = secret_store._secret_file_path()
+    original_bytes = path.read_bytes()
+
+    with patch("app.core.secret_store.is_available", return_value=True), \
+         patch("app.core.secret_store._dpapi_protect", side_effect=RuntimeError("boom")):
+        with pytest.raises(secret_store.SecretStoreError):
+            secret_store.save_api_key("sk-ant-replacement00000000000")
+
+    assert path.read_bytes() == original_bytes
+
+
 # --- test-mode env vars never weaken the encryption/availability logic ---
 
 def test_test_mode_env_var_does_not_affect_availability(monkeypatch):

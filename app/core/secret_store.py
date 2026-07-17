@@ -18,11 +18,15 @@ already ubiquitous in Windows Python builds.
 
 Threat model
 ------------
-Protects against:
+Protects the secret *at rest* — the encrypted bytes sitting in
+``secret.bin`` on disk while nothing is actively reading them. Protects
+against:
   * Casual inspection of the JARVIS install/data directory (e.g. by another
     application, a file backup tool, or someone browsing the filesystem).
-  * Other Windows user accounts on the same machine — DPAPI ties decryption
-    to the encrypting user's login credentials.
+  * Other ordinary Windows user accounts on the same machine — DPAPI ties
+    decryption to the encrypting user's login credentials, so a second
+    account (even an administrator's, without that user's own logged-in
+    session) cannot decrypt this blob.
   * The key ending up in plaintext in ``.env``, browser localStorage/
     sessionStorage, the SQLite database, application logs, or diagnostics
     exports (all of those paths are explicitly disallowed; see
@@ -30,13 +34,29 @@ Protects against:
 
 Does NOT protect against:
   * Malware or another process already running as the same Windows user —
-    DPAPI decrypts transparently in that context, same as Credential Manager
-    would.
+    DPAPI decrypts transparently in that context, same as Credential
+    Manager would; this is a property of what DPAPI *is* (a per-user
+    encryption primitive), not a bug in how JARVIS calls it.
   * An attacker with an unlocked, logged-in session as the user.
-  * A compromised JARVIS process itself reading its own decrypted key.
+  * The key *after* JARVIS has legitimately decrypted it into process
+    memory to make an Anthropic API call — at that point it is plaintext
+    in RAM like any in-use secret in any process, for as long as that call
+    takes. DPAPI protects the file on disk; it says nothing about, and was
+    never meant to protect, the moment the application actually uses the
+    thing it decrypted.
+  * Revocation: DPAPI can keep a stolen *file* useless to anyone without
+    the matching Windows account, but it cannot un-leak a key that already
+    reached Anthropic in a request, or was captured from memory by
+    something already running as the user. If a key is ever suspected
+    compromised, only revoking it at
+    https://console.anthropic.com/settings/keys actually neutralizes it —
+    DPAPI is not a substitute for that.
 
 This is the same trust boundary every desktop app that stores a local API
-key operates under; it is documented here rather than left implicit.
+key operates under; it is documented here rather than left implicit. None
+of the above should be read as a claim of absolute protection — DPAPI
+raises the bar for casual/cross-account access to the file at rest; it is
+not a general-purpose defense against a compromised machine.
 """
 
 import os
@@ -111,7 +131,15 @@ def mask_api_key(api_key: str) -> str:
 
 
 def save_api_key(api_key: str) -> None:
-    """Encrypt *api_key* with DPAPI and write it to the per-user config dir.
+    """Encrypt *api_key* with DPAPI and atomically replace the per-user
+    config file with it.
+
+    Writes to a sibling ``.tmp`` file first, then ``os.replace()`` — atomic
+    on both Windows and POSIX — swaps it into place. A crash or power loss
+    between those two steps leaves either the untouched previous file or a
+    stray ``.tmp`` file, never a half-written, corrupted ``secret.bin``:
+    replacing an existing key can never leave the store in a state where
+    ``load_api_key()`` reads back a truncated blob.
 
     Raises SecretStoreError (never leaks the key in the message) if secure
     storage isn't available on this platform or the write fails.
@@ -123,8 +151,10 @@ def save_api_key(api_key: str) -> None:
     try:
         encrypted = _dpapi_protect(api_key.strip().encode("utf-8"))
         path = _secret_file_path()
-        path.write_bytes(encrypted)
-        _restrict_permissions(path)
+        tmp_path = path.with_name(path.name + ".tmp")
+        tmp_path.write_bytes(encrypted)
+        _restrict_permissions(tmp_path)
+        os.replace(tmp_path, path)
     except SecretStoreError:
         raise
     except Exception as exc:
