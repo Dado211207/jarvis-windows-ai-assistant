@@ -6,7 +6,7 @@
   <title>{% block title %}JARVIS{% endblock %} — Local AI Assistant</title>
   <link rel="stylesheet" href="/ui/static/style.css">
 </head>
-<body>
+<body data-jarvis-token="{{ jarvis_token }}">
 
 <aside class="sidebar">
   <div class="sidebar-brand">
@@ -43,6 +43,9 @@
     </a>
     <a href="/ui/help" class="sidebar-link{% if page == 'help' %} active{% endif %}" aria-current="{% if page == 'help' %}page{% endif %}">
       <span class="sidebar-link-icon">&#9645;</span>Help
+    </a>
+    <a href="/ui/diagnostics" class="sidebar-link{% if page == 'diagnostics' %} active{% endif %}" aria-current="{% if page == 'diagnostics' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9633;</span>Diagnostics
     </a>
 
     <div class="sidebar-divider" style="margin-top:0.5rem;"></div>

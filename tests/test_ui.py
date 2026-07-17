@@ -143,6 +143,18 @@ def test_ui_help_has_commands(api_client):
     assert "system status" in html
 
 
+def test_ui_help_points_to_settings_not_manual_env_editing(api_client):
+    """Help must not tell users to hand-edit .env/.env.example — Settings'
+    AI Provider section is the real path now (dev mode still uses .env, but
+    that's not what an end user reading Help needs to be told)."""
+    r = api_client.get("/ui/help")
+    html = r.text
+    assert "/ui/settings" in html
+    assert ".env.example" not in html
+    assert "text editor" not in html
+    assert "START_JARVIS_API.bat" not in html
+
+
 # ── Security: no API key exposure ────────────────────────────────────────────
 
 def test_ui_no_api_key_in_dashboard(api_client):
@@ -162,6 +174,32 @@ def test_ui_js_uses_textcontent_not_innerhtml(api_client):
     js = r.text
     # innerHTML must not be used for user content
     assert "innerHTML" not in js
+
+
+def test_ui_page_delivers_token_via_data_attribute_not_inline_script(api_client):
+    """The session token must reach the page as a data-* attribute on
+    <body>, not an inline <script> block — so the CSP's script-src can stay
+    'self' only, with no unsafe-inline allowance (see app/api/local_guard.py's
+    security headers and docs/SECURITY.md)."""
+    from app.core import session_token
+
+    r = api_client.get("/ui/")
+    html = r.text
+    token = session_token.get_token()
+    assert f'data-jarvis-token="{token}"' in html
+    assert "<script>" not in html
+    assert "__JARVIS_TOKEN__" not in html
+
+
+def test_onboarding_page_delivers_token_via_data_attribute_not_inline_script(api_client):
+    from app.core import session_token
+
+    r = api_client.get("/ui/onboarding")
+    html = r.text
+    token = session_token.get_token()
+    assert f'data-jarvis-token="{token}"' in html
+    assert "<script>" not in html
+    assert "__JARVIS_TOKEN__" not in html
 
 
 # ── New API endpoints ─────────────────────────────────────────────────────────
@@ -213,10 +251,13 @@ def test_health_includes_phase(api_client):
     assert "Phase" in body["phase"]
 
 
-def test_health_includes_db_string(api_client):
+def test_health_stays_minimal(api_client):
+    """/health is the one endpoint reachable without a session token — it
+    must never carry DB status, provider status, or anything else beyond
+    process-is-up (see app/api/local_guard.py's is_public_path)."""
     r = api_client.get("/health")
     body = r.json()
-    assert body["db"] in ("ok", "error")
+    assert set(body.keys()) == {"status", "healthy", "version", "phase"}
 
 
 def test_ui_chat_post_command_roundtrip(api_client):

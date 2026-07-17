@@ -1,133 +1,68 @@
-# JARVIS Quick Start Guide
+# JARVIS Quick Start
 
-> Alpha build for local testing. All data stays on your machine.
+For the full walkthrough (screenshots, every step, troubleshooting), see
+[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md). This page is the short version.
 
----
-
-## Step 1 — Extract the ZIP
-
-Unzip `JARVIS-Windows-v0.1.0-alpha.zip` into a folder, e.g. `C:\JARVIS\`.
-
-You should see:
-
-```
-JARVIS\
-  JARVIS.exe
-  START_JARVIS.bat
-  START_JARVIS_API.bat
-  SETUP_ENV.bat
-  QUICKSTART.md
-  README.md
-  .env.example
-  _internal\
-```
+> All data stays on your machine. Nothing is uploaded unless you add an
+> Anthropic API key, and even then only your typed messages are sent.
 
 ---
 
-## Step 2 — First-time setup (optional — needed for AI responses)
+## Install
 
-Double-click **`SETUP_ENV.bat`**.
+Download `JARVIS-Setup-<version>.exe` from the
+[latest release](https://github.com/dado211207/jarvis-windows-ai-assistant/releases)
+and double-click it. No Administrator rights are needed — it installs to
+your own user profile. JARVIS opens automatically when setup finishes.
 
-This creates a `.env` file from the included `.env.example` template.
-
-Then open `.env` in Notepad and add your Anthropic API key:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-> Your key stays on your machine only. It is never included in the ZIP
-> and is only sent to the Anthropic API when you send a message.
-
-JARVIS works without an API key. Deterministic commands (system status,
-memory, app launcher, screenshot) always work. Only unrecognised
-natural-language queries require the key.
+*Prefer not to install anything?* `JARVIS-Portable-<version>.zip` is also
+published on the same release — unzip it anywhere and double-click
+`JARVIS.exe` directly. There's nothing to configure by hand either way; the
+first launch walks you through setup inside JARVIS itself.
 
 ---
 
-## Step 3 — Start JARVIS
+## First run
 
-Double-click **`START_JARVIS.bat`**
-
-Or open a terminal in the JARVIS folder and run:
-
-```bat
-JARVIS.exe
-```
-
-You will see:
-
-```
-============================================================
- JARVIS -- Personal Windows AI Assistant
- Type 'help' to list commands, 'exit' to quit.
-============================================================
-
-jarvis>
-```
+JARVIS opens in your browser (`127.0.0.1` only — never reachable from other
+devices) and walks you through a short setup: a privacy explanation, an
+optional Anthropic API key (skip it if you don't have one — JARVIS still
+works for every built-in command), voice output on/off, and whether to
+start JARVIS automatically with Windows.
 
 ---
 
-## Step 4 — Try these commands
+## Using JARVIS
 
-| Command | What it does |
+Everything happens in the browser dashboard: **Chat** for natural-language
+questions and commands, **Actions** for anything that needs your
+confirmation first, **Voice**, **Memory**, **Settings**, and **Diagnostics**.
+A few things to try from the Chat page:
+
+| Try typing | What happens |
 |---|---|
-| `help` | List all available commands |
-| `status` | Show JARVIS version and config |
+| `status` | JARVIS version and configuration |
 | `system status` | CPU, RAM, disk, battery |
-| `open chrome` | Launch Chrome |
-| `open notepad` | Launch Notepad |
+| `open chrome` / `open notepad` | Launch an allowlisted app |
 | `screenshot` | Capture your screen |
 | `memory add <text>` | Save a note to local memory |
-| `memory search <query>` | Search saved notes |
-| `what can you do?` | AI natural-language answer (needs API key) |
-| `explain CPU usage in one sentence` | AI answer (needs API key) |
-| `exit` | Quit JARVIS |
+| `what can you do?` | Natural-language answer (needs an API key) |
 
----
+## Prefer a terminal?
 
-## Step 5 — Local API (optional)
-
-Double-click **`START_JARVIS_API.bat`**
-
-Then open **http://127.0.0.1:5555/docs** in your browser for the
-interactive Swagger UI.
-
-The API runs on `127.0.0.1:5555` only and is never accessible from
-other devices on your network.
-
----
-
----
-
-## Step 6 — Enable voice output (optional)
-
-Open `.env` in Notepad and set:
-
-```
-JARVIS_TTS_ENABLED=true
-```
-
-Then restart JARVIS. Use these voice commands:
-
-| Command | What it does |
-|---|---|
-| `speak on` | Enable voice for this session |
-| `speak off` | Disable voice |
-| `speak test` | Hear a test phrase |
-| `stop speaking` | Stop current speech |
-
-> Voice is **local and offline** — no API key required.
-> This is text-to-speech **output only** — no microphone or wake word.
-
----
+Advanced users and contributors can still run `JARVIS.exe --cli` for the
+classic REPL, or `JARVIS.exe --api` to run just the local API
+(`http://127.0.0.1:5555/docs` for the Swagger UI). Double-clicking
+`JARVIS.exe` with no flags always opens the normal dashboard experience
+above — that's the intended way to use JARVIS.
 
 ## Security notes
 
-- The API key is **never** included in the ZIP or any release asset.
-- JARVIS runs entirely on your machine.
-- The local API binds to `127.0.0.1:5555` only.
-- This is an **unsigned alpha build**. Windows SmartScreen may warn on
-  first launch — click **More info** then **Run anyway**.
-- The app launcher uses a strict allowlist — only approved apps can be
-  launched through JARVIS.
+- The local API binds to `127.0.0.1` only — never reachable from other
+  devices on your network.
+- Your Anthropic API key, if you add one, is stored securely (Windows
+  DPAPI) — never in a plaintext file. See `docs/SECURITY.md`.
+- This build is currently unsigned. Windows SmartScreen may show an
+  "unrecognized app" warning on first run — see `docs/SECURITY.md` for what
+  to expect and why.
+- The app launcher only opens an allowlisted set of applications.

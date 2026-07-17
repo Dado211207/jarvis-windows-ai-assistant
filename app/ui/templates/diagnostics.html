@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics{% endblock %}
+{% block topbar_title %}Diagnostics{% endblock %}
+{% block content %}
+<div id="diagnostics-root">
+
+  <div class="page-header">
+    <h1 class="page-title">Diagnostics</h1>
+    <p class="page-subtitle">
+      Local support information &mdash; useful when reporting a problem. Nothing here
+      leaves your computer, and your API key is never shown.
+    </p>
+  </div>
+
+  <div class="btn-row mb-3">
+    <button type="button" class="btn btn-ghost" id="diag-refresh">Refresh</button>
+    <button type="button" class="btn btn-ghost" id="diag-open-logs">Open log folder</button>
+    <button type="button" class="btn btn-primary" id="diag-copy">Copy sanitized report</button>
+    <span id="diag-status" class="settings-status"></span>
+  </div>
+
+  <div class="section">
+    <div class="section-title">JARVIS</div>
+    <div class="card">
+      <div class="status-row"><span class="status-row-label">Version</span><span class="status-row-value" id="diag-version">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Phase</span><span class="status-row-value" id="diag-phase">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Installed app</span><span class="status-row-value" id="diag-frozen">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Operating system</span><span class="status-row-value" id="diag-os">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Onboarding complete</span><span class="status-row-value" id="diag-onboarding">&mdash;</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Backend</div>
+    <div class="card">
+      <div class="status-row"><span class="status-row-label">Host</span><span class="status-row-value" id="diag-host">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Port (actual)</span><span class="status-row-value" id="diag-port">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">AI provider</span><span class="status-row-value" id="diag-provider">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">AI status</span><span id="diag-brain" class="badge badge-muted">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Tools registered</span><span class="status-row-value" id="diag-tools">&mdash;</span></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Storage</div>
+    <div class="card">
+      <div class="status-row"><span class="status-row-label">Database path</span><span class="status-row-value" id="diag-db-path">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Database integrity</span><span id="diag-db-ok" class="badge badge-muted">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Log folder</span><span class="status-row-value" id="diag-log-dir">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Secure key storage</span><span class="status-row-value" id="diag-secret-backend">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">API key configured</span><span id="diag-api-key" class="badge badge-muted">&mdash;</span></div>
+      <div class="status-row"><span class="status-row-label">Legacy DB migration</span><span class="status-row-value" id="diag-migration">&mdash;</span></div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/ui/static/diagnostics.js"></script>
+{% endblock %}

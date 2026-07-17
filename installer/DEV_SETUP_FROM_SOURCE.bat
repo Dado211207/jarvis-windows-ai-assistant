@@ -2,7 +2,9 @@
 setlocal enabledelayedexpansion
 
 echo ============================================================
-echo  JARVIS Setup — Personal Windows AI Assistant (Phase 1)
+echo  JARVIS — DEVELOPER environment setup (run from source)
+echo  This is NOT the normal install method. If you just want to
+echo  use JARVIS, download JARVIS-Setup-^<version^>.exe instead.
 echo ============================================================
 echo.
 

@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app import __phase__, __version__
@@ -18,6 +17,17 @@ logger = get_logger("api.server")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    from app.core import session_token
+    token = session_token.generate_token()  # fresh every launch; never persisted, never logged
+    # Deliberate trusted path for --api / dev use: the token is only ever
+    # printed to an interactive console the caller explicitly opened
+    # themselves (never to the rotating log file — see session_token.py).
+    # The production launcher never sets this flag; its only consumer is
+    # the browser tab it opens itself, which gets the token server-rendered
+    # into the page (see app/ui/routes.py) instead.
+    if getattr(app.state, "print_token_on_startup", False) and sys.stdout is not None:
+        print(f"JARVIS local API session token (this run only): {token}")
+        print("Pass it as the X-Jarvis-Token header on state-changing requests (POST/PUT/PATCH/DELETE).")
     logger.info("JARVIS API starting up — %s %s", __version__, __phase__)
     from app.core.brain import brain
     brain.initialise()
@@ -35,13 +45,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Local-only CORS: only allow requests from the same machine
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://127.0.0.1:*", "http://localhost:*"],
-        allow_methods=["GET", "POST"],
-        allow_headers=["*"],
-    )
+    # Host/Origin allowlist (anchored to the exact active port), CORS, and
+    # the per-launch session token for every private endpoint — handled
+    # natively in one place rather than Starlette's CORSMiddleware, which
+    # has no way to check the allowed origin's port at request time (its
+    # config is fixed at app-startup, before the real port is known). See
+    # app/api/local_guard.py and docs/SECURITY.md.
+    from app.api.local_guard import LocalOnlyGuardMiddleware
+    app.add_middleware(LocalOnlyGuardMiddleware)
 
     from app.api.routes import router
     app.include_router(router)
@@ -54,6 +65,15 @@ def create_app() -> FastAPI:
 
     from app.api.preferences_routes import router as preferences_router
     app.include_router(preferences_router)
+
+    from app.api.onboarding_routes import router as onboarding_router
+    app.include_router(onboarding_router)
+
+    from app.api.diagnostics_routes import router as diagnostics_router
+    app.include_router(diagnostics_router)
+
+    from app.api.update_routes import router as update_router
+    app.include_router(update_router)
 
     from app.ui.routes import router as ui_router
     app.include_router(ui_router)
@@ -79,6 +99,12 @@ def run_api() -> None:
     import uvicorn
 
     setup_logging()
+    from app.core import runtime_state
+    runtime_state.set_actual_port(settings.jarvis_port)
+    # Deliberate trusted path: --api is always started explicitly from a
+    # console the caller already controls, so printing the session token
+    # there (never to the log file) is safe — see the lifespan handler above.
+    app.state.print_token_on_startup = True
     logger.info(
         "Starting JARVIS API on http://%s:%s",
         settings.jarvis_host,

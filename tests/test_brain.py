@@ -61,7 +61,7 @@ def test_generate_response_local_fallback_when_no_key():
 
     assert result.used_api is False
     assert result.provider == "local"
-    assert "Claude AI is not configured" in result.content
+    assert "AI chat is not configured" in result.content
     assert result.error is None
 
 
@@ -160,6 +160,36 @@ def test_generate_response_falls_back_on_api_error():
     assert result.used_api is False
     assert result.error is not None
     assert "401" in result.error
+
+
+def test_generate_response_error_is_redacted():
+    """A raw SDK/network exception could in principle embed a path, a
+    partial header, or similar — result.error reaches the frontend via
+    CommandResponse.data["error"] (see router.py's _brain_response), so it
+    must go through app.core.redact.redact_text like every other exception
+    message JARVIS didn't compose itself."""
+    from app.core.brain import Brain
+    b = Brain()
+
+    with patch("app.core.brain.settings") as s, \
+         patch("anthropic.Anthropic") as mock_anthropic_cls:
+        s.has_anthropic_key = True
+        s.anthropic_api_key = "sk-bad-key"
+        s.jarvis_ai_provider = "anthropic"
+        s.jarvis_ai_model = "claude-haiku-4-5-20251001"
+        s.jarvis_ai_max_tokens = 250
+        s.jarvis_ai_timeout_seconds = 20
+
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = Exception(
+            r"connection failed near C:\Users\JohnDoe\AppData\Roaming\JARVIS\config"
+        )
+
+        result = b.generate_response("hello")
+
+    assert result.used_api is False
+    assert "JohnDoe" not in result.error
 
 
 def test_generate_response_falls_back_on_timeout():
@@ -347,12 +377,10 @@ def test_api_command_local_fallback(api_client):
 def test_health_does_not_expose_api_key(api_client):
     r = api_client.get("/health")
     assert r.status_code == 200
-    body = r.json()
     raw = r.text
     assert "anthropic_api_key" not in raw
     assert "ANTHROPIC_API_KEY" not in raw
     assert "sk-" not in raw
-    assert "brain_configured" in body
 
 
 def test_root_does_not_expose_api_key(api_client):
@@ -378,9 +406,31 @@ def test_root_includes_brain_status(api_client):
     assert isinstance(body["brain_configured"], bool)
 
 
-def test_health_includes_brain_configured(api_client):
+def test_root_includes_db_accessible(api_client):
+    """db_accessible (DB connectivity status) lives on the token-protected
+    `/` endpoint — same as brain_configured — never on public /health."""
+    r = api_client.get("/")
+    assert r.status_code == 200
+    body = r.json()
+    assert "db_accessible" in body
+    assert isinstance(body["db_accessible"], bool)
+
+
+def test_health_does_not_include_brain_configured(api_client):
+    """brain_configured (API-key status) moved off /health — see
+    test_root_includes_brain_status for where it's now tested, on the
+    token-protected `/` endpoint."""
     r = api_client.get("/health")
     assert r.status_code == 200
     body = r.json()
-    assert "brain_configured" in body
-    assert isinstance(body["brain_configured"], bool)
+    assert "brain_configured" not in body
+
+
+def test_health_does_not_include_db_accessible(api_client):
+    """db_accessible (database information) moved off /health — see
+    test_root_includes_db_accessible for where it's now tested, on the
+    token-protected `/` endpoint."""
+    r = api_client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert "db_accessible" not in body

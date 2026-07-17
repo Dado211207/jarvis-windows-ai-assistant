@@ -27,6 +27,22 @@ jobs:
       - name: Compile check (app + db)
         run: python -m compileall app db
 
+      - name: Secret scan (tracked files)
+        run: python scripts/secret_scan.py
+
+      - name: Confirm pwsh is available for the artifact-scanner tests
+        # ubuntu-latest ships PowerShell (pwsh) by default. This step exists
+        # only for visibility: tests/test_scan_artifacts_ps1.py skips (not
+        # fails) if pwsh is missing, so without this, that coverage could
+        # silently stop running if the runner image ever changes and no one
+        # would notice from the test summary alone.
+        run: |
+          if command -v pwsh >/dev/null 2>&1; then
+            echo "pwsh found: $(pwsh -Version)"
+          else
+            echo "::warning::pwsh not found — installer/scan_artifacts.ps1 will not be executed this run (tests/test_scan_artifacts_ps1.py will report as skipped, not failed)."
+          fi
+
       - name: Run tests
         run: pytest
         env:

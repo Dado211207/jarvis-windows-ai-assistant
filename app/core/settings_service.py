@@ -65,6 +65,8 @@ SETTINGS_SPECS: List[SettingSpec] = [
     SettingSpec("tts_voice", "", "TTS voice", "text"),
     # Commands
     SettingSpec("pinned_commands", "", "Pinned commands", "text"),
+    # Startup (installed Windows app only; no-op in dev mode)
+    SettingSpec("start_with_windows", "false", "Start with Windows", "bool"),
     # Safety (locked — always on, can never be disabled through settings)
     SettingSpec("safety_mode", "on", "Safety mode", "enum",
                 choices=("on",), locked=True),

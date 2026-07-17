@@ -21,10 +21,14 @@ def setup_logging() -> logging.Logger:
     root.setLevel(log_level)
     root.handlers.clear()
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(log_level)
-    console.setFormatter(formatter)
-    root.addHandler(console)
+    # sys.stdout is None in a PyInstaller --windowed/--noconsole build (there is
+    # no console to write to) — skip the console handler rather than crashing
+    # on the first log call.
+    if sys.stdout is not None:
+        console = logging.StreamHandler(sys.stdout)
+        console.setLevel(log_level)
+        console.setFormatter(formatter)
+        root.addHandler(console)
 
     file_handler = logging.handlers.RotatingFileHandler(
         log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"

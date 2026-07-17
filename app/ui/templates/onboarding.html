@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome to JARVIS</title>
+  <link rel="stylesheet" href="/ui/static/style.css">
+  <link rel="stylesheet" href="/ui/static/onboarding.css">
+</head>
+<body class="onboarding-body" data-jarvis-token="{{ jarvis_token }}">
+
+<div class="onboarding-shell">
+  <div class="onboarding-brand">
+    <div class="sidebar-logo">J</div>
+    <span class="onboarding-brand-name">JARVIS</span>
+  </div>
+
+  <div class="onboarding-card card">
+
+    <div class="onboarding-steps" id="onboarding-steps" aria-hidden="true">
+      <span class="onboarding-dot" data-step="welcome"></span>
+      <span class="onboarding-dot" data-step="privacy"></span>
+      <span class="onboarding-dot" data-step="api_key"></span>
+      <span class="onboarding-dot" data-step="voice"></span>
+      <span class="onboarding-dot" data-step="startup_pref"></span>
+      <span class="onboarding-dot" data-step="finish"></span>
+    </div>
+
+    <!-- Welcome -->
+    <section class="onboarding-panel" data-panel="welcome">
+      <h1 class="onboarding-title">Welcome to JARVIS</h1>
+      <p class="onboarding-text">
+        Your personal, local-first AI assistant. Everything JARVIS does runs on this
+        computer — there's a short setup before your first conversation.
+      </p>
+      <div class="onboarding-actions">
+        <button type="button" class="btn btn-primary" data-next="privacy">Get started</button>
+      </div>
+    </section>
+
+    <!-- Privacy -->
+    <section class="onboarding-panel" data-panel="privacy" hidden>
+      <h1 class="onboarding-title">Your privacy</h1>
+      <ul class="onboarding-list">
+        <li>JARVIS runs entirely on this PC and only listens on this PC (127.0.0.1).</li>
+        <li>Your conversations, settings, and memory are stored locally and never uploaded.</li>
+        <li>If you add an Anthropic API key, only your typed messages are sent to Anthropic
+            to generate a reply — nothing else on your computer is accessed or sent.</li>
+        <li>JARVIS never listens through your microphone. Voice output is optional and can
+            be turned off at any time.</li>
+      </ul>
+      <div class="onboarding-actions">
+        <button type="button" class="btn btn-ghost" data-back="welcome">Back</button>
+        <button type="button" class="btn btn-primary" data-next="api_key">Continue</button>
+      </div>
+    </section>
+
+    <!-- API key -->
+    <section class="onboarding-panel" data-panel="api_key" hidden>
+      <h1 class="onboarding-title">Connect Claude AI (optional)</h1>
+      <p class="onboarding-text">
+        Add an Anthropic API key so JARVIS can hold natural conversations. Every built-in
+        command (system status, opening apps, memory, and more) works either way — but
+        without a key, open-ended chat will let you know it isn't set up yet instead of
+        answering. You can add, replace, or remove your key anytime from Settings.
+      </p>
+
+      <label class="settings-field" style="margin-top:1rem;">
+        <span class="settings-label">Anthropic API key</span>
+        <div class="onboarding-key-row">
+          <input class="input" type="password" id="ob-api-key" autocomplete="off"
+                 spellcheck="false" placeholder="Paste your Anthropic API key" aria-label="Anthropic API key">
+          <button type="button" class="btn btn-ghost btn-sm" id="ob-key-toggle" aria-label="Show API key">Show</button>
+        </div>
+      </label>
+
+      <p class="onboarding-key-status" id="ob-key-status"></p>
+
+      <div class="onboarding-actions">
+        <button type="button" class="btn btn-ghost" data-back="privacy">Back</button>
+        <button type="button" class="btn btn-ghost" id="ob-key-skip">Skip for now</button>
+        <button type="button" class="btn btn-primary" id="ob-key-validate">Save &amp; continue</button>
+      </div>
+    </section>
+
+    <!-- Voice -->
+    <section class="onboarding-panel" data-panel="voice" hidden>
+      <h1 class="onboarding-title">Voice output</h1>
+      <p class="onboarding-text">
+        JARVIS can read its replies aloud using your PC's built-in text-to-speech voice.
+        This is output only — JARVIS never listens through your microphone.
+      </p>
+      <label class="settings-field" style="margin-top:1rem;">
+        <span class="settings-label">Read replies aloud</span>
+        <select class="input" id="ob-voice-enabled" aria-label="Read replies aloud">
+          <option value="false" selected>Off</option>
+          <option value="true">On</option>
+        </select>
+      </label>
+      <div class="onboarding-actions">
+        <button type="button" class="btn btn-ghost" data-back="api_key">Back</button>
+        <button type="button" class="btn btn-primary" id="ob-voice-continue">Continue</button>
+      </div>
+    </section>
+
+    <!-- Startup preference -->
+    <section class="onboarding-panel" data-panel="startup_pref" hidden>
+      <h1 class="onboarding-title">Startup</h1>
+      <p class="onboarding-text">
+        Would you like JARVIS to start automatically when you sign in to Windows?
+        You can change this anytime in Settings.
+      </p>
+      <label class="settings-field" style="margin-top:1rem;">
+        <span class="settings-label">Start JARVIS with Windows</span>
+        <select class="input" id="ob-startup-enabled" aria-label="Start with Windows">
+          <option value="false" selected>Off</option>
+          <option value="true">On</option>
+        </select>
+      </label>
+      <div class="onboarding-actions">
+        <button type="button" class="btn btn-ghost" data-back="voice">Back</button>
+        <button type="button" class="btn btn-primary" id="ob-startup-continue">Continue</button>
+      </div>
+    </section>
+
+    <!-- Finish -->
+    <section class="onboarding-panel" data-panel="finish" hidden>
+      <h1 class="onboarding-title" id="ob-finish-title">You're all set</h1>
+      <p class="onboarding-text" id="ob-finish-text">Opening your dashboard&hellip;</p>
+      <div class="onboarding-actions">
+        <button type="button" class="btn btn-primary" id="ob-finish">Open JARVIS</button>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="/ui/static/onboarding.js"></script>
+</body>
+</html>

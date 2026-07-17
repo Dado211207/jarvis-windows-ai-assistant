@@ -5,7 +5,7 @@ echo  JARVIS -- Personal Windows AI Assistant
 echo  Type 'help' to list commands, 'exit' to quit.
 echo ============================================================
 echo.
-JARVIS.exe
+JARVIS.exe --cli
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo [!] JARVIS exited with error code %ERRORLEVEL%.

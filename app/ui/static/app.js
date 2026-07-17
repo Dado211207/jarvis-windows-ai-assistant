@@ -2,16 +2,26 @@
 
 const $ = id => document.getElementById(id);
 
+// This page's per-launch session token (see app/core/session_token.py),
+// rendered server-side into the page by app/ui/routes.py as a data
+// attribute (not an inline <script>, so the page needs no script-src
+// 'unsafe-inline' CSP allowance) — never fetched over the network, never
+// stored in a cookie/localStorage/URL. Required on every private request;
+// a page from another origin has no way to read this value.
+function _jarvisToken() {
+  return document.body.dataset.jarvisToken || "";
+}
+
 const API = {
   async get(path) {
-    const r = await fetch(path);
+    const r = await fetch(path, { headers: { "X-Jarvis-Token": _jarvisToken() } });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },
   async post(path, body) {
     const r = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Jarvis-Token": _jarvisToken() },
       body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
@@ -20,14 +30,14 @@ const API = {
   async patch(path, body) {
     const r = await fetch(path, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Jarvis-Token": _jarvisToken() },
       body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },
   async del(path) {
-    const r = await fetch(path, { method: "DELETE" });
+    const r = await fetch(path, { method: "DELETE", headers: { "X-Jarvis-Token": _jarvisToken() } });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   },
@@ -111,8 +121,9 @@ async function loadDashboard() {
   });
 
   try {
-    const [health, voice, sys] = await Promise.allSettled([
+    const [health, root, voice, sys] = await Promise.allSettled([
       API.get("/health"),
+      API.get("/"),
       API.get("/voice/status"),
       API.get("/system"),
     ]);
@@ -120,18 +131,24 @@ async function loadDashboard() {
     if (health.status === "fulfilled") {
       const h = health.value;
       setTopbarHealth(h.healthy);
-      setTopbarBrain(h.brain_configured);
       setStatus("dash-health", h.healthy ? "OK" : "Degraded",
                 h.healthy ? "text-ok" : "text-err");
-      setStatus("dash-db", h.db_accessible ? "Connected" : "Error",
-                h.db_accessible ? "text-ok" : "text-err");
-      setStatus("dash-brain", h.brain_configured ? "Claude AI" : "Local fallback",
-                h.brain_configured ? "text-ok" : "text-warn");
       setText("dash-version", h.version || "—");
     } else {
-      ["dash-health", "dash-db", "dash-brain"].forEach(
-        id => setStatus(id, "Error", "text-err"));
+      setStatus("dash-health", "Error", "text-err");
       setTopbarHealth(false);
+    }
+
+    if (root.status === "fulfilled") {
+      const r = root.value;
+      setTopbarBrain(r.brain_configured);
+      setStatus("dash-db", r.db_accessible ? "Connected" : "Error",
+                r.db_accessible ? "text-ok" : "text-err");
+      setStatus("dash-brain", r.brain_configured ? "Claude AI" : "Local fallback",
+                r.brain_configured ? "text-ok" : "text-warn");
+    } else {
+      ["dash-db", "dash-brain"].forEach(id => setStatus(id, "Error", "text-err"));
+      setTopbarBrain(false);
     }
 
     if (voice.status === "fulfilled") {
@@ -203,7 +220,7 @@ async function loadAssistantName() {
   }
 }
 
-function addMessage(role, text, toolUsed) {
+function addMessage(role, text, toolUsed, meta) {
   const list = $("chat-messages");
   if (!list) return;
 
@@ -231,6 +248,15 @@ function addMessage(role, text, toolUsed) {
     wrap.appendChild(tool);
   }
 
+  // This reply came from Brain's local fallback, not a real AI answer —
+  // say so plainly instead of letting it look like a genuine response.
+  if (toolUsed === "brain" && meta && meta.used_api === false) {
+    const notice = document.createElement("div");
+    notice.className = "msg-tool text-warn";
+    notice.textContent = "AI chat isn't configured yet — add an API key in Settings for a real answer.";
+    wrap.appendChild(notice);
+  }
+
   list.appendChild(wrap);
   list.scrollTop = list.scrollHeight;
 }
@@ -253,7 +279,7 @@ async function sendChat() {
       addApprovalCard(data.pending_action_id, data);
     } else {
       const reply = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
-      addMessage("assistant", reply, data.tool_used || null);
+      addMessage("assistant", reply, data.tool_used || null, data.data || null);
     }
   } catch (e) {
     addMessage("assistant", "Error: " + e.message, null);
@@ -345,10 +371,22 @@ function addApprovalCard(actionId, data) {
   list.scrollTop = list.scrollHeight;
 }
 
+async function loadAiNotice() {
+  const notice = $("chat-ai-notice");
+  if (!notice) return;
+  try {
+    const r = await API.get("/");
+    notice.style.display = r.brain_configured ? "none" : "";
+  } catch (e) {
+    // leave hidden — a health-check failure is surfaced elsewhere (topbar)
+  }
+}
+
 function initChat() {
   const btn   = $("chat-send");
   const input = $("chat-input");
   loadAssistantName();
+  loadAiNotice();
   if (btn)   btn.addEventListener("click", sendChat);
   if (input) input.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
@@ -841,7 +879,7 @@ const SETTINGS_FIELDS = [
   "user_display_name", "assistant_name", "preferred_language",
   "preferred_response_style", "preferred_tone", "theme_mode", "compact_mode",
   "dashboard_default_page", "tts_enabled", "tts_rate", "tts_volume", "tts_voice",
-  "pinned_commands",
+  "pinned_commands", "start_with_windows",
 ];
 
 function setSettingsStatus(text, ok) {
@@ -902,6 +940,146 @@ function initSettings() {
   if (form)   form.addEventListener("submit", saveSettings);
   if (reload) reload.addEventListener("click", loadSettings);
   loadSettings();
+
+  const updateBtn = $("update-check-btn");
+  if (updateBtn) updateBtn.addEventListener("click", checkForUpdates);
+  checkForUpdates();
+
+  initProviderSection();
+}
+
+// ── AI Provider (Settings page) ─────────────────────────────────────────────
+// Reuses the same backend as onboarding (/onboarding/api-key etc.) so a user
+// who postponed setup during onboarding has a direct way to finish it later,
+// without re-running the whole wizard.
+
+function setProviderKeyStatus(text, kind) {
+  const el = $("provider-key-status");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "onboarding-key-status" + (kind ? ` status-${kind}` : "");
+}
+
+async function loadProviderStatus() {
+  try {
+    const state = await API.get("/onboarding/state");
+    const configured = state.api_key_status === "validated";
+    setBadge("provider-status", configured ? "configured" : "not configured", configured ? "ok" : "warn");
+    const maskedRow = $("provider-masked-row");
+    const removeBtn = $("provider-key-remove");
+    if (configured && state.api_key_masked) {
+      setText("provider-masked-key", state.api_key_masked);
+      if (maskedRow) maskedRow.hidden = false;
+      if (removeBtn) removeBtn.hidden = false;
+    } else {
+      if (maskedRow) maskedRow.hidden = true;
+      if (removeBtn) removeBtn.hidden = true;
+    }
+  } catch (e) {
+    setProviderKeyStatus("Could not load provider status: " + e.message, "err");
+  }
+}
+
+function initProviderSection() {
+  const keyInput = $("provider-api-key");
+  const keyToggle = $("provider-key-toggle");
+  const saveBtn = $("provider-key-save");
+  const removeBtn = $("provider-key-remove");
+
+  if (keyToggle) {
+    keyToggle.addEventListener("click", () => {
+      const hidden = keyInput.type === "password";
+      keyInput.type = hidden ? "text" : "password";
+      keyToggle.textContent = hidden ? "Hide" : "Show";
+    });
+  }
+
+  if (saveBtn) {
+    saveBtn.addEventListener("click", async () => {
+      const value = keyInput.value.trim();
+      if (!value) {
+        setProviderKeyStatus("Enter a key to save.", "err");
+        return;
+      }
+      saveBtn.disabled = true;
+      setProviderKeyStatus("Validating with Anthropic…", "busy");
+      try {
+        const result = await API.post("/onboarding/api-key", { api_key: value });
+        if (result.success) {
+          setProviderKeyStatus("Key validated and saved securely.", "ok");
+          keyInput.value = "";
+          loadProviderStatus();
+        } else {
+          setProviderKeyStatus(result.error || "Could not validate that key.", "err");
+        }
+      } catch (e) {
+        setProviderKeyStatus("Could not reach JARVIS to validate the key.", "err");
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+  }
+
+  if (removeBtn) {
+    removeBtn.addEventListener("click", async () => {
+      removeBtn.disabled = true;
+      try {
+        await API.del("/onboarding/api-key");
+        setProviderKeyStatus("Key removed.", "ok");
+        loadProviderStatus();
+      } catch (e) {
+        setProviderKeyStatus("Could not remove the key: " + e.message, "err");
+      } finally {
+        removeBtn.disabled = false;
+      }
+    });
+  }
+
+  loadProviderStatus();
+}
+
+function setUpdateStatus(text, ok) {
+  const el = $("update-status");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "settings-status " + (ok === true ? "text-ok" : ok === false ? "text-err" : "");
+}
+
+async function checkForUpdates() {
+  const btn = $("update-check-btn");
+  const note = $("update-unsupported-note");
+  const box = $("update-available-box");
+  const link = $("update-download-link");
+  if (btn) btn.disabled = true;
+  setUpdateStatus("Checking…", null);
+  try {
+    const r = await API.get("/update/check");
+    setText("update-current-version", r.current_version || "—");
+    if (box) box.hidden = true;
+    if (note) note.hidden = true;
+
+    if (!r.checked) {
+      setUpdateStatus("", null);
+      if (note) {
+        note.textContent = r.reason || "Update checking is unavailable.";
+        note.hidden = false;
+      }
+      if (btn) btn.disabled = !r.reason || !r.reason.startsWith("Could not reach");
+      return;
+    }
+
+    if (r.update_available) {
+      setUpdateStatus(`A new version is available: ${r.latest_version}`, true);
+      if (link) link.href = r.download_url;
+      if (box) box.hidden = false;
+    } else {
+      setUpdateStatus("You're on the latest version.", true);
+    }
+  } catch (e) {
+    setUpdateStatus("Could not check for updates: " + e.message, false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
