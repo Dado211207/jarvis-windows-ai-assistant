@@ -36,6 +36,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    from app.voice.tts import tts_service
+    tts_service.stop()  # release any in-progress speech before the process exits
+
     runtime.try_transition(RuntimeState.OFFLINE, reason="shutdown")
     logger.info("JARVIS API shutting down.")
 

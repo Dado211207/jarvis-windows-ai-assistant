@@ -10,10 +10,23 @@ def test_run_api_function_exists():
     )
 
 
-def test_run_jarvis_cli_mode():
-    """run_jarvis._run() with no --api flag delegates to app.main.main."""
+def test_run_jarvis_default_mode_is_windowed():
+    """run_jarvis._run() with no flags delegates to the windowed launcher
+    — the only mode that works in a --windowed (console=False) build,
+    which is what the installed JARVIS.exe actually is. No longer the
+    CLI: see run_jarvis.py's own docstring for why the default changed."""
     import run_jarvis
     with patch("sys.argv", ["JARVIS.exe"]):
+        with patch("app.launcher.gui.run_windowed") as mock_run_windowed:
+            run_jarvis._run()
+    mock_run_windowed.assert_called_once()
+
+
+def test_run_jarvis_cli_mode():
+    """run_jarvis._run() with --cli delegates to app.main.main — preserved
+    for console-mode builds/dev use, just no longer the default."""
+    import run_jarvis
+    with patch("sys.argv", ["JARVIS.exe", "--cli"]):
         with patch("app.main.main") as mock_main:
             run_jarvis._run()
     mock_main.assert_called_once()

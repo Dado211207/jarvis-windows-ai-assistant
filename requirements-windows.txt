@@ -1,0 +1,17 @@
+# Windows packaging-only dependencies — NOT installed by requirements.txt
+# and NOT needed to run, test, or develop JARVIS from source on any
+# platform. Installed only by scripts/build-installer.ps1 before running
+# PyInstaller.
+#
+# Kept out of requirements.txt deliberately: pystray probes for a real
+# display backend the moment it's imported (Win32/AppKit/GTK/Xorg), which
+# would make `import pystray` unsafe on this repo's headless Linux CI and
+# any other display-less environment. app/launcher/tray.py already keeps
+# that import strictly local to the one function that needs it — this
+# file is a second, belt-and-suspenders layer: the package simply isn't
+# present at all unless you're actually building the Windows installer.
+# See docs/THIRD_PARTY_NOTICES.md for license/maintenance notes.
+#
+#   pip install -r requirements.txt -r requirements-windows.txt
+#
+pystray==0.19.5

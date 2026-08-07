@@ -611,7 +611,8 @@ docs/
   INSPIRATION.md    — Research sources consulted, concepts adopted/rejected, licenses
   THREAT_MODEL.md   — What is and is not protected, stated honestly
   release-process.md — Release checklist and version naming guide
-run_jarvis.py       — PyInstaller entry point (--api flag starts FastAPI server)
+run_jarvis.py       — PyInstaller entry point (default: windowed launcher + tray;
+                       --api: headless FastAPI server only; --cli: interactive REPL)
 QUICKSTART.md       — First-run guide (included in release ZIP)
 SECURITY.md         — Short security overview, points to docs/THREAT_MODEL.md
 START_JARVIS.bat    — CLI launcher (included in release ZIP)

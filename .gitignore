@@ -34,6 +34,10 @@ data/logs/
 data/jarvis.db
 !data/.gitkeep
 
+# Packaged-launcher runtime files (dev mode writes these to the repo root,
+# same as data/jarvis.db above — see app/launcher/instance_lock.py)
+jarvis.lock
+
 # PyInstaller
 *.spec
 JARVIS-Windows-Build.zip

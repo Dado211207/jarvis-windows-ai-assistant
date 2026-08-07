@@ -5,6 +5,7 @@ fixture already use, not a mocked HTTP layer.
 """
 
 import socket
+from unittest.mock import patch
 
 import pytest
 
@@ -52,3 +53,18 @@ def test_request_shutdown_is_safe_to_call_twice(running_server):
 
     running.request_shutdown(join_timeout=5)
     running.request_shutdown(join_timeout=1)  # must not raise
+
+
+def test_server_shutdown_releases_tts_resources(running_server):
+    """app/api/server.py's lifespan() calls tts_service.stop() on
+    shutdown — proves the launcher's clean-shutdown path (uvicorn's
+    should_exit -> lifespan shutdown) actually reaches it, not just that
+    the source line exists."""
+    from app.launcher import server_runner
+    running, port = running_server
+    assert server_runner.wait_until_healthy(host="127.0.0.1", port=port, timeout_seconds=10) is True
+
+    with patch("app.voice.tts.tts_service.stop") as mock_stop:
+        running.request_shutdown(join_timeout=5)
+
+    mock_stop.assert_called_once()

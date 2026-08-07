@@ -91,3 +91,14 @@ def shutdown(running: server_runner.RunningServer) -> None:
     logger.info("JARVIS shutting down.")
     running.request_shutdown()
     instance_lock.release_lock()
+
+
+def run_windowed() -> None:
+    """The complete windowed entry point: launch() the server, then hand
+    off to the tray event loop until Quit. This is what run_jarvis.py
+    calls — the only place in this package that wires gui and tray
+    together, kept out of both modules' own import graphs so importing
+    either alone (as most of this package's tests do) never needs pystray."""
+    running = launch()
+    from app.launcher.tray import run_tray_loop
+    run_tray_loop(running, settings.jarvis_host, settings.jarvis_port)
