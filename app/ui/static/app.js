@@ -670,9 +670,115 @@ function initActions() {
   loadActions();
 }
 
+// ── Live event stream (WebSocket) ───────────────────────────────────────────
+// Read-only: reflects runtime state and action lifecycle events in real
+// time. Never sends commands — command submission stays on the existing
+// REST endpoints above. Reconnects with bounded exponential backoff and
+// always shows connected/reconnecting/offline rather than failing silently.
+
+const RUNTIME_BADGE = {
+  booting:            "badge-muted",
+  standby:            "badge-muted",
+  listening:          "badge-info",
+  transcribing:       "badge-info",
+  thinking:           "badge-info",
+  awaiting_approval:  "badge-warn",
+  executing:          "badge-warn",
+  speaking:           "badge-info",
+  error:              "badge-err",
+  offline:            "badge-err",
+};
+
+const WS_RECONNECT_MAX_DELAY_MS = 30000;
+let wsReconnectDelayMs = 1000;
+let wsLastSeq = 0;
+
+function setWsStatus(state) {
+  const dot   = $("topbar-ws-dot");
+  const label = $("topbar-ws-label");
+  if (!dot || !label) return;
+  if (state === "connected") {
+    dot.className = "status-dot status-dot-ok";
+    label.textContent = "live";
+  } else if (state === "reconnecting") {
+    dot.className = "status-dot status-dot-warn";
+    label.textContent = "reconnecting";
+  } else {
+    dot.className = "status-dot status-dot-err";
+    label.textContent = "offline";
+  }
+}
+
+function setRuntimeLabel(state) {
+  const el = $("topbar-runtime-label");
+  if (!el || !state) return;
+  el.textContent = state.replace(/_/g, " ");
+  el.className = "badge " + (RUNTIME_BADGE[state] || "badge-muted");
+}
+
+function handleStreamEvent(evt) {
+  if (typeof evt.seq === "number" && evt.seq > wsLastSeq) wsLastSeq = evt.seq;
+
+  if (evt.type === "runtime_state" && evt.payload) {
+    setRuntimeLabel(evt.payload.to);
+  }
+
+  // Keep the Actions page's pending list live when an action anywhere
+  // (voice, another tab, chat) changes approval state or finishes running.
+  if (evt.type === "action_approval_changed" || evt.type === "action_result") {
+    if ($("actions-list")) loadActions();
+  }
+}
+
+function scheduleReconnect() {
+  setTimeout(connectEventStream, wsReconnectDelayMs);
+  wsReconnectDelayMs = Math.min(wsReconnectDelayMs * 2, WS_RECONNECT_MAX_DELAY_MS);
+}
+
+function connectEventStream() {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const since = wsLastSeq ? `?since=${wsLastSeq}` : "";
+  const url = `${proto}//${window.location.host}/ws/events${since}`;
+
+  let socket;
+  try {
+    socket = new WebSocket(url);
+  } catch (e) {
+    setWsStatus("offline");
+    scheduleReconnect();
+    return;
+  }
+
+  socket.addEventListener("open", () => {
+    wsReconnectDelayMs = 1000;
+    setWsStatus("connected");
+  });
+
+  socket.addEventListener("message", (msg) => {
+    try {
+      handleStreamEvent(JSON.parse(msg.data));
+    } catch (e) {
+      console.error("event stream: could not parse message", e);
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    setWsStatus("reconnecting");
+    scheduleReconnect();
+  });
+
+  socket.addEventListener("error", () => {
+    // "close" always follows "error" for a WebSocket; let close() alone
+    // own reconnect scheduling so a drop is only scheduled once.
+    socket.close();
+  });
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
+  connectEventStream();
+
   const path = window.location.pathname.replace(/\/+$/, "");
 
   if (path === "/ui" || path === "/ui/dashboard" || path === "") {
