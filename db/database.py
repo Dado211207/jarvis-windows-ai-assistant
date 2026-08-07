@@ -1,11 +1,18 @@
 """Database access layer — thin wrapper around sqlite3."""
 
+import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from app.config import settings
-from app.core.models import ActionLog, ConversationEntry, MemoryEntry
+from app.core.models import (
+    ActionLifecycleRecord,
+    ActionLog,
+    ConversationEntry,
+    MemoryEntry,
+)
 from app.logging_config import get_logger
 
 logger = get_logger("db.database")
@@ -140,6 +147,101 @@ class Database:
             )
             for r in rows
         ]
+
+    # --- action lifecycle (v0.2 audit trail) ---
+    # Thin and mechanical like the sections above: no redaction, no policy
+    # decisions, no idempotency fallback logic here. That belongs to
+    # app/core/action_lifecycle.py, which is the only caller of these
+    # methods. A duplicate idempotency_key raises sqlite3.IntegrityError
+    # (enforced by the partial unique index in db/migrations.py) — the
+    # caller decides what to do with that, this layer just reports it.
+
+    def create_action_lifecycle_record(self, record: ActionLifecycleRecord) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT INTO action_lifecycle (
+                id, correlation_id, tool_name, status, input_summary,
+                risk, policy_action, policy_reason, created_at, updated_at,
+                approved_by, approval_source, result_summary,
+                verification_result, error_category, duration_ms, idempotency_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.id,
+                record.correlation_id,
+                record.tool_name,
+                record.status.value,
+                json.dumps(record.input_summary),
+                record.risk,
+                record.policy_action,
+                record.policy_reason,
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                record.approved_by,
+                record.approval_source,
+                record.result_summary,
+                record.verification_result,
+                record.error_category,
+                record.duration_ms,
+                record.idempotency_key,
+            ),
+        )
+        conn.commit()
+
+    def get_action_lifecycle_record(self, action_id: str) -> Optional[ActionLifecycleRecord]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM action_lifecycle WHERE id = ?", (action_id,)
+        ).fetchone()
+        return self._row_to_action_record(row) if row else None
+
+    def get_action_lifecycle_record_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> Optional[ActionLifecycleRecord]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM action_lifecycle WHERE idempotency_key = ?", (idempotency_key,)
+        ).fetchone()
+        return self._row_to_action_record(row) if row else None
+
+    def update_action_lifecycle_record(
+        self, action_id: str, **fields: Any
+    ) -> Optional[ActionLifecycleRecord]:
+        """Update arbitrary columns on an existing record and stamp
+        updated_at. Returns the refreshed record, or None if *action_id*
+        does not exist. A no-op (no fields) still refreshes updated_at."""
+        conn = self._get_conn()
+        fields = dict(fields)
+        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        values = []
+        for value in fields.values():
+            values.append(value.value if hasattr(value, "value") else value)
+
+        set_clause = ", ".join(f"{column} = ?" for column in fields)
+        cur = conn.execute(
+            f"UPDATE action_lifecycle SET {set_clause} WHERE id = ?",
+            (*values, action_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_action_lifecycle_record(action_id)
+
+    def list_recent_action_lifecycle_records(self, limit: int = 50) -> List[ActionLifecycleRecord]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM action_lifecycle ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_action_record(r) for r in rows]
+
+    @staticmethod
+    def _row_to_action_record(row: sqlite3.Row) -> ActionLifecycleRecord:
+        data = dict(row)
+        data["input_summary"] = json.loads(data["input_summary"]) if data["input_summary"] else {}
+        return ActionLifecycleRecord(**data)
 
 
 # Module-level singleton
