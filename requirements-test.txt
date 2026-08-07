@@ -1,0 +1,12 @@
+# Optional: real-browser + accessibility tests (tests/test_playwright_e2e.py).
+#
+# Not installed by default and not in requirements.txt — the rest of the
+# suite (pytest, no -m browser) needs none of this. These tests are marked
+# `browser` in pytest.ini and are excluded from a plain `pytest` run.
+#
+#   pip install -r requirements-test.txt
+#   playwright install chromium
+#   pytest -m browser tests/test_playwright_e2e.py
+#
+playwright>=1.48.0
+axe-playwright-python>=0.1.8
