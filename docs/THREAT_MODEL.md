@@ -51,6 +51,11 @@ as a multi-tenant service.
 | No shell execution | `app/desktop/apps.py`, `app/desktop/folders.py`, etc. | Every `subprocess` call uses an explicit argument list with `shell=False`, launching only an allowlisted executable path. Verified by `tests/test_safe_actions.py`. |
 | Blocked URL schemes | `app/desktop/web.py` | Only `http://` and `https://` may be opened; `file:`, `javascript:`, `data:`, `powershell:`, `cmd:`, `vbscript:`, and others are rejected. |
 | Safe path handling | `app/desktop/folders.py`, `app/desktop/notes.py` (pre-existing) | File operations are confined to specific allowed roots; see `tests/test_safe_actions.py`'s path-traversal tests. |
+| Safe error envelope | `app/core/errors.py` | Exceptions from the Anthropic SDK and from tool handlers are classified **by exception type only, never by inspecting message text**, and returned to REST/WS/rendered output as a typed `SafeError` (category + fixed safe message + a correlation ID) — never the raw exception message, stack trace, or a local path. Full detail is still logged server-side under the same correlation ID for debugging. An earlier version of this document named the previous behavior (raw `str(exc)` reaching the browser) as an open gap; that gap is closed as of this defense. Verified in `tests/test_errors.py`, `tests/test_brain.py`, `tests/test_tool_registry.py`. |
+| Bounded tool execution | `app/core/tool_registry.py` | Every tool call runs under a `ThreadPoolExecutor` with `future.result(timeout=...)`. A hang surfaces as a typed `TOOL_TIMEOUT` failure instead of blocking the request/approval pipeline indefinitely. Honest scope: Python has no safe way to force-kill a thread, so a hung handler's underlying thread is *not* killed — it is abandoned, and its eventual result is unconditionally discarded and can never mutate state after the timeout response is returned (`tests/test_tool_registry.py::test_orphaned_handler_result_is_never_observed_after_timeout`). |
+| Per-session mutation token | `app/api/session.py` | State-changing REST endpoints and the WS handshake require a server-generated session token: a `SameSite=Strict`, non-HttpOnly cookie plus an `X-JARVIS-Session-Token` header the client must echo back, compared with `secrets.compare_digest`. An earlier version of this document named the absence of this token as an open gap — without it, a non-browser local process bypassing CORS entirely could call a mutation endpoint with only a forgeable Origin header. That gap is closed as of this defense. Never logged (verified via `caplog` in `tests/test_session_integration.py`). |
+| Privacy mode | `app/core/privacy.py` | While on: new conversation turns are not persisted, `add_memory` rejects writes, `take_screenshot` refuses before ever calling `PIL.ImageGrab`. In-memory only, same reset-on-restart model as `pending_actions.py` — **this is not encryption and makes no such claim**; see "No encrypted storage" below, which still applies regardless of privacy mode's state. Verified in `tests/test_privacy.py` (19 tests) including direct proof the stored-memory path never reaches the Anthropic request payload. |
+| Push-to-talk audio is never persisted | `app/api/routes.py` (`/voice/transcribe`), `app/voice/stt.py` | Uploaded audio is written to a temp file for the duration of transcription only and deleted in a `finally` block — success or failure — before the response is returned. No raw audio is written to the repo, the database, or a log line (logs record only the transcript's character count). Verified in `tests/test_voice_stt_endpoint.py`, including the failure path. |
 
 ## Explicit non-goals (do not assume these exist)
 
@@ -86,29 +91,6 @@ actually built. None of the following are true of JARVIS today:
   *correct* — what the architecture guarantees is narrower and different:
   the model's output can never itself become a tool call. See "Deterministic
   routing" above.
-- **No tool execution timeout enforcement (yet).** Every `ToolDefinition`
-  declares a `timeout_seconds`, and that value is real, honest metadata —
-  but nothing currently enforces it at the `ToolRegistry.execute()` call
-  site. A hung tool handler will hang the request that triggered it. This
-  is a known, named gap, not a documented feature.
-- **No per-session CSRF/mutation token on the REST API (yet).** The
-  WebSocket stream validates `Origin` on every handshake (see the table
-  above); the REST mutation endpoints (`POST /command`, `POST /actions/{id}/confirm`,
-  `POST /actions/{id}/cancel`, etc.) currently rely only on the CORS
-  origin allowlist and loopback binding, not an additional per-session
-  token. Given cross-origin `fetch`/`XHR` *is* subject to CORS (unlike
-  WebSocket), the fixed origin allowlist genuinely blocks a foreign page's
-  browser-enforced request from succeeding in a standards-compliant
-  browser — but this is a weaker guarantee than an explicit mutation
-  token, and is named here as a real gap for a future pass, not silently
-  treated as equivalent.
-- **Provider errors can still leak implementation detail to the browser.**
-  `app/core/brain.py::generate_response` currently attaches
-  `error=str(exc)` (the raw exception text from the Anthropic SDK call) to
-  its response on failure, and that string does reach the browser via
-  `CommandResponse.data.error`. This was flagged during this milestone's
-  audit (`docs/audit-v0.2.md`) and was not fixed in this pass — it is a
-  pre-existing gap, not a new one, but it remains open.
 - **Most tools' `verification_strategy` is descriptive, not enforced.**
   Declaring how a tool's effect *could* be verified (see each tool's
   `ToolDefinition` in `app/desktop/`) is not the same as JARVIS
@@ -121,8 +103,11 @@ actually built. None of the following are true of JARVIS today:
 **A malicious web page open in another tab tries to control JARVIS.**
 Blocked for WebSocket connections (Origin check, closes with 1008) and for
 CORS-subject `fetch`/`XHR` calls (origin allowlist) in a standards-compliant
-browser. Not blocked by an independent mutation token — see the gap noted
-above.
+browser. Also blocked independently of Origin/CORS by the per-session
+mutation token (see the defenses table above) — a non-browser local
+process that bypasses CORS entirely still cannot call a mutation endpoint
+without the session cookie and header, neither of which a foreign page or
+script can read or forge.
 
 **The AI provider returns a malicious or nonsensical instruction
 ("delete all my files").** The response is plain text. There is no

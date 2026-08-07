@@ -199,11 +199,17 @@ should be built on top of; see `docs/audit-v0.2.md` and
 > **v0.2** (infrastructure, not a numbered phase): Safe Voice Command
 > Center and Windows Action Runtime — runtime state machine, typed
 > tool/risk/policy contract, persisted `action_lifecycle` audit trail,
-> real-time WebSocket event stream, and a new `read_clipboard` tool. Full
-> voice input/STT/wake-word, a complete visual redesign, an automated
-> Playwright/axe browser-test suite, and a Windows CI smoke job remain
-> deferred — see `docs/audit-v0.2.md`, `docs/THREAT_MODEL.md`, and the
-> PR description for the exact scope and honest gaps.
+> real-time WebSocket event stream, a new `read_clipboard` tool, a safe
+> error envelope, enforced tool-execution timeouts, per-session REST/WS
+> mutation protection, a minimum privacy mode, push-to-talk voice input,
+> an automated Playwright/axe browser-test suite, and a real Windows CI
+> smoke job. Wake-word/always-listening voice, a complete visual
+> redesign, an Ollama adapter, a full memory/retention redesign, and
+> real-microphone/real-Windows-hardware verification of push-to-talk
+> (verified so far only via mocked adapters and browser E2E with a fake
+> media device) remain deferred — see `docs/audit-v0.2.md`,
+> `docs/THREAT_MODEL.md`, and the PR description for the exact scope and
+> honest gaps.
 
 ## Do NOT implement in this repo (ever, without explicit separate design review)
 
