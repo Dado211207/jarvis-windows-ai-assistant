@@ -145,11 +145,17 @@ def test_voice_ids_present(api_client):
     assert "tts-engine-val" in html
 
 
-def test_voice_no_microphone_claim(api_client):
+def test_voice_page_does_not_overclaim_always_listening(api_client):
+    """v0.2 added real push-to-talk voice input (Chat page), so the Voice/TTS
+    page correctly acknowledges it now rather than denying all microphone
+    use — that's not an overclaim, it's honest. What must still never be
+    claimed is wake-word / continuous / always-listening support, since
+    that remains genuinely unimplemented (CLAUDE.md's Phase 3 rule)."""
     r = api_client.get("/ui/voice")
     html = r.text.lower()
-    # Must say no microphone (not claim it's supported)
-    assert "no microphone" in html or "microphone" in html
+    assert "wake word" in html or "wake-word" in html
+    assert "no wake word" in html or "planned for a later phase" in html
+    assert "always-listening" in html or "always listening" in html
 
 
 def test_voice_planned_later_notice(api_client):
