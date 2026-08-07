@@ -3,15 +3,16 @@
 # platform. Installed only by scripts/build-installer.ps1 before running
 # PyInstaller.
 #
-# Kept out of requirements.txt deliberately: pystray probes for a real
-# display backend the moment it's imported (Win32/AppKit/GTK/Xorg), which
-# would make `import pystray` unsafe on this repo's headless Linux CI and
-# any other display-less environment. app/launcher/tray.py already keeps
-# that import strictly local to the one function that needs it — this
-# file is a second, belt-and-suspenders layer: the package simply isn't
-# present at all unless you're actually building the Windows installer.
-# See docs/THIRD_PARTY_NOTICES.md for license/maintenance notes.
+# Kept out of requirements.txt deliberately: both packages below ship
+# native code that either can't be imported (pywin32 has no non-Windows
+# wheel at all) or actively crashes (a display-probing library would)
+# outside Windows. app/launcher/tray.py already keeps every import of
+# these strictly local to the one function that needs it — this file is
+# a second, belt-and-suspenders layer: neither package is even present
+# unless you're actually building the Windows installer.
+# See docs/THIRD_PARTY_NOTICES.md for the license/maintenance reasoning,
+# including why this is pywin32 and not pystray.
 #
 #   pip install -r requirements.txt -r requirements-windows.txt
 #
-pystray==0.19.5
+pywin32==312
