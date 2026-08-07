@@ -95,6 +95,9 @@ ROUTES: List[Route] = [
     # v0.2: Clipboard read (SENSITIVE — always approval-required, see app/desktop/clipboard.py)
     Route(r"^(?:read|show|check)\s+clipboard$", "read_clipboard"),
     Route(r"^clipboard$", "read_clipboard"),
+    # v0.2: Privacy mode (see app/core/privacy.py)
+    Route(r"^privacy\s+(?:mode\s+)?on$", "set_privacy_mode", lambda m: {"active": True}),
+    Route(r"^privacy\s+(?:mode\s+)?off$", "set_privacy_mode", lambda m: {"active": False}),
 ]
 
 # Human-readable metadata for APPROVAL_REQUIRED tools.
@@ -153,14 +156,21 @@ class CommandRouter:
 
     def _brain_response(self, cmd: str) -> CommandResponse:
         """Delegate an unrecognised command to the Brain's AI layer."""
+        from app.core.runtime_state import RuntimeState, runtime
+        runtime.try_transition(RuntimeState.THINKING, reason="waiting on AI provider")
         br = self._brain.generate_response(cmd)
-        try:
-            from db.database import get_db
-            db = get_db()
-            db.add_conversation("user", cmd)
-            db.add_conversation("assistant", br.content)
-        except Exception:
-            pass
+        runtime.try_transition(RuntimeState.STANDBY, reason="AI response ready")
+
+        from app.core.privacy import privacy_mode
+        if not privacy_mode.active:
+            try:
+                from db.database import get_db
+                db = get_db()
+                db.add_conversation("user", cmd)
+                db.add_conversation("assistant", br.content)
+            except Exception:
+                pass
+
         return CommandResponse(
             success=True,
             message=br.content,
@@ -168,7 +178,7 @@ class CommandRouter:
                 "provider": br.provider,
                 "model": br.model,
                 "used_api": br.used_api,
-                **({"error": br.error} if br.error else {}),
+                **({"error": br.error.model_dump()} if br.error else {}),
             },
             tool_used="brain",
         )
@@ -242,13 +252,18 @@ class CommandRouter:
         result = self._registry.execute(tool_name, **kwargs)
 
         runtime.try_transition(RuntimeState.STANDBY, correlation_id=record.id, reason="dispatch complete")
+        result_data = result.get("data") or {}
         final_status = ActionLifecycleStatus.SUCCEEDED if result.get("success") else ActionLifecycleStatus.FAILED
-        lifecycle_transition(record.id, final_status, result_summary=str(result.get("message", ""))[:500])
+        lifecycle_fields = {"result_summary": str(result.get("message", ""))[:500]}
+        if final_status == ActionLifecycleStatus.FAILED:
+            lifecycle_fields["error_category"] = result_data.get("error_category", "tool_execution_failed")
+        lifecycle_transition(record.id, final_status, **lifecycle_fields)
         event_bus.publish(
             EventType.ACTION_RESULT,
             {
                 "action_id": record.id, "tool_name": tool_name,
                 "success": result.get("success", False), "message": result.get("message", ""),
+                "timed_out": bool(result_data.get("timed_out", False)),
             },
             correlation_id=record.id,
         )

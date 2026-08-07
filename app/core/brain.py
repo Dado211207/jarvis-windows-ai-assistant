@@ -6,6 +6,7 @@ Phase 2: unknown commands fall through to the Anthropic API when a key is presen
 """
 
 from app.config import settings
+from app.core.errors import classify_anthropic_exception, to_safe_error
 from app.core.models import BrainResponse, CommandResponse
 from app.core.system_prompt import SYSTEM_PROMPT
 from app.core.tool_registry import registry
@@ -30,6 +31,7 @@ class Brain:
         create_tables()
 
         from app.core import memory as memory_module
+        from app.core import privacy as privacy_module
         from app.desktop import apps, clipboard, folders, maintenance, notes, screenshots, system, web
         from app.voice import tts as tts_module
 
@@ -43,6 +45,7 @@ class Brain:
         folders.register_tools(registry)
         notes.register_tools(registry)
         clipboard.register_tools(registry)
+        privacy_module.register_tools(registry)
         self._register_utility_tools()
 
         self._ready = True
@@ -96,13 +99,14 @@ class Brain:
                 used_api=True,
             )
         except Exception as exc:
-            logger.warning("Claude API call failed (%s), using local fallback.", exc)
+            category = classify_anthropic_exception(exc)
+            safe_error = to_safe_error(exc, category=category, context="Anthropic API call")
             return BrainResponse(
                 content=self._local_fallback(command).content,
                 provider=settings.jarvis_ai_provider,
                 model=model,
                 used_api=False,
-                error=str(exc),
+                error=safe_error,
             )
 
     # --- private helpers ---

@@ -8,9 +8,10 @@ it still fires for any direct registry.execute() call.
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.api.session import require_session_token
 from app.core.pending_actions import PendingAction, pending_store
 from app.logging_config import get_logger
 
@@ -99,7 +100,7 @@ def _sync_lifecycle(action_id: str, status, **fields) -> None:
         logger.exception("Failed to mirror action %s into the lifecycle audit trail.", action_id)
 
 
-@router.post("/{action_id}/confirm", response_model=ActionResponse)
+@router.post("/{action_id}/confirm", response_model=ActionResponse, dependencies=[Depends(require_session_token)])
 def confirm_action(action_id: str) -> ActionResponse:
     """Confirm and execute a pending action.
 
@@ -168,14 +169,19 @@ def confirm_action(action_id: str) -> ActionResponse:
             data=result.get("data"),
         )
     else:
+        result_data = result.get("data") or {}
         pending_store.mark_failed(action_id, result.get("message", ""))
         _sync_lifecycle(
             action_id, ActionLifecycleStatus.FAILED,
-            result_summary=str(result.get("message", ""))[:500], error_category="tool_execution_failed",
+            result_summary=str(result.get("message", ""))[:500],
+            error_category=result_data.get("error_category", "tool_execution_failed"),
         )
         event_bus.publish(
             EventType.ACTION_RESULT,
-            {"action_id": action_id, "tool_name": action.tool_name, "success": False, "message": result.get("message", "")},
+            {
+                "action_id": action_id, "tool_name": action.tool_name, "success": False,
+                "message": result.get("message", ""), "timed_out": bool(result_data.get("timed_out", False)),
+            },
             correlation_id=action_id,
         )
         logger.warning("Action confirmed but execution failed: %s (id=%s)", action.tool_name, action_id)
@@ -187,7 +193,7 @@ def confirm_action(action_id: str) -> ActionResponse:
         )
 
 
-@router.post("/{action_id}/cancel", response_model=ActionResponse)
+@router.post("/{action_id}/cancel", response_model=ActionResponse, dependencies=[Depends(require_session_token)])
 def cancel_action(action_id: str) -> ActionResponse:
     """Cancel a pending action. A cancelled action is never executed."""
     from app.core.events import EventType, event_bus

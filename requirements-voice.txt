@@ -1,0 +1,10 @@
+# Optional: local speech-to-text for push-to-talk voice input (v0.2).
+#
+# Not installed by default and not in requirements.txt — JARVIS runs fully
+# without it; text input always works, and the dashboard reports an honest
+# "not installed" status for push-to-talk until this is installed and
+# JARVIS_STT_ENABLED=true is set in .env. See app/voice/stt.py.
+#
+#   pip install -r requirements-voice.txt
+#
+faster-whisper>=1.0.0

@@ -31,8 +31,9 @@ from app.core.models import ActionLifecycleStatus
 def api_client():
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
     with TestClient(jarvis_app, raise_server_exceptions=True) as client:
-        yield client
+        yield prime_session(client)
 
 
 @pytest.fixture
@@ -288,3 +289,132 @@ def test_dispatch_denied_tool_recorded_as_blocked_in_lifecycle():
     match = next((rec for rec in recent if rec.tool_name == "steal_password"), None)
     assert match is not None
     assert match.status == ActionLifecycleStatus.BLOCKED
+
+
+# --- exception-leak regression: full REST round trip, not just the unit level ---
+
+def test_command_endpoint_never_leaks_raw_provider_exception_text(api_client):
+    """End-to-end proof for the release-gate exception-leak fix: even
+    through the real POST /command HTTP response body, a raw Anthropic
+    SDK exception (which can carry request/response detail) never
+    appears — only a safe category, message, and correlation ID."""
+    sensitive_detail = (
+        "Authorization: Bearer sk-ant-api03-TOTALLYREALSECRET "
+        "at /home/realuser/.env line 3 — request to internal-host-7.corp"
+    )
+
+    with patch("app.core.brain.settings") as mock_settings, \
+         patch("anthropic.Anthropic") as mock_anthropic_cls:
+        mock_settings.has_anthropic_key = True
+        mock_settings.anthropic_api_key = "sk-ant-api03-TOTALLYREALSECRET"
+        mock_settings.jarvis_ai_provider = "anthropic"
+        mock_settings.jarvis_ai_model = "claude-haiku-4-5-20251001"
+        mock_settings.jarvis_ai_max_tokens = 250
+        mock_settings.jarvis_ai_timeout_seconds = 20
+
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = Exception(sensitive_detail)
+
+        r = api_client.post("/command", json={"command": "tell me something only the AI would answer"})
+
+    assert r.status_code == 200
+    body_text = r.text
+    assert "sk-ant-api03-TOTALLYREALSECRET" not in body_text
+    assert "/home/realuser/.env" not in body_text
+    assert "internal-host-7.corp" not in body_text
+    assert "Bearer" not in body_text
+
+    body = r.json()
+    error = body.get("data", {}).get("error")
+    assert error is not None
+    assert error["correlation_id"]
+
+
+# --- release-gate: real timeout enforcement through the full pipeline ---
+
+def _register_hanging_tool_once(name: str, permission_level, timeout_seconds: float):
+    """Register a deliberately hanging tool onto the REAL shared registry
+    (idempotent — safe to call from multiple tests), matching how
+    brain.initialise() itself idempotently populates that same registry.
+    """
+    import time
+
+    from app.core.brain import brain
+    from app.core.models import PermissionLevel, ToolCategory, ToolDefinition
+    from app.core.tool_registry import registry
+
+    brain.initialise()
+    if registry.get(name) is not None:
+        return
+
+    registry.register(
+        ToolDefinition(
+            name=name,
+            description="Release-gate test tool that never returns in time.",
+            permission_level=permission_level,
+            category=ToolCategory.UTILITY,
+            timeout_seconds=timeout_seconds,
+        ),
+        lambda: time.sleep(30),
+    )
+
+
+def test_auto_execute_timeout_is_recorded_and_reported(api_client):
+    from app.core.action_lifecycle import list_recent
+    from app.core.models import PermissionLevel
+    from app.core.router import ROUTES, Route
+
+    _register_hanging_tool_once("hang_auto_v2", PermissionLevel.SAFE, timeout_seconds=0.2)
+    extended_routes = list(ROUTES) + [Route(r"^hang\s+auto\s+v2$", "hang_auto_v2")]
+
+    last_seq = event_bus.latest_seq()
+    with patch("app.core.router.ROUTES", extended_routes):
+        r = api_client.post("/command", json={"command": "hang auto v2"})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is False
+
+    recent = list_recent(limit=10)
+    match = next((rec for rec in recent if rec.tool_name == "hang_auto_v2"), None)
+    assert match is not None
+    assert match.status == ActionLifecycleStatus.FAILED
+    assert match.error_category == "tool_timeout"
+
+    new_events = _events_since(last_seq)
+    result_events = [e for e in new_events if e.type == EventType.ACTION_RESULT]
+    assert any(e.payload.get("timed_out") is True for e in result_events)
+
+
+def test_approval_timeout_marks_action_failed_and_blocks_reconfirm(api_client):
+    """Full proof of 'protection against approving or executing the same
+    timed-out action again': confirm a sensitive action whose tool hangs
+    past its timeout, verify it's recorded as failed/timed-out, then
+    prove a second confirm attempt on the exact same action_id is
+    refused — it can never be executed."""
+    from app.core.models import PermissionLevel
+
+    _register_hanging_tool_once("hang_approval_v2", PermissionLevel.APPROVAL_REQUIRED, timeout_seconds=0.2)
+
+    from app.core.router import ROUTES, Route
+    extended_routes = list(ROUTES) + [Route(r"^hang\s+approval\s+v2$", "hang_approval_v2")]
+
+    with patch("app.core.router.ROUTES", extended_routes):
+        r = api_client.post("/command", json={"command": "hang approval v2"})
+    action_id = r.json()["pending_action_id"]
+
+    confirm = api_client.post(f"/actions/{action_id}/confirm")
+    assert confirm.json()["success"] is False
+    assert confirm.json()["status"] == "failed"
+
+    from app.core.action_lifecycle import get as lifecycle_get
+    record = lifecycle_get(action_id)
+    assert record.status == ActionLifecycleStatus.FAILED
+    assert record.error_category == "tool_timeout"
+
+    # The actual protection: a second confirm on the same action must not execute.
+    second_confirm = api_client.post(f"/actions/{action_id}/confirm")
+    assert second_confirm.json()["success"] is False
+    assert second_confirm.json()["status"] == "failed"
+    assert "cannot be confirmed" in second_confirm.json()["message"].lower()

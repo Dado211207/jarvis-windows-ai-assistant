@@ -12,6 +12,16 @@ logger = get_logger("desktop.screenshots")
 
 def take_screenshot() -> dict:
     """Capture the primary screen and save to data/screenshots/."""
+    from app.core.privacy import privacy_mode
+
+    if privacy_mode.active:
+        logger.info("Screenshot capture refused: privacy mode is active.")
+        return {
+            "success": False,
+            "message": "Screenshot not captured: privacy mode is on. Turn it off to capture screenshots.",
+            "data": None,
+        }
+
     try:
         from PIL import ImageGrab
     except ImportError:

@@ -4,6 +4,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, field_serializer
 
+from app.core.errors import SafeError
+
 
 class PermissionLevel(str, Enum):
     SAFE = "safe"
@@ -150,7 +152,7 @@ class BrainResponse(BaseModel):
     provider: str
     model: Optional[str] = None
     used_api: bool = False
-    error: Optional[str] = None
+    error: Optional[SafeError] = None
 
 
 class ActionLog(BaseModel):

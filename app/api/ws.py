@@ -21,6 +21,7 @@ from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.api.origin import is_allowed_origin
+from app.api.session import COOKIE_NAME, session_tokens
 from app.core.events import Event, EventType, event_bus
 from app.core.runtime_state import runtime
 from app.logging_config import get_logger
@@ -43,6 +44,18 @@ async def stream_events(websocket: WebSocket, since: Optional[int] = None) -> No
     origin = websocket.headers.get("origin")
     if not is_allowed_origin(origin):
         logger.warning("Rejected WebSocket handshake from disallowed origin: %s", origin)
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    # v0.2: the WS handshake is a real HTTP request under the hood, so the
+    # browser attaches the session cookie automatically — no client-side
+    # code needed beyond what REST calls already require. This closes the
+    # gap Origin-only validation leaves open (WS has no CORS preflight to
+    # rely on at all) with the same token REST mutations require. Never
+    # log the token itself.
+    session_token = websocket.cookies.get(COOKIE_NAME)
+    if not session_tokens.is_valid(session_token):
+        logger.warning("Rejected WebSocket handshake with a missing or invalid session token.")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 

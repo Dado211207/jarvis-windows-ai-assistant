@@ -7,6 +7,16 @@ logger = get_logger("memory")
 
 
 def add_memory(content: str, tags: str = "") -> dict:
+    from app.core.privacy import privacy_mode
+
+    if privacy_mode.active:
+        logger.info("Memory write rejected: privacy mode is active.")
+        return {
+            "success": False,
+            "message": "Memory was not saved: privacy mode is on. Turn it off to save long-term memories.",
+            "data": None,
+        }
+
     from db.database import get_db
 
     db = get_db()

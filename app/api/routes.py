@@ -2,10 +2,11 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, field_validator
 
 from app import __phase__, __version__
+from app.api.session import require_session_token
 from app.core.brain import brain
 from app.core.models import CommandRequest, CommandResponse, ConversationEntry, MemoryEntry, ToolDefinition
 from app.core.tool_registry import registry
@@ -115,7 +116,7 @@ def get_conversation(limit: int = Query(default=50, ge=1, le=200)) -> List[Conve
     return get_db().get_recent_conversations(limit=limit)
 
 
-@router.post("/command", response_model=CommandResponse)
+@router.post("/command", response_model=CommandResponse, dependencies=[Depends(require_session_token)])
 def run_command(req: CommandRequest) -> CommandResponse:
     logger.info("API command: %r", req.command)
     return brain.process(req.command)
@@ -179,7 +180,7 @@ def voice_status() -> VoiceStatusResponse:
     )
 
 
-@router.post("/voice/speak")
+@router.post("/voice/speak", dependencies=[Depends(require_session_token)])
 def voice_speak(req: SpeakRequest) -> dict:
     from app.config import settings
     if not settings.jarvis_tts_enabled:
@@ -191,7 +192,97 @@ def voice_speak(req: SpeakRequest) -> dict:
     return {"success": result.success, "message": result.message}
 
 
-@router.post("/voice/stop")
+@router.post("/voice/stop", dependencies=[Depends(require_session_token)])
 def voice_stop() -> dict:
     result = tts_service.stop()
     return {"success": result.success, "message": result.message}
+
+
+# ---------------------------------------------------------------------------
+# Push-to-talk speech-to-text (v0.2) — see app/voice/stt.py.
+#
+# One short recording per request; the browser starts and stops each
+# capture explicitly (no continuous/always-listening capture exists in
+# this codebase). The uploaded clip is written to exactly one temp file,
+# transcribed, and deleted immediately after — success or failure — never
+# logged, never committed, never persisted anywhere.
+# ---------------------------------------------------------------------------
+
+class STTStatusResponse(BaseModel):
+    available: bool
+    reason: str
+
+
+class TranscribeResponse(BaseModel):
+    success: bool
+    text: str
+    message: str
+
+
+@router.get("/voice/stt-status", response_model=STTStatusResponse)
+def voice_stt_status() -> STTStatusResponse:
+    from app.voice.stt import stt_service
+    available, reason = stt_service.is_available()
+    return STTStatusResponse(available=available, reason=reason)
+
+
+@router.post(
+    "/voice/transcribe",
+    response_model=TranscribeResponse,
+    dependencies=[Depends(require_session_token)],
+)
+async def voice_transcribe(audio: UploadFile = File(...)) -> TranscribeResponse:
+    import os
+    import tempfile
+    from pathlib import Path
+
+    from app.config import settings
+    from app.core.runtime_state import RuntimeState, runtime
+    from app.voice.stt import MAX_AUDIO_BYTES, stt_service
+
+    data = await audio.read()
+    if not data:
+        return TranscribeResponse(success=False, text="", message="No audio received.")
+    if len(data) > MAX_AUDIO_BYTES:
+        return TranscribeResponse(
+            success=False, text="",
+            message=f"Audio too large (max {MAX_AUDIO_BYTES // (1024 * 1024)} MB).",
+        )
+
+    suffix = Path(audio.filename or "").suffix or ".webm"
+    fd, tmp_path_str = tempfile.mkstemp(suffix=suffix, prefix="jarvis_ptt_")
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+
+        runtime.try_transition(RuntimeState.TRANSCRIBING, reason="push-to-talk transcription")
+        result = stt_service.transcribe(tmp_path, timeout_seconds=float(settings.jarvis_stt_timeout_seconds))
+        runtime.try_transition(RuntimeState.STANDBY, reason="transcription complete")
+
+        logger.info("Push-to-talk transcription: success=%s chars=%d", result.success, len(result.text))
+        return TranscribeResponse(success=result.success, text=result.text, message=result.message)
+    finally:
+        tmp_path.unlink(missing_ok=True)  # always delete the temp recording, success or failure
+
+
+# ---------------------------------------------------------------------------
+# Privacy mode (v0.2) — read-only status. Toggling goes through POST
+# /command ("privacy mode on"/"privacy mode off", see app/core/privacy.py),
+# which is already a protected mutation and already publishes an audit
+# record + WebSocket event; no separate write endpoint duplicates that.
+# ---------------------------------------------------------------------------
+
+class PrivacyStatusResponse(BaseModel):
+    active: bool
+    changed_at: Optional[str] = None
+
+
+@router.get("/privacy/status", response_model=PrivacyStatusResponse)
+def privacy_status() -> PrivacyStatusResponse:
+    from app.core.privacy import privacy_mode
+    changed_at = privacy_mode.changed_at
+    return PrivacyStatusResponse(
+        active=privacy_mode.active,
+        changed_at=changed_at.isoformat() if changed_at else None,
+    )

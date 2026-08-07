@@ -2,6 +2,17 @@
 
 const $ = id => document.getElementById(id);
 
+// v0.2 CSRF/mutation session token (see app/api/session.py). The server
+// sets a non-HttpOnly "jarvis_session" cookie specifically so this page's
+// own JS can read it and echo it back as a header — the classic
+// double-submit-cookie pattern. A foreign page cannot read our cookie to
+// forge a matching header, even if it could otherwise get a request to
+// the API to fire at all.
+function getSessionCookie() {
+  const match = document.cookie.match(/(?:^|;\s*)jarvis_session=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 const API = {
   async get(path) {
     const r = await fetch(path);
@@ -9,9 +20,13 @@ const API = {
     return r.json();
   },
   async post(path, body) {
+    const token = getSessionCookie();
     const r = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { "X-JARVIS-Session-Token": token } : {}),
+      },
       body: JSON.stringify(body),
     });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
@@ -307,6 +322,188 @@ function initChat() {
       }
     });
   });
+
+  initPushToTalk();
+}
+
+// ── Push-to-talk (v0.2) ──────────────────────────────────────────────────────
+// Optional. Text input always works whether or not this is available —
+// see app/voice/stt.py. One explicit recording per press; nothing is
+// captured continuously or in the background.
+
+const PTT_STATE = { IDLE: "idle", REQUESTING: "requesting", LISTENING: "listening", TRANSCRIBING: "transcribing", ERROR: "error" };
+let pttState = PTT_STATE.IDLE;
+let pttRecorder = null;
+let pttChunks = [];
+let pttStream = null;
+let pttUploadController = null;
+// Sticky, independent of pttState: true once /voice/stt-status reports
+// unavailable. setPttState() must keep respecting this on every call —
+// it previously recomputed `disabled` from pttState alone and silently
+// re-enabled the button on the very next state change (caught via real
+// browser testing, not a unit test: see tests/test_playwright_e2e.py).
+let pttUnavailable = false;
+
+function setPttState(state, message) {
+  pttState = state;
+  const btn = $("ptt-button");
+  const cancelBtn = $("ptt-cancel");
+  const status = $("ptt-status");
+
+  if (btn) {
+    btn.setAttribute("aria-label",
+      state === PTT_STATE.LISTENING ? "Push to talk: stop recording" : "Push to talk: start recording");
+    btn.disabled = pttUnavailable || state === PTT_STATE.TRANSCRIBING || state === PTT_STATE.REQUESTING;
+    btn.className = "btn " + (state === PTT_STATE.LISTENING ? "btn-danger" : "btn-ghost");
+  }
+  if (cancelBtn) {
+    cancelBtn.hidden = !(state === PTT_STATE.LISTENING || state === PTT_STATE.TRANSCRIBING);
+  }
+  if (status) {
+    status.textContent = message || "";
+  }
+}
+
+function pttReleaseMicrophone() {
+  if (pttStream) {
+    pttStream.getTracks().forEach(track => track.stop());
+    pttStream = null;
+  }
+}
+
+async function pttStart() {
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    setPttState(PTT_STATE.ERROR, "Voice input isn't supported in this browser. Text input still works.");
+    return;
+  }
+
+  setPttState(PTT_STATE.REQUESTING, "Requesting microphone permission…");
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    setPttState(PTT_STATE.ERROR, "Microphone unavailable or permission denied. Text input still works.");
+    return;
+  }
+
+  pttStream = stream;
+  pttChunks = [];
+  try {
+    pttRecorder = new MediaRecorder(stream);
+  } catch (e) {
+    pttReleaseMicrophone();
+    setPttState(PTT_STATE.ERROR, "Could not start recording. Text input still works.");
+    return;
+  }
+
+  pttRecorder.addEventListener("dataavailable", (e) => {
+    if (e.data && e.data.size > 0) pttChunks.push(e.data);
+  });
+  pttRecorder.addEventListener("stop", pttOnRecordingStopped);
+
+  pttRecorder.start();
+  setPttState(PTT_STATE.LISTENING, "Listening… click again or press Alt+M to stop.");
+}
+
+function pttStop() {
+  if (pttRecorder && pttRecorder.state !== "inactive") {
+    pttRecorder.stop(); // triggers pttOnRecordingStopped via the "stop" event
+  }
+}
+
+function pttCancel() {
+  if (pttUploadController) {
+    pttUploadController.abort();
+    pttUploadController = null;
+  }
+  if (pttRecorder && pttRecorder.state !== "inactive") {
+    pttRecorder.removeEventListener("stop", pttOnRecordingStopped);
+    pttRecorder.stop();
+  }
+  pttReleaseMicrophone();
+  pttChunks = [];
+  setPttState(PTT_STATE.IDLE, "Cancelled.");
+}
+
+async function pttOnRecordingStopped() {
+  pttReleaseMicrophone();
+  const blob = new Blob(pttChunks, { type: "audio/webm" });
+  pttChunks = [];
+
+  if (blob.size === 0) {
+    setPttState(PTT_STATE.IDLE, "No audio captured.");
+    return;
+  }
+
+  setPttState(PTT_STATE.TRANSCRIBING, "Transcribing…");
+
+  const token = getSessionCookie();
+  const formData = new FormData();
+  formData.append("audio", blob, "recording.webm");
+
+  pttUploadController = new AbortController();
+  try {
+    const r = await fetch("/voice/transcribe", {
+      method: "POST",
+      headers: token ? { "X-JARVIS-Session-Token": token } : {},
+      body: formData,
+      signal: pttUploadController.signal,
+    });
+    const data = await r.json();
+    pttUploadController = null;
+
+    if (!r.ok || !data.success) {
+      setPttState(PTT_STATE.ERROR, data.message || "Transcription failed. Text input still works.");
+      return;
+    }
+
+    const input = $("chat-input");
+    if (input) {
+      input.value = data.text;
+      input.focus();
+    }
+    setPttState(PTT_STATE.IDLE, "Heard: “" + data.text + "”");
+  } catch (e) {
+    pttUploadController = null;
+    if (e.name !== "AbortError") {
+      setPttState(PTT_STATE.ERROR, "Could not reach the server to transcribe. Text input still works.");
+    }
+  }
+}
+
+async function initPushToTalk() {
+  const btn = $("ptt-button");
+  const cancelBtn = $("ptt-cancel");
+  if (!btn) return;
+
+  btn.addEventListener("click", () => {
+    if (pttState === PTT_STATE.LISTENING) {
+      pttStop();
+    } else if (pttState === PTT_STATE.IDLE || pttState === PTT_STATE.ERROR) {
+      pttStart();
+    }
+  });
+
+  if (cancelBtn) cancelBtn.addEventListener("click", pttCancel);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.altKey && (e.key === "m" || e.key === "M")) {
+      e.preventDefault();
+      if (pttState === PTT_STATE.LISTENING) pttStop();
+      else if (pttState === PTT_STATE.IDLE || pttState === PTT_STATE.ERROR) pttStart();
+    }
+  });
+
+  try {
+    const status = await API.get("/voice/stt-status");
+    if (!status.available) {
+      pttUnavailable = true;
+      btn.title = "Voice input not configured: " + status.reason;
+      setPttState(PTT_STATE.IDLE, "");
+    }
+  } catch (e) {
+    // Leave the button enabled; a real attempt will surface the honest error.
+  }
 }
 
 // ── Logs ─────────────────────────────────────────────────────────────────────
@@ -716,11 +913,43 @@ function setRuntimeLabel(state) {
   el.className = "badge " + (RUNTIME_BADGE[state] || "badge-muted");
 }
 
+// ── Privacy mode indicator ──────────────────────────────────────────────────
+// v0.2: a clear, persistent, always-visible topbar indicator (present on
+// every page, not just a settings screen) — see app/core/privacy.py.
+
+function setPrivacyIndicator(active) {
+  const dot   = $("topbar-privacy-dot");
+  const label = $("topbar-privacy-label");
+  if (!dot || !label) return;
+  if (active) {
+    dot.className = "status-dot status-dot-warn";
+    label.textContent = "privacy: on";
+  } else {
+    dot.className = "status-dot status-dot-grey";
+    label.textContent = "privacy: off";
+  }
+}
+
+async function refreshPrivacyIndicator() {
+  try {
+    const status = await API.get("/privacy/status");
+    setPrivacyIndicator(!!status.active);
+  } catch (e) {
+    // Leave the last-known indicator state rather than guessing.
+  }
+}
+
 function handleStreamEvent(evt) {
   if (typeof evt.seq === "number" && evt.seq > wsLastSeq) wsLastSeq = evt.seq;
 
   if (evt.type === "runtime_state" && evt.payload) {
     setRuntimeLabel(evt.payload.to);
+  }
+
+  // Keep the privacy indicator live across every open tab/page the
+  // instant it changes anywhere (chat command, another tab, voice).
+  if (evt.type === "action_result" && evt.payload && evt.payload.tool_name === "set_privacy_mode") {
+    refreshPrivacyIndicator();
   }
 
   // Keep the Actions page's pending list live when an action anywhere
@@ -778,6 +1007,7 @@ function connectEventStream() {
 
 document.addEventListener("DOMContentLoaded", () => {
   connectEventStream();
+  refreshPrivacyIndicator();
 
   const path = window.location.pathname.replace(/\/+$/, "");
 

@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import __phase__, __version__
 from app.api.origin import allowed_origins
+from app.api.session import SessionCookieMiddleware
 from app.config import settings
 from app.logging_config import get_logger, setup_logging
 
@@ -59,6 +60,11 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+    # v0.2: every response gets (or keeps) a valid CSRF/mutation session
+    # cookie — see app/api/session.py. Mutating routes separately require
+    # it via Depends(require_session_token); this middleware's only job is
+    # making sure the browser always has a current one to read and echo.
+    app.add_middleware(SessionCookieMiddleware)
 
     from app.api.routes import router
     app.include_router(router)

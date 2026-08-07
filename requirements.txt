@@ -10,3 +10,4 @@ anthropic>=0.20.0
 pyttsx3>=2.90
 pytest>=7.4.0
 httpx>=0.25.0
+python-multipart>=0.0.9

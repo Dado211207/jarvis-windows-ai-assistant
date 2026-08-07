@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     jarvis_tts_volume: float = 1.0
     jarvis_tts_voice: str = ""
 
+    # STT / push-to-talk voice input settings (v0.2). Disabled by default,
+    # matching TTS's own opt-in pattern. No wake word, no always-listening
+    # — see app/voice/stt.py.
+    jarvis_stt_enabled: bool = False
+    jarvis_stt_model_size: str = "tiny"  # CPU-safe default if downloading is allowed
+    jarvis_stt_model_path: str = ""  # a local model dir/path — never triggers a download
+    jarvis_stt_allow_download: bool = False  # must be explicit; faster-whisper otherwise refuses to fetch a model
+    jarvis_stt_timeout_seconds: int = 30
+
     @property
     def db_path(self) -> Path:
         return Path(self.jarvis_db_path)

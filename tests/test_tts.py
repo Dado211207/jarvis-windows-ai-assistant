@@ -339,8 +339,9 @@ def test_tts_stop_tool_with_no_engine():
 def api_client():
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
     with TestClient(jarvis_app, raise_server_exceptions=True) as client:
-        yield client
+        yield prime_session(client)
 
 
 def test_voice_status_returns_200(api_client):

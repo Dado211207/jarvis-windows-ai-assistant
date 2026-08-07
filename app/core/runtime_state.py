@@ -38,8 +38,12 @@ class RuntimeState(str, Enum):
 _TRANSITIONS: Dict[RuntimeState, Set[RuntimeState]] = {
     RuntimeState.BOOTING: {RuntimeState.STANDBY, RuntimeState.ERROR, RuntimeState.OFFLINE},
     RuntimeState.STANDBY: {
+        # TRANSCRIBING here (not only via LISTENING) because push-to-talk
+        # recording happens entirely client-side (see app/voice/stt.py) —
+        # the server only ever observes the request once audio is already
+        # uploaded, so it has no LISTENING phase of its own to pass through.
         RuntimeState.LISTENING, RuntimeState.THINKING, RuntimeState.EXECUTING,
-        RuntimeState.SPEAKING, RuntimeState.AWAITING_APPROVAL,
+        RuntimeState.SPEAKING, RuntimeState.AWAITING_APPROVAL, RuntimeState.TRANSCRIBING,
         RuntimeState.ERROR, RuntimeState.OFFLINE,
     },
     RuntimeState.LISTENING: {

@@ -21,8 +21,9 @@ import pytest
 def api_client():
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
     with TestClient(jarvis_app, raise_server_exceptions=True) as client:
-        yield client
+        yield prime_session(client)
 
 
 # ── All pages return 200 ──────────────────────────────────────────────────────

@@ -1,0 +1,197 @@
+"""Integration tests for the v0.2 CSRF/mutation session token, proven
+against the real app (TestClient) — not just the token store in
+isolation (see tests/test_session.py for that).
+
+Covers: REST mutations reject missing/wrong/expired tokens and accept a
+valid one; the cookie has the right attributes (SameSite=Strict, not
+HttpOnly); a browser refresh (a second client reusing the same cookie)
+keeps working; the WebSocket handshake independently enforces the same
+token; the token is never logged.
+"""
+
+import logging
+
+import pytest
+
+from app.api.session import COOKIE_NAME, HEADER_NAME, session_tokens
+
+
+@pytest.fixture(scope="module")
+def raw_client():
+    """An UN-primed client — deliberately does not call prime_session(),
+    since these tests are specifically about what happens without it."""
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+    with TestClient(jarvis_app, raise_server_exceptions=True) as client:
+        yield client
+
+
+@pytest.fixture(autouse=True)
+def reset_pending_store():
+    from app.core.pending_actions import pending_store
+    with pending_store._lock:
+        pending_store._actions.clear()
+    yield
+    with pending_store._lock:
+        pending_store._actions.clear()
+
+
+# --- the cookie itself ---
+
+def test_get_request_sets_a_session_cookie(raw_client):
+    r = raw_client.get("/health")
+    assert COOKIE_NAME in r.cookies
+
+
+def test_session_cookie_is_samesite_strict_and_not_httponly():
+    """The middleware only sends Set-Cookie when the client doesn't
+    already have a current, matching one — a fresh client (never seen
+    before) is required to actually observe the header fire."""
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+    with TestClient(jarvis_app, raise_server_exceptions=True) as fresh_client:
+        r = fresh_client.get("/health")
+    set_cookie_header = r.headers.get("set-cookie", "")
+    assert "samesite=strict" in set_cookie_header.lower()
+    assert "httponly" not in set_cookie_header.lower()
+
+
+def test_repeated_requests_keep_the_same_cookie_value(raw_client):
+    """Browser refresh must keep working: a client that already holds a
+    valid cookie should see the exact same value on the next request, not
+    get silently rotated out from under it."""
+    raw_client.get("/health")
+    first = raw_client.cookies.get(COOKIE_NAME)
+    raw_client.get("/health")
+    second = raw_client.cookies.get(COOKIE_NAME)
+    assert first == second
+
+
+# --- REST mutations: missing / wrong / valid token ---
+
+def test_command_without_any_token_is_rejected(raw_client):
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+    # A client that has never made a GET at all has no cookie and sends
+    # no header — the absolute "absent" case.
+    with TestClient(jarvis_app, raise_server_exceptions=True) as fresh_client:
+        r = fresh_client.post("/command", json={"command": "status"})
+    assert r.status_code == 403
+
+
+def test_command_with_wrong_token_is_rejected(raw_client):
+    raw_client.get("/health")  # primes the cookie
+    r = raw_client.post(
+        "/command",
+        json={"command": "status"},
+        headers={HEADER_NAME: "totally-made-up-token-value"},
+    )
+    assert r.status_code == 403
+
+
+def test_command_with_cookie_but_no_header_is_rejected(raw_client):
+    """Double-submit means the cookie alone is not enough — the header
+    must also be explicitly attached, which only our own page's JS would
+    naturally do."""
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+    with TestClient(jarvis_app, raise_server_exceptions=True) as client:
+        client.get("/health")  # cookie is now set and will auto-attach
+        # deliberately do NOT set the header
+        r = client.post("/command", json={"command": "status"})
+    assert r.status_code == 403
+
+
+def test_command_with_matching_valid_token_succeeds(raw_client):
+    raw_client.get("/health")
+    token = raw_client.cookies.get(COOKIE_NAME)
+    r = raw_client.post(
+        "/command",
+        json={"command": "status"},
+        headers={HEADER_NAME: token},
+    )
+    assert r.status_code == 200
+
+
+def test_command_with_expired_token_is_rejected(raw_client, monkeypatch):
+    raw_client.get("/health")
+    token = raw_client.cookies.get(COOKIE_NAME)
+
+    # Force the store to treat every token as expired without waiting a
+    # real 24 hours.
+    monkeypatch.setattr(session_tokens, "_ttl_seconds", -1)
+
+    r = raw_client.post(
+        "/command",
+        json={"command": "status"},
+        headers={HEADER_NAME: token},
+    )
+    assert r.status_code == 403
+
+
+def test_actions_confirm_requires_valid_token(raw_client):
+    from tests.conftest import prime_session
+    prime_session(raw_client)
+
+    create = raw_client.post("/command", json={"command": "clear logs"})
+    action_id = create.json()["pending_action_id"]
+
+    # Per-call header override beats the client default set by
+    # prime_session, simulating a forged request that lacks a real token
+    # — without permanently clobbering raw_client's own valid header.
+    r = raw_client.post(f"/actions/{action_id}/confirm", headers={HEADER_NAME: ""})
+    assert r.status_code == 403
+
+
+def test_actions_cancel_requires_valid_token(raw_client):
+    from tests.conftest import prime_session
+    prime_session(raw_client)
+
+    create = raw_client.post("/command", json={"command": "clear logs"})
+    action_id = create.json()["pending_action_id"]
+
+    r = raw_client.post(f"/actions/{action_id}/cancel", headers={HEADER_NAME: ""})
+    assert r.status_code == 403
+
+
+def test_get_endpoints_never_require_a_session_token(raw_client):
+    """Only state-changing endpoints are gated — GET requests need
+    nothing extra, exactly matching the requirement's scope."""
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+    with TestClient(jarvis_app, raise_server_exceptions=True) as fresh_client:
+        r = fresh_client.get("/health")
+    assert r.status_code == 200
+
+
+# --- WebSocket: same token, independently enforced ---
+
+def test_ws_connect_without_cookie_is_rejected():
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+    from app.api.server import app as jarvis_app
+    with TestClient(jarvis_app, raise_server_exceptions=True) as fresh_client:
+        with pytest.raises(WebSocketDisconnect):
+            with fresh_client.websocket_connect("/ws/events"):
+                pass
+
+
+def test_ws_connect_with_valid_cookie_succeeds(raw_client):
+    raw_client.get("/health")  # primes the cookie the WS handshake will carry
+    with raw_client.websocket_connect("/ws/events") as ws:
+        first = ws.receive_text()
+    assert first  # connection succeeded and produced the snapshot event
+
+
+# --- the token must never be logged ---
+
+def test_session_token_never_appears_in_logs(raw_client, caplog):
+    raw_client.get("/health")
+    token = raw_client.cookies.get(COOKIE_NAME)
+
+    with caplog.at_level(logging.DEBUG):
+        raw_client.post("/command", json={"command": "status"}, headers={HEADER_NAME: token})
+        raw_client.post("/command", json={"command": "status"}, headers={HEADER_NAME: "wrong-token-value-xyz"})
+
+    assert token not in caplog.text
+    assert "wrong-token-value-xyz" not in caplog.text
