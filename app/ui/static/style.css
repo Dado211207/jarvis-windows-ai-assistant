@@ -264,6 +264,15 @@ a:hover { color: var(--accent-hover); }
   color: var(--text);
   flex: 1;
   min-width: 0;
+  /* min-width:0 lets this flex item shrink below its text's natural
+     width (needed so .topbar-indicators keeps its space) — but without
+     these three, the overflowing text paints past its own shrunk box
+     instead of stopping at it, visually colliding with the indicators
+     next to it. Real, visible at 200% browser zoom / narrow desktop
+     widths above the 768px breakpoint where the topbar doesn't wrap. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar-indicators {
