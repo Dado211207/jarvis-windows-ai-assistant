@@ -78,6 +78,27 @@ def get_action(action_id: str) -> ActionPreview:
     return _to_preview(action)
 
 
+def _sync_lifecycle(action_id: str, status, **fields) -> None:
+    """Best-effort mirror of a pending-action transition into the v0.2
+    persisted audit trail. Actions created outside the router (some tests
+    construct a PendingAction directly) have no matching lifecycle record —
+    that is expected and not an error, so a missing record is silently
+    skipped rather than treated as a failure of the REST call it backs.
+    Never allowed to fail the request it's attached to: this is audit
+    trail bookkeeping, not part of the approval decision itself.
+    """
+    from app.core.action_lifecycle import TerminalStateError, get as lifecycle_get, transition as lifecycle_transition
+
+    try:
+        if lifecycle_get(action_id) is None:
+            return
+        lifecycle_transition(action_id, status, **fields)
+    except TerminalStateError:
+        logger.warning("Lifecycle record %s already terminal; skipped mirroring %s.", action_id, status)
+    except Exception:
+        logger.exception("Failed to mirror action %s into the lifecycle audit trail.", action_id)
+
+
 @router.post("/{action_id}/confirm", response_model=ActionResponse)
 def confirm_action(action_id: str) -> ActionResponse:
     """Confirm and execute a pending action.
@@ -85,11 +106,17 @@ def confirm_action(action_id: str) -> ActionResponse:
     The action must be in 'pending' status. Already-executed and cancelled
     actions return a safe error without re-executing.
     """
+    from app.core.events import EventType, event_bus
+    from app.core.models import ActionLifecycleStatus
+    from app.core.runtime_state import RuntimeState, runtime
+
     action = pending_store.confirm(action_id)
     if action is None:
         existing = pending_store.get(action_id)
         if existing is None:
             raise HTTPException(status_code=404, detail=f"Action '{action_id}' not found.")
+        if existing.status == "expired":
+            _sync_lifecycle(action_id, ActionLifecycleStatus.EXPIRED)
         return ActionResponse(
             success=False,
             message=f"Action cannot be confirmed: current status is '{existing.status}'.",
@@ -97,10 +124,21 @@ def confirm_action(action_id: str) -> ActionResponse:
             status=existing.status,
         )
 
+    _sync_lifecycle(action_id, ActionLifecycleStatus.APPROVED, approved_by="user", approval_source="dashboard")
+    event_bus.publish(
+        EventType.ACTION_APPROVAL_CHANGED,
+        {"action_id": action_id, "tool_name": action.tool_name, "status": "approved"},
+        correlation_id=action_id,
+    )
+    runtime.try_transition(RuntimeState.EXECUTING, correlation_id=action_id, reason=f"executing approved {action.tool_name}")
+    _sync_lifecycle(action_id, ActionLifecycleStatus.EXECUTING)
+
     # Execute via the approved path — bypasses the permission check because
     # the user has explicitly confirmed. Logging happens here, not in the router.
     from app.core.tool_registry import registry
     result = registry.execute_approved(action.tool_name, **action.parameters)
+
+    runtime.try_transition(RuntimeState.STANDBY, correlation_id=action_id, reason="approved action complete")
 
     try:
         from db.database import get_db
@@ -115,6 +153,12 @@ def confirm_action(action_id: str) -> ActionResponse:
 
     if result.get("success"):
         pending_store.mark_executed(action_id, result.get("data"))
+        _sync_lifecycle(action_id, ActionLifecycleStatus.SUCCEEDED, result_summary=str(result.get("message", ""))[:500])
+        event_bus.publish(
+            EventType.ACTION_RESULT,
+            {"action_id": action_id, "tool_name": action.tool_name, "success": True, "message": result.get("message", "")},
+            correlation_id=action_id,
+        )
         logger.info("Action confirmed and executed: %s (id=%s)", action.tool_name, action_id)
         return ActionResponse(
             success=True,
@@ -125,6 +169,15 @@ def confirm_action(action_id: str) -> ActionResponse:
         )
     else:
         pending_store.mark_failed(action_id, result.get("message", ""))
+        _sync_lifecycle(
+            action_id, ActionLifecycleStatus.FAILED,
+            result_summary=str(result.get("message", ""))[:500], error_category="tool_execution_failed",
+        )
+        event_bus.publish(
+            EventType.ACTION_RESULT,
+            {"action_id": action_id, "tool_name": action.tool_name, "success": False, "message": result.get("message", "")},
+            correlation_id=action_id,
+        )
         logger.warning("Action confirmed but execution failed: %s (id=%s)", action.tool_name, action_id)
         return ActionResponse(
             success=False,
@@ -137,11 +190,17 @@ def confirm_action(action_id: str) -> ActionResponse:
 @router.post("/{action_id}/cancel", response_model=ActionResponse)
 def cancel_action(action_id: str) -> ActionResponse:
     """Cancel a pending action. A cancelled action is never executed."""
+    from app.core.events import EventType, event_bus
+    from app.core.models import ActionLifecycleStatus
+    from app.core.runtime_state import RuntimeState, runtime
+
     action = pending_store.cancel(action_id)
     if action is None:
         existing = pending_store.get(action_id)
         if existing is None:
             raise HTTPException(status_code=404, detail=f"Action '{action_id}' not found.")
+        if existing.status == "expired":
+            _sync_lifecycle(action_id, ActionLifecycleStatus.EXPIRED)
         return ActionResponse(
             success=False,
             message=f"Action cannot be cancelled: current status is '{existing.status}'.",
@@ -160,6 +219,14 @@ def cancel_action(action_id: str) -> ActionResponse:
         )
     except Exception:
         pass
+
+    _sync_lifecycle(action_id, ActionLifecycleStatus.CANCELLED)
+    event_bus.publish(
+        EventType.ACTION_APPROVAL_CHANGED,
+        {"action_id": action_id, "tool_name": action.tool_name, "status": "cancelled"},
+        correlation_id=action_id,
+    )
+    runtime.try_transition(RuntimeState.STANDBY, correlation_id=action_id, reason="action cancelled")
 
     logger.info("Action cancelled: %s (id=%s)", action.tool_name, action_id)
     return ActionResponse(

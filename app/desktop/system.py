@@ -5,10 +5,12 @@ import socket
 import getpass
 from typing import Any, Dict, Optional
 
-from app.core.models import PermissionLevel, ToolCategory, ToolDefinition
+from app.core.models import PermissionLevel, RiskLevel, ToolCategory, ToolDefinition
 from app.logging_config import get_logger
 
 logger = get_logger("desktop.system")
+
+_NO_VERIFICATION = "Read-only query — nothing is changed, so there is no effect to verify beyond a successful return."
 
 
 def get_system_status() -> dict:
@@ -154,6 +156,8 @@ def register_tools(registry) -> None:
             description="Display CPU, RAM, disk, battery, and OS information.",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.SYSTEM,
+            risk=RiskLevel.READ_ONLY,
+            verification_strategy=_NO_VERIFICATION,
         ),
         get_system_status,
     )
@@ -163,6 +167,8 @@ def register_tools(registry) -> None:
             description="Show disk usage: used, free, and total space.",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.SYSTEM,
+            risk=RiskLevel.READ_ONLY,
+            verification_strategy=_NO_VERIFICATION,
         ),
         get_disk_space,
     )
@@ -172,6 +178,8 @@ def register_tools(registry) -> None:
             description="Show local network info (hostname, local IP). No scanning or external requests.",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.SYSTEM,
+            risk=RiskLevel.READ_ONLY,
+            verification_strategy=_NO_VERIFICATION,
         ),
         get_network_info,
     )
@@ -181,6 +189,8 @@ def register_tools(registry) -> None:
             description="Show battery / power status. Returns gracefully if unavailable.",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.SYSTEM,
+            risk=RiskLevel.READ_ONLY,
+            verification_strategy=_NO_VERIFICATION,
         ),
         get_battery_status,
     )

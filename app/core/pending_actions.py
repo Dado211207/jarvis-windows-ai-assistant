@@ -44,10 +44,11 @@ class PendingActionStore:
         description: str,
         risk_level: str,
         parameters: Dict[str, Any],
+        id: Optional[str] = None,
     ) -> PendingAction:
         now = datetime.utcnow()
         action = PendingAction(
-            id=str(uuid.uuid4()),
+            id=id or str(uuid.uuid4()),
             command=command,
             tool_name=tool_name,
             action_name=action_name,

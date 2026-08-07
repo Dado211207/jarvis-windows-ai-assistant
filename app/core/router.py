@@ -92,6 +92,9 @@ ROUTES: List[Route] = [
         "create_note",
         lambda m: {"content": m.group(1).strip()},
     ),
+    # v0.2: Clipboard read (SENSITIVE — always approval-required, see app/desktop/clipboard.py)
+    Route(r"^(?:read|show|check)\s+clipboard$", "read_clipboard"),
+    Route(r"^clipboard$", "read_clipboard"),
 ]
 
 # Human-readable metadata for APPROVAL_REQUIRED tools.
@@ -102,6 +105,15 @@ _PENDING_ACTION_META: Dict[str, Dict[str, str]] = {
         "description": (
             "Permanently deletes all action log entries from the local JARVIS database. "
             "This action cannot be undone."
+        ),
+        "risk_level": "medium",
+    },
+    "read_clipboard": {
+        "action_name": "Read Clipboard",
+        "description": (
+            "Reads the current text clipboard contents and shows them to you. "
+            "The clipboard may contain private information (passwords, personal "
+            "messages, tokens) copied from another application."
         ),
         "risk_level": "medium",
     },
@@ -162,15 +174,85 @@ class CommandRouter:
         )
 
     def _dispatch(self, tool_name: str, raw_cmd: str, **kwargs) -> CommandResponse:
+        """Route a matched command to its tool via the v0.2 pipeline:
+        classify risk -> policy decision -> record the proposal -> act on
+        the decision -> record the result. policy.evaluate() is the single
+        source of truth for auto-execute/require-approval/deny; the
+        permission_level-based check that used to live directly in this
+        method is gone (it produced the same decision for every tool
+        registered without an explicit risk — see app/core/policy.py's
+        risk_for() — so folding it into one call site removes a duplicate
+        policy decision without changing behavior). registry.execute()
+        still independently re-checks permission right before the handler
+        runs; that is intentional defense in depth, not a second authority.
+        """
         from db.database import get_db
+        from app.core.action_lifecycle import transition as lifecycle_transition
+        from app.core.action_lifecycle import propose
+        from app.core.events import EventType, event_bus
+        from app.core.models import ActionLifecycleStatus
+        from app.core.policy import PolicyAction, evaluate, risk_for
+        from app.core.runtime_state import RuntimeState, runtime
 
-        # Check permission before executing — intercept APPROVAL_REQUIRED to
-        # create a pending action instead of failing silently.
         tool = self._registry.get(tool_name)
-        if tool and tool.definition.permission_level == PermissionLevel.APPROVAL_REQUIRED:
-            return self._create_pending_action(tool_name, raw_cmd, **kwargs)
+        permission_level = tool.definition.permission_level if tool else PermissionLevel.SAFE
+        declared_risk = tool.definition.risk if tool else None
+        risk = risk_for(permission_level, declared_risk)
+        policy_result = evaluate(risk, tool_name)
+
+        record = propose(
+            tool_name,
+            dict(kwargs),
+            risk=risk.value,
+            policy_action=policy_result.action.value,
+            policy_reason=policy_result.reason,
+        )
+        event_bus.publish(
+            EventType.ACTION_PROPOSED,
+            {
+                "action_id": record.id,
+                "tool_name": tool_name,
+                "risk": risk.value,
+                "policy_action": policy_result.action.value,
+                "input_summary": record.input_summary,
+            },
+            correlation_id=record.id,
+        )
+
+        if policy_result.action == PolicyAction.DENY:
+            lifecycle_transition(record.id, ActionLifecycleStatus.BLOCKED)
+            event_bus.publish(
+                EventType.ACTION_RESULT,
+                {
+                    "action_id": record.id, "tool_name": tool_name,
+                    "success": False, "message": policy_result.reason,
+                },
+                correlation_id=record.id,
+            )
+            logger.warning("Dispatch denied by policy: %s (%s)", tool_name, policy_result.reason)
+            return CommandResponse(success=False, message=policy_result.reason, tool_used=tool_name)
+
+        if policy_result.action == PolicyAction.REQUIRE_APPROVAL:
+            return self._create_pending_action(tool_name, raw_cmd, record.id, **kwargs)
+
+        # PolicyAction.AUTO_EXECUTE
+        runtime.try_transition(RuntimeState.EXECUTING, correlation_id=record.id, reason=f"executing {tool_name}")
+        lifecycle_transition(record.id, ActionLifecycleStatus.EXECUTING)
 
         result = self._registry.execute(tool_name, **kwargs)
+
+        runtime.try_transition(RuntimeState.STANDBY, correlation_id=record.id, reason="dispatch complete")
+        final_status = ActionLifecycleStatus.SUCCEEDED if result.get("success") else ActionLifecycleStatus.FAILED
+        lifecycle_transition(record.id, final_status, result_summary=str(result.get("message", ""))[:500])
+        event_bus.publish(
+            EventType.ACTION_RESULT,
+            {
+                "action_id": record.id, "tool_name": tool_name,
+                "success": result.get("success", False), "message": result.get("message", ""),
+            },
+            correlation_id=record.id,
+        )
+
         try:
             get_db().log_action(
                 command=raw_cmd,
@@ -187,9 +269,20 @@ class CommandRouter:
             tool_used=tool_name,
         )
 
-    def _create_pending_action(self, tool_name: str, raw_cmd: str, **kwargs) -> CommandResponse:
-        """Create a pending approval action instead of executing immediately."""
+    def _create_pending_action(self, tool_name: str, raw_cmd: str, lifecycle_id: str, **kwargs) -> CommandResponse:
+        """Create a pending approval action instead of executing immediately.
+
+        *lifecycle_id* is the id already assigned by _dispatch's propose()
+        call; passing it into pending_store.create() gives the live
+        approval queue entry and the persisted audit record the same id,
+        so a client can correlate a WebSocket event, a /actions/{id}
+        lookup, and the audit trail as one action throughout its life.
+        """
         from app.core.pending_actions import pending_store
+        from app.core.action_lifecycle import transition as lifecycle_transition
+        from app.core.events import EventType, event_bus
+        from app.core.models import ActionLifecycleStatus
+        from app.core.runtime_state import RuntimeState, runtime
 
         meta = _PENDING_ACTION_META.get(tool_name, {})
         action_name = meta.get("action_name", tool_name.replace("_", " ").title())
@@ -203,6 +296,24 @@ class CommandRouter:
             description=description,
             risk_level=risk_level,
             parameters=dict(kwargs),
+            id=lifecycle_id,
+        )
+
+        runtime.try_transition(
+            RuntimeState.AWAITING_APPROVAL, correlation_id=lifecycle_id,
+            reason=f"awaiting approval for {tool_name}",
+        )
+        lifecycle_transition(lifecycle_id, ActionLifecycleStatus.PENDING_APPROVAL)
+        event_bus.publish(
+            EventType.ACTION_APPROVAL_CHANGED,
+            {
+                "action_id": lifecycle_id,
+                "tool_name": tool_name,
+                "status": "pending_approval",
+                "action_name": action_name,
+                "expires_at": action.expires_at.isoformat() if action.expires_at else None,
+            },
+            correlation_id=lifecycle_id,
         )
 
         logger.info("Pending action created: %s (id=%s)", tool_name, action.id)
