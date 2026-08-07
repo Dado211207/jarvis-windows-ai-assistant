@@ -23,7 +23,7 @@
   /* Status */
   --ok:              #22c55e;
   --ok-soft:         rgba(34, 197, 94, 0.12);
-  --err:             #ef4444;
+  --err:             #f87171;
   --err-soft:        rgba(239, 68, 68, 0.12);
   --warn:            #f59e0b;
   --warn-soft:       rgba(245, 158, 11, 0.12);
@@ -56,8 +56,13 @@ body {
   display: flex;
 }
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { color: var(--accent-hover); text-decoration: underline; }
+/* Underlined by default so links embedded in a run of body text (Help
+   page's command list, prose paragraphs) are distinguishable by more
+   than color alone (WCAG 1.4.1 / axe "link-in-text-block"). .sidebar-link
+   opts back out below — nav items already convey their affordance
+   through icon + position + active-state, not surrounding text. */
+a { color: var(--accent); text-decoration: underline; }
+a:hover { color: var(--accent-hover); }
 
 /* ── Sidebar ────────────────────────────────────────────────────────── */
 .sidebar {
@@ -792,6 +797,34 @@ code, .mono {
 /* ── Responsive: hide sidebar on narrow screens ─────────────────────── */
 @media (max-width: 768px) {
   .sidebar { display: none; }
+
+  /* The topbar's 5 status indicators are fixed-width (white-space: nowrap
+     labels) and .topbar-indicators never shrinks below its content's
+     intrinsic width (the flex default). Below the sidebar breakpoint
+     their combined width exceeds narrow viewports, so let the topbar
+     wrap to a second line instead of forcing horizontal scroll. */
+  .topbar {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+    padding: 0.6rem 1.25rem;
+  }
+  .topbar-indicators {
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+  }
+
+  /* .cmd-name is a fixed 210px non-shrinking label column (Help page's
+     command reference) — doesn't fit next to .cmd-desc in a narrow card.
+     Stack name above description instead of forcing a cramped row. */
+  .cmd-list li {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+  }
+  .cmd-name {
+    min-width: 0;
+  }
 }
 
 /* ── Reduced motion ─────────────────────────────────────────────────── */
