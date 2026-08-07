@@ -23,6 +23,8 @@ def _make_brain(api_key: str = ""):
         mock_settings.jarvis_ai_timeout_seconds = 20
         mock_settings.jarvis_db_path = "data/jarvis.db"
         mock_settings.jarvis_log_file = "data/logs/jarvis.log"
+        mock_settings.db_path = "data/jarvis.db"
+        mock_settings.log_file = "data/logs/jarvis.log"
         b = Brain()
     return b
 

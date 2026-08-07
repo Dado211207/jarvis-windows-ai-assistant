@@ -1,6 +1,8 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.app_paths import default_db_path, default_log_file, default_screenshots_dir
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -13,9 +15,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     jarvis_host: str = "127.0.0.1"
     jarvis_port: int = 5555
-    jarvis_db_path: str = "data/jarvis.db"
+    # Empty means "not explicitly overridden" — db_path/log_file below then
+    # resolve through app_paths (repo-relative in dev, %LOCALAPPDATA%\JARVIS
+    # in the packaged app). Set JARVIS_DB_PATH/JARVIS_LOG_FILE to override
+    # either mode explicitly, e.g. CI pointing the DB at a temp path.
+    jarvis_db_path: str = ""
     jarvis_log_level: str = "INFO"
-    jarvis_log_file: str = "data/logs/jarvis.log"
+    jarvis_log_file: str = ""
 
     # AI / Claude settings
     jarvis_ai_provider: str = "anthropic"
@@ -41,15 +47,15 @@ class Settings(BaseSettings):
 
     @property
     def db_path(self) -> Path:
-        return Path(self.jarvis_db_path)
+        return Path(self.jarvis_db_path) if self.jarvis_db_path else default_db_path()
 
     @property
     def log_file(self) -> Path:
-        return Path(self.jarvis_log_file)
+        return Path(self.jarvis_log_file) if self.jarvis_log_file else default_log_file()
 
     @property
     def screenshots_dir(self) -> Path:
-        return Path("data/screenshots")
+        return default_screenshots_dir()
 
     @property
     def has_anthropic_key(self) -> bool:

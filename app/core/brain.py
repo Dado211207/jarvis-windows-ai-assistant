@@ -172,8 +172,8 @@ class Brain:
             f"  Tools registered : {len(registry)}\n"
             f"  Claude API       : {ai_status}\n"
             f"  AI model         : {settings.jarvis_ai_model or 'default'}\n"
-            f"  DB               : {settings.jarvis_db_path}\n"
-            f"  Log file         : {settings.jarvis_log_file}"
+            f"  DB               : {settings.db_path}\n"
+            f"  Log file         : {settings.log_file}"
         )
         return {"success": True, "message": msg, "data": None}
 
