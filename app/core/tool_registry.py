@@ -1,5 +1,7 @@
 from typing import Callable, Dict, List, Optional
 
+from pydantic import ValidationError
+
 from app.core.models import PermissionLevel, RegisteredTool, ToolDefinition
 from app.core.permissions import (
     ApprovalRequiredError,
@@ -9,6 +11,28 @@ from app.core.permissions import (
 from app.logging_config import get_logger
 
 logger = get_logger("tool_registry")
+
+
+def _validate_input(tool: RegisteredTool, kwargs: dict) -> Optional[dict]:
+    """Returns an error result dict if *kwargs* fails the tool's declared
+    input_model, or None if validation passed (or the tool declares none —
+    every tool registered before v0.2 has no input_model and is unaffected).
+    Validated, coerced values replace kwargs in place so handlers receive
+    the same types Pydantic parsed, not the raw untyped input."""
+    input_model = tool.definition.input_model
+    if input_model is None:
+        return None
+    try:
+        validated = input_model(**kwargs)
+    except ValidationError as exc:
+        return {
+            "success": False,
+            "message": f"Invalid input for tool '{tool.definition.name}': {exc.error_count()} validation error(s).",
+            "data": None,
+        }
+    kwargs.clear()
+    kwargs.update(validated.model_dump())
+    return None
 
 
 class ToolRegistry:
@@ -55,6 +79,10 @@ class ToolRegistry:
         except ApprovalRequiredError as exc:
             return {"success": False, "message": str(exc), "data": None}
 
+        validation_error = _validate_input(tool, kwargs)
+        if validation_error is not None:
+            return validation_error
+
         try:
             result = tool.handler(**kwargs)
             logger.info("Tool executed: %s", name)
@@ -75,6 +103,11 @@ class ToolRegistry:
         tool = self._tools.get(name)
         if tool is None:
             return {"success": False, "message": f"Unknown tool: '{name}'", "data": None}
+
+        validation_error = _validate_input(tool, kwargs)
+        if validation_error is not None:
+            return validation_error
+
         try:
             result = tool.handler(**kwargs)
             logger.info("Approved tool executed: %s", name)

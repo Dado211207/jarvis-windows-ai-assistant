@@ -81,3 +81,96 @@ def test_tool_handler_exception_is_caught():
     result = reg.execute("crasher")
     assert result["success"] is False
     assert "Tool error" in result["message"]
+
+
+# --- v0.2: typed input_model validation ---
+
+def _make_def_with_input(name: str, input_model, level: PermissionLevel = PermissionLevel.SAFE) -> ToolDefinition:
+    return ToolDefinition(
+        name=name,
+        description=f"Test tool: {name}",
+        permission_level=level,
+        category=ToolCategory.UTILITY,
+        input_model=input_model,
+    )
+
+
+def test_execute_validates_input_model_and_rejects_bad_input():
+    from pydantic import BaseModel
+
+    class GreetInput(BaseModel):
+        person_name: str
+
+    reg = ToolRegistry()
+    reg.register(
+        _make_def_with_input("greet", GreetInput),
+        lambda person_name: {"success": True, "message": f"Hello, {person_name}", "data": None},
+    )
+    # Missing the required field entirely.
+    result = reg.execute("greet")
+    assert result["success"] is False
+    assert "greet" in result["message"]
+    assert "validation error" in result["message"].lower()
+
+
+def test_execute_validates_input_model_and_accepts_good_input():
+    from pydantic import BaseModel
+
+    class GreetInput(BaseModel):
+        person_name: str
+
+    reg = ToolRegistry()
+    reg.register(
+        _make_def_with_input("greet", GreetInput),
+        lambda person_name: {"success": True, "message": f"Hello, {person_name}", "data": None},
+    )
+    result = reg.execute("greet", person_name="Ada")
+    assert result["success"] is True
+    assert result["message"] == "Hello, Ada"
+
+
+def test_execute_input_model_coerces_types():
+    """A validated field is passed to the handler as the model's declared
+    type, not the raw untyped kwarg — e.g. a numeric string becomes a real
+    int, matching what Pydantic itself parsed."""
+    from pydantic import BaseModel
+
+    class CountInput(BaseModel):
+        count: int
+
+    reg = ToolRegistry()
+    reg.register(
+        _make_def_with_input("counter", CountInput),
+        lambda count: {"success": True, "message": str(count * 2), "data": count},
+    )
+    result = reg.execute("counter", count="5")
+    assert result["success"] is True
+    assert result["data"] == 5
+    assert isinstance(result["data"], int)
+
+
+def test_execute_without_input_model_is_unaffected():
+    """Every tool registered before v0.2 has no input_model — must behave
+    exactly as before, arbitrary kwargs passed straight through."""
+    reg = ToolRegistry()
+    reg.register(_make_def("legacy"), lambda **kw: {"success": True, "message": str(kw), "data": kw})
+    result = reg.execute("legacy", anything="goes", another=123)
+    assert result["success"] is True
+    assert result["data"] == {"anything": "goes", "another": 123}
+
+
+def test_execute_approved_also_validates_input_model():
+    from pydantic import BaseModel
+
+    class GreetInput(BaseModel):
+        person_name: str
+
+    reg = ToolRegistry()
+    reg.register(
+        _make_def_with_input("greet", GreetInput, PermissionLevel.APPROVAL_REQUIRED),
+        lambda person_name: {"success": True, "message": f"Hello, {person_name}", "data": None},
+    )
+    bad = reg.execute_approved("greet")
+    assert bad["success"] is False
+    good = reg.execute_approved("greet", person_name="Ada")
+    assert good["success"] is True
