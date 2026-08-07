@@ -42,7 +42,7 @@ def test_core_modules_import():
 
 
 def test_desktop_modules_import():
-    from app.desktop import apps, screenshots, system, windows
+    from app.desktop import apps, screenshots, system
 
 
 def test_db_modules_import():

@@ -31,7 +31,6 @@ CORE_IMPORTS = [
     "app.core.policy",
     "app.core.runtime_state",
     "app.desktop.apps",
-    "app.desktop.windows",
     "app.desktop.folders",
     "app.desktop.clipboard",
     "app.desktop.notes",

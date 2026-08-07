@@ -588,7 +588,6 @@ app/
     screenshots.py  — Screenshot tool
     system.py       — System status (psutil)
     maintenance.py  — Log clearing (approval-required)
-    windows.py      — Windows utilities
     clipboard.py     (v0.2) — read_clipboard (SENSITIVE, approval-required)
   voice/
     tts.py          — Offline TTS (pyttsx3)
