@@ -1,11 +1,65 @@
 # JARVIS — Personal Windows AI Assistant
 
-> Phase 5: Action Approval System — risky actions require explicit confirmation before execution.
+> v0.2: Safe Voice Command Center & Windows Action Runtime — every action is
+> classified by risk, policy-gated, and recorded in a persisted audit trail
+> before it ever touches your system.
 
 JARVIS is a local Windows AI assistant that brings together PC automation,
 memory, system monitoring, voice output, and Claude AI —
 all running privately on your machine, never in the cloud unless you choose to
 enable it.
+
+---
+
+## v0.2 — Safe Voice Command Center & Windows Action Runtime
+
+This milestone adds the pipeline every command actually flows through, and
+makes it visible: **user input → deterministic routing → risk
+classification → policy decision → optional approval → execution → audit
+record → real-time dashboard update.** Nothing here replaces the Phase 5
+approval system below — it is built on top of it.
+
+**What's implemented and tested:**
+
+- **Runtime state machine** (`app/core/runtime_state.py`) — one
+  authoritative "what is JARVIS doing right now" model
+  (`booting`/`standby`/`listening`/`thinking`/`awaiting_approval`/`executing`/`speaking`/`error`/`offline`),
+  every transition validated and turned into an event.
+- **Typed tool contract + policy engine** (`app/core/policy.py`,
+  `app/core/models.py`) — a five-tier `RiskLevel`
+  (`read_only`/`reversible`/`sensitive`/`destructive`/`blocked`) drives one
+  policy decision (`auto_execute`/`require_approval`/`deny`); tools may
+  declare a Pydantic `input_model` validated before the handler ever runs.
+- **Persisted action audit trail** (`app/core/action_lifecycle.py`, new
+  `action_lifecycle` table) — every proposed action, across every risk
+  tier, gets a durable record: tool, risk, policy reason, redacted input,
+  timestamps, result, duration. Additive migration — your existing
+  `memories`/`conversations`/`action_logs` data and the live approval
+  queue are untouched.
+- **Real-time WebSocket event stream** (`GET /ws/events`) — typed,
+  read-only events (runtime state changes, action proposals, approval
+  changes, results) with Origin validation and a bounded-backoff
+  reconnect. The topbar shows connected / reconnecting / offline; the
+  Actions page updates live when a pending action changes anywhere, not
+  just from a button click on that page.
+- **New tool: `read_clipboard`** — reads the current text clipboard.
+  Always SENSITIVE / approval-required; content is shown once to the
+  approving caller and never appears in a log line, the audit trail, or a
+  WebSocket event.
+- **Security fixes** — the dashboard's CORS `allow_origins` previously
+  used glob patterns (`"http://127.0.0.1:*"`) that Starlette's
+  `CORSMiddleware` never actually matches (it compares by exact string);
+  this is now a real, working allowlist shared with the new WebSocket's
+  own Origin check.
+- **Genuine concurrency tests** — the existing double-execution guard is
+  now also proven under real multi-threaded contention, not only
+  sequential double-calls (`tests/test_concurrency.py`).
+
+**Deferred (named honestly, not silently skipped):** voice input
+(speech-to-text, wake word), a full visual redesign, an automated
+Playwright/axe browser-test suite, a Windows CI smoke job, and an Ollama
+provider adapter. See `docs/audit-v0.2.md` for the baseline audit and
+`docs/THREAT_MODEL.md` for exactly what is and is not protected.
 
 ---
 
@@ -57,6 +111,10 @@ Open **http://127.0.0.1:5555/ui/** in any browser while JARVIS API is running.
 | Voice | `/ui/voice` | TTS status and controls |
 | Help | `/ui/help` | Quick start guide and command reference |
 
+Every page connects to the v0.2 real-time event stream (`GET /ws/events`) —
+the topbar shows a live connected / reconnecting / offline indicator and the
+current runtime state.
+
 The dashboard is **local-only** — it never exposes your API key to the browser
 and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 
@@ -86,7 +144,7 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 | TTS voice output (pyttsx3, local/offline) | ✅ |
 | Voice CLI commands (speak on/off/test/status) | ✅ |
 | Voice API endpoints (`/voice/status`, `/voice/speak`, `/voice/stop`) | ✅ |
-| Local browser dashboard (8 pages, dark UI) | ✅ |
+| Local browser dashboard (7 pages, dark UI) | ✅ |
 | Dashboard chat page (calls `POST /command`) | ✅ |
 | Dashboard memory browser | ✅ |
 | Dashboard TTS controls | ✅ |
@@ -109,6 +167,7 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 | Command | What it does | Risk |
 |---|---|---|
 | `clear logs` | Clears all action log entries from the database | Medium |
+| `read clipboard` (or `clipboard`, `show clipboard`) | Reads the current text clipboard contents | Medium (v0.2: SENSITIVE) |
 
 ## What is NOT included (current alpha)
 
@@ -296,6 +355,7 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | Command | What it does |
 |---|---|
 | `clear logs` | Delete all action log entries — requires confirmation |
+| `read clipboard` | Read the current text clipboard — requires confirmation (v0.2) |
 
 ### API endpoints
 
@@ -304,13 +364,18 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | GET | `/` | Status JSON |
 | GET | `/health` | Health check |
 | POST | `/command` | `{"command": "system status"}` |
-| GET | `/tools` | List all registered tools |
+| GET | `/tools` | List all registered tools (v0.2: includes `risk` and `input_model` JSON schema) |
 | GET | `/memory/search?q=...` | Search memory |
 | GET | `/memory` | List recent memories |
 | GET | `/logs` | Recent action logs |
+| GET | `/actions/pending` | List pending approval actions |
+| GET | `/actions/{id}` | Get one pending/resolved action by ID |
+| POST | `/actions/{id}/confirm` | Confirm and execute a pending action |
+| POST | `/actions/{id}/cancel` | Cancel a pending action |
 | GET | `/voice/status` | TTS enabled / engine / available |
 | POST | `/voice/speak` | `{"text": "hello"}` — speak text (requires TTS enabled) |
 | POST | `/voice/stop` | Stop current speech |
+| WS | `/ws/events` | **(v0.2)** Real-time typed event stream — read-only, optional `?since=<seq>` to resume after a reconnect. See `app/api/ws.py`. |
 
 ---
 
@@ -364,9 +429,19 @@ pytest
 |---|---|---|
 | Permissions | `tests/test_permissions.py` | All 3 levels, blocked keywords |
 | Router | `tests/test_router.py` | All command patterns |
-| Tool registry | `tests/test_tool_registry.py` | Register, execute, error handling |
+| Tool registry | `tests/test_tool_registry.py` | Register, execute, error handling, typed input validation |
 | Smoke | `tests/test_smoke.py` | Imports, routing, registry, API endpoints |
 | Brain / AI | `tests/test_brain.py` | is_configured, AI mock, fallback, DB storage, API |
+| Runtime state (v0.2) | `tests/test_runtime_state.py` | Every legal/illegal transition, event publication |
+| Policy engine (v0.2) | `tests/test_policy.py` | Full risk → decision matrix, legacy mapping, determinism |
+| Redaction (v0.2) | `tests/test_redaction.py` | Sensitive-key masking, truncation |
+| Action lifecycle (v0.2) | `tests/test_action_lifecycle.py` | Real SQLite round-trip, idempotency, terminal-state guard |
+| WebSocket stream (v0.2) | `tests/test_ws.py` | Origin allowlist, snapshot-on-connect, `?since=` resume |
+| Origin allowlist (v0.2) | `tests/test_origin.py` | CORS/WS shared allowlist |
+| Clipboard tool (v0.2) | `tests/test_clipboard.py` | Content never in logs/messages, graceful degradation |
+| Pipeline integration (v0.2) | `tests/test_pipeline_integration.py` | Real end-to-end dispatch → policy → lifecycle → events |
+| Concurrency (v0.2) | `tests/test_concurrency.py` | Real multi-threaded races, not just sequential double-calls |
+| Migration compatibility (v0.2) | `tests/test_migration_compatibility.py` | Upgrading an existing pre-v0.2 database preserves data |
 
 ### CI pipeline
 
@@ -492,30 +567,54 @@ app/
   config.py         — Pydantic settings
   logging_config.py — Structured logging setup
   core/
-    brain.py        — Orchestrator + Claude AI integration
-    router.py       — Command → tool mapping
-    tool_registry.py — Central tool registry
-    permissions.py  — Permission enforcement
-    memory.py       — Memory tool wrappers
-    models.py       — Shared Pydantic models
-    system_prompt.py — JARVIS AI safety constraints
+    brain.py            — Orchestrator + Claude AI integration
+    router.py           — Command → tool mapping; v0.2 pipeline dispatch
+    tool_registry.py    — Central tool registry; v0.2 input_model validation
+    permissions.py      — Permission enforcement (SAFE/APPROVAL_REQUIRED/BLOCKED)
+    policy.py            (v0.2) — Risk classification + the policy engine
+    runtime_state.py      (v0.2) — Authoritative runtime state machine
+    events.py             (v0.2) — Typed event envelope + in-memory event bus
+    action_lifecycle.py   (v0.2) — Persisted action audit trail
+    redaction.py           (v0.2) — Sensitive-key masking for logs/audit/events
+    pending_actions.py  — Live in-memory approval queue (unchanged by v0.2)
+    memory.py           — Memory tool wrappers
+    models.py           — Shared Pydantic models (incl. v0.2 RiskLevel, ActionLifecycleStatus)
+    system_prompt.py    — JARVIS AI safety constraints
   desktop/
     apps.py         — App launcher (allowlist)
+    web.py          — Safe URL opener
+    folders.py      — Safe folder opener (allowlisted roots)
+    notes.py        — Note creation
     screenshots.py  — Screenshot tool
     system.py       — System status (psutil)
+    maintenance.py  — Log clearing (approval-required)
     windows.py      — Windows utilities
+    clipboard.py     (v0.2) — read_clipboard (SENSITIVE, approval-required)
+  voice/
+    tts.py          — Offline TTS (pyttsx3)
+  ui/
+    routes.py       — 7 dashboard pages
+    templates/, static/ — Jinja2 + vanilla JS/CSS, no external CDNs
   api/
-    server.py       — FastAPI app
+    server.py       — FastAPI app; CORS + lifespan runtime-state wiring
     routes.py       — Route handlers
+    actions.py      — Approval confirm/cancel; v0.2 lifecycle sync
+    origin.py         (v0.2) — Shared CORS/WebSocket origin allowlist
+    ws.py             (v0.2) — GET /ws/events real-time stream
 db/
-  database.py       — SQLite access layer
-  migrations.py     — Schema creation
+  database.py       — SQLite access layer; v0.2 action_lifecycle CRUD
+  migrations.py     — Schema creation; v0.2 additive action_lifecycle table
 data/               — Runtime data (gitignored except .gitkeep)
-tests/              — Pytest suite
+tests/              — Pytest suite (see "What is tested" above)
 installer/          — Windows setup scripts
-docs/               — Developer process documentation
+docs/
+  audit-v0.2.md     — Phase 0 baseline audit for this milestone
+  INSPIRATION.md    — Research sources consulted, concepts adopted/rejected, licenses
+  THREAT_MODEL.md   — What is and is not protected, stated honestly
+  release-process.md — Release checklist and version naming guide
 run_jarvis.py       — PyInstaller entry point (--api flag starts FastAPI server)
 QUICKSTART.md       — First-run guide (included in release ZIP)
+SECURITY.md         — Short security overview, points to docs/THREAT_MODEL.md
 START_JARVIS.bat    — CLI launcher (included in release ZIP)
 START_JARVIS_API.bat — API launcher (included in release ZIP)
 SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
@@ -527,10 +626,20 @@ SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 
 - The API **only binds to 127.0.0.1** — it is never exposed to the network.
 - The app launcher uses a **strict allowlist** — arbitrary executables cannot be launched.
-- All tools pass through a **permission check** before execution.
+- All tools pass through a **permission check** before execution; v0.2 adds a
+  five-tier risk classification and a single policy engine
+  (`app/core/policy.py`) on top of that, not instead of it.
 - Blocked tool categories (password extraction, keylogging, etc.) are
   **not implemented** and are permanently refused by the permission system.
 - No secrets are ever committed to version control.
+- **v0.2 fix:** the dashboard's CORS `allow_origins` previously used glob
+  patterns that were never actually enforced (see the v0.2 section above) —
+  this is now a real, working allowlist.
+- See **[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)** for the full,
+  honest picture — including what is explicitly **not** protected (no OS
+  sandboxing, no encrypted storage, no protection from a malicious local
+  admin, and more). See **[`SECURITY.md`](SECURITY.md)** for the short
+  version.
 
 ---
 
@@ -541,9 +650,15 @@ SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 | 1 | Foundation: CLI, router, tools, API, SQLite | ✅ Done |
 | 2 | Claude AI integration (natural-language fallback, conversation memory) | ✅ Done |
 | 3 | TTS voice output (pyttsx3, local/offline, output-only — no microphone) | ✅ Done |
-| 4 | Local browser dashboard (8 pages, dark UI, Jinja2 + vanilla JS) | ✅ Done |
+| 4 | Local browser dashboard (7 pages, dark UI, Jinja2 + vanilla JS) | ✅ Done |
 | 5 | Action approval system (pending / confirm / cancel, Actions UI) | ✅ Done |
 | 6 | Safe Windows actions expansion (URL opener, folders, notes, disk, network, battery) | ✅ Done |
-| 7 | Screen intelligence (OCR, on-request only — explicit user permission required) | Planned |
-| 8 | Browser automation (approval-gated, no autonomous browsing) | Planned |
-| 9 | Smart home, health tracking, optional trading alerts | Planned |
+| 7 | Professional UI/UX polish (sidebar layout, design system, metric cards) | ✅ Done |
+| 8 | Screen intelligence (OCR, on-request only — explicit user permission required) | Planned |
+| 9 | Browser automation (approval-gated, no autonomous browsing) | Planned |
+| 10 | Smart home, health tracking, optional trading alerts | Planned |
+
+> **v0.2** (infrastructure, not a numbered phase): Safe Voice Command
+> Center and Windows Action Runtime — see the section near the top of this
+> README, `docs/audit-v0.2.md`, and `docs/THREAT_MODEL.md`. Phase 8/9/10's
+> planned scope above is unchanged by it.

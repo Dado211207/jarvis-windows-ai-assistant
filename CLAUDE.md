@@ -141,6 +141,46 @@ how Claude Code sessions should work on this codebase.
 - **Chat suggestions are client-side only.** Suggestion chips populate the input field
   only; they do not auto-submit or bypass the normal send flow.
 
+## v0.2 safe command center rules (non-negotiable)
+
+v0.2 ("Safe Voice Command Center and Windows Action Runtime") is an
+infrastructure milestone that runs across the phase numbering below, not
+a replacement for it — Phase 8/9/10's planned scope (OCR, browser
+automation, smart home) is unchanged. It added the pipeline future tools
+should be built on top of; see `docs/audit-v0.2.md` and
+`docs/THREAT_MODEL.md` for the full picture.
+
+- **The policy engine is the only place risk decisions are made.**
+  `app/core/policy.py::evaluate()` decides auto-execute / require-approval
+  / deny from a tool's `RiskLevel`. Do not add a second, ad-hoc
+  risk/permission check elsewhere — extend `evaluate()` or a tool's
+  declared `RiskLevel` instead of duplicating the decision in a route.
+- **New tools should declare a `RiskLevel` and, when they take arguments,
+  an `input_model`.** A tool that omits them still works (see
+  `policy.py::risk_for()`'s conservative legacy mapping from
+  `PermissionLevel`) but new tools should declare them explicitly rather
+  than rely on that fallback.
+- **The runtime state machine is the only source of truth for "what is
+  JARVIS doing right now."** Use `app/core/runtime_state.py`'s
+  `runtime.transition()` (or `try_transition()` from a request-handling
+  code path, which must never raise — see its docstring). Do not track
+  state ad hoc elsewhere.
+- **The `action_lifecycle` audit trail is additive.** It never replaces
+  or gates `app/core/pending_actions.py`'s live approval queue; it
+  records what happened. Execution must never depend on the audit write
+  succeeding.
+- **The WebSocket stream (`/ws/events`) is read-only.** It broadcasts
+  typed events; it must never accept a command or an action approval.
+  Command submission and approval stay on the REST endpoints.
+- **No raw tool input reaches a log line, the audit trail, or a
+  WebSocket event unredacted.** Use
+  `app/core/redaction.py::redact_params()` before persisting or
+  publishing anything derived from tool kwargs.
+- **`read_clipboard` is the only clipboard capability, and it is
+  SENSITIVE / approval-required, permanently.** No clipboard writing, no
+  history, no polling or monitoring — it must never grow into the
+  clipboard-sniffer this file's Safety rules already forbid.
+
 ## Phase guide
 
 | Phase | Status      | Scope |
@@ -155,6 +195,15 @@ how Claude Code sessions should work on this codebase.
 | 8     | Planned     | Screen intelligence / OCR (on-request only, explicit user permission) |
 | 9     | Planned     | Browser automation (approval-gated, no autonomous browsing) |
 | 10    | Planned     | Smart home, health, trading integrations |
+
+> **v0.2** (infrastructure, not a numbered phase): Safe Voice Command
+> Center and Windows Action Runtime — runtime state machine, typed
+> tool/risk/policy contract, persisted `action_lifecycle` audit trail,
+> real-time WebSocket event stream, and a new `read_clipboard` tool. Full
+> voice input/STT/wake-word, a complete visual redesign, an automated
+> Playwright/axe browser-test suite, and a Windows CI smoke job remain
+> deferred — see `docs/audit-v0.2.md`, `docs/THREAT_MODEL.md`, and the
+> PR description for the exact scope and honest gaps.
 
 ## Do NOT implement in this repo (ever, without explicit separate design review)
 
