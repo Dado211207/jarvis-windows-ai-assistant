@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app import __phase__, __version__
+from app.api.origin import allowed_origins
 from app.config import settings
 from app.logging_config import get_logger, setup_logging
 
@@ -21,7 +22,20 @@ async def lifespan(app: FastAPI):
     logger.info("JARVIS API starting up — %s %s", __version__, __phase__)
     from app.core.brain import brain
     brain.initialise()
+
+    from app.core.runtime_state import RuntimeState, runtime
+    # Handles both a fresh process (state is BOOTING) and a process whose
+    # lifespan has already run once before, e.g. repeated TestClient
+    # startup/shutdown cycles within one test run (state is OFFLINE from
+    # the previous shutdown below) — OFFLINE can only re-enter via BOOTING.
+    if runtime.state == RuntimeState.OFFLINE:
+        runtime.transition(RuntimeState.BOOTING, reason="restarting")
+    if runtime.state == RuntimeState.BOOTING:
+        runtime.transition(RuntimeState.STANDBY, reason="startup complete")
+
     yield
+
+    runtime.try_transition(RuntimeState.OFFLINE, reason="shutdown")
     logger.info("JARVIS API shutting down.")
 
 
@@ -35,10 +49,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Local-only CORS: only allow requests from the same machine
+    # Local-only CORS: only allow requests from this dashboard's own real
+    # origins. (v0.2 fix: CORSMiddleware matches allow_origins by exact
+    # string equality, not glob — the previous "http://127.0.0.1:*" style
+    # entries never matched a real browser Origin header at all.)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1:*", "http://localhost:*"],
+        allow_origins=allowed_origins(),
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
@@ -48,6 +65,9 @@ def create_app() -> FastAPI:
 
     from app.api.actions import router as actions_router
     app.include_router(actions_router)
+
+    from app.api.ws import router as ws_router
+    app.include_router(ws_router)
 
     from app.ui.routes import router as ui_router
     app.include_router(ui_router)
