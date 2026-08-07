@@ -1,0 +1,155 @@
+# JARVIS Threat Model (v0.2)
+
+This document describes what JARVIS actually protects against, what it
+does not, and why. It is written to be read alongside the code, not
+instead of it — every claim below should be verifiable by reading the
+referenced module. Where a protection is genuinely deferred rather than
+built, that is stated plainly rather than implied.
+
+## Scope
+
+JARVIS is a **local-first, single-user desktop assistant**. It is designed
+to run on one person's own Windows machine, under their own OS account,
+serving only that person's own browser tabs on that same machine. It is
+**not** designed to be exposed to a network, shared between users, or run
+as a multi-tenant service.
+
+## Trust model
+
+**Trusted:**
+- The person running JARVIS, on their own machine, under their own OS
+  account.
+- Application code registered through `ToolRegistry` (`app/core/tool_registry.py`).
+  Only trusted, reviewed code can register a tool; nothing external can add one
+  at runtime.
+
+**Explicitly NOT trusted, by design:**
+- Any AI provider's output (Anthropic API, or a future local model). Model
+  output is free text only — see "The LLM never executes" below.
+- Any web page that is not JARVIS's own dashboard, even if open in the same
+  browser at the same time.
+- The network, beyond the loopback interface.
+
+**Not defended against at all** (see "Explicit non-goals" below):
+- A malicious or compromised process running under the *same* OS account as
+  the user, on the same machine.
+- A malicious local administrator.
+
+## Primary defenses, and where they live
+
+| Defense | Where | What it actually does |
+|---|---|---|
+| Loopback-only binding | `app/config.py` (`jarvis_host` default `127.0.0.1`), `app/api/server.py:run_api` | The API is not reachable from the network unless the operator explicitly changes the host — CLAUDE.md requires explicit approval + security review for that change. |
+| CORS origin allowlist | `app/api/origin.py`, wired into `app/api/server.py` | Only the dashboard's own `http://127.0.0.1:<port>` / `http://localhost:<port>` origins get CORS-permitted responses. **v0.2 fix:** the previous `allow_origins=["http://127.0.0.1:*", ...]` never matched anything — Starlette's `CORSMiddleware` matches by exact string, not glob — so this check was silently inert before this milestone. |
+| WebSocket origin validation | `app/api/origin.py`, `app/api/ws.py` | Browsers do not apply CORS preflight to WebSocket handshakes, so this is enforced separately: a handshake with a *present but foreign* `Origin` header is rejected with close code 1008 before `accept()`. A *missing* Origin (non-browser tools connecting directly) is allowed, since a browser cannot forge a cross-origin WS handshake without sending a real, foreign Origin — see the docstring in `app/api/origin.py` for the full reasoning. |
+| Deterministic routing; the LLM never executes anything | `app/core/router.py`, `app/core/policy.py` | Text commands are matched against a fixed, reviewed regex table (`ROUTES`) before any AI call is made. When a command *does* fall through to the AI provider (`brain.generate_response`), the result is plain text shown to the user — there is no code path from an AI response to a tool call. Every real tool invocation goes through `policy.evaluate()`, which is driven by each tool's registered `RiskLevel`, never by anything the model said. |
+| Five-tier risk classification + policy engine | `app/core/models.py` (`RiskLevel`), `app/core/policy.py` | READ_ONLY / REVERSIBLE auto-execute; SENSITIVE always requires explicit approval; DESTRUCTIVE and BLOCKED are always denied outright in this milestone (no destructive tool is registered at all — see CLAUDE.md's blocked-capabilities list). One function (`evaluate()`) makes this decision; it is not re-derived ad hoc elsewhere (see `app/core/router.py::_dispatch`'s docstring for the earlier duplicate-decision issue this replaced). |
+| Approval expiry + double-execution prevention | `app/core/pending_actions.py` (pre-existing, unchanged), `app/api/actions.py` | Pending approvals expire after 10 minutes. `PendingActionStore.confirm()`/`cancel()` are lock-protected; verified in this milestone under **real concurrent threads**, not just sequential double-calls — see `tests/test_concurrency.py`. |
+| Persisted action audit trail | `app/core/action_lifecycle.py`, `db/migrations.py` (`action_lifecycle` table) | Every proposed action — auto-executed, approved, or denied — gets a durable record: tool, risk, policy decision and reason, timestamps, redacted input, result, duration. A record that reaches a terminal status can never be transitioned again (`TerminalStateError`), closing off a class of "resurrect a finished action" bugs. |
+| Redaction before persistence/broadcast | `app/core/redaction.py` | Sensitive-looking keys (`password`, `token`, `secret`, `key`, `clipboard`, ...) are masked and long strings truncated before a tool's input is written to the audit trail or published as a WebSocket event. |
+| Clipboard content never logged or broadcast | `app/desktop/clipboard.py` | `read_clipboard` is SENSITIVE and always requires approval. Its result *message* reports only a character count; the actual content lives solely in `data`, which reaches only the direct HTTP response to the specific `/actions/{id}/confirm` call the approving user made — never a log line, the audit trail's `result_summary`, or a WebSocket event. Verified directly in `tests/test_clipboard.py` and `tests/test_pipeline_integration.py`. |
+| No shell execution | `app/desktop/apps.py`, `app/desktop/folders.py`, etc. | Every `subprocess` call uses an explicit argument list with `shell=False`, launching only an allowlisted executable path. Verified by `tests/test_safe_actions.py`. |
+| Blocked URL schemes | `app/desktop/web.py` | Only `http://` and `https://` may be opened; `file:`, `javascript:`, `data:`, `powershell:`, `cmd:`, `vbscript:`, and others are rejected. |
+| Safe path handling | `app/desktop/folders.py`, `app/desktop/notes.py` (pre-existing) | File operations are confined to specific allowed roots; see `tests/test_safe_actions.py`'s path-traversal tests. |
+
+## Explicit non-goals (do not assume these exist)
+
+This list exists because it is easy to *imply* more security than is
+actually built. None of the following are true of JARVIS today:
+
+- **No full OS-level sandboxing.** Tool handlers run as normal Python code
+  in the same process and OS user context as JARVIS itself. There is no
+  container, no restricted token, no seccomp/AppContainer-equivalent
+  isolation around a tool call.
+- **No encrypted storage.** The SQLite database (`data/jarvis.db`) is
+  plaintext on disk. Anyone with filesystem access to that file — or to
+  the machine generally — can read memories, conversation history, and
+  the action audit trail directly. There is no key management, no
+  at-rest encryption, and no plan to silently claim otherwise; if this
+  changes in a future milestone it will be documented here with what is
+  actually implemented, not asserted in advance.
+- **No safe arbitrary code execution.** JARVIS does not offer a sandboxed
+  "run this code" capability at all — not safely, not unsafely. Arbitrary
+  shell/PowerShell/Python execution is on the permanently-blocked list
+  (CLAUDE.md) and there is no code path that reaches it.
+- **No signed Windows installer.** The installer described elsewhere in
+  this repository is unsigned. Windows SmartScreen and antivirus tools may
+  (correctly) warn about it.
+- **No protection from a malicious local administrator**, or from any
+  other process already running with the same or higher privilege as the
+  user's own OS account. If that account is compromised, JARVIS's own
+  checks provide no additional boundary — the attacker already has
+  everything JARVIS has.
+- **No guarantee of AI provider correctness.** Claude (or any future
+  provider) can be wrong, misleading, or simply unhelpful in its free-text
+  responses. Nothing about JARVIS's architecture makes model output more
+  *correct* — what the architecture guarantees is narrower and different:
+  the model's output can never itself become a tool call. See "Deterministic
+  routing" above.
+- **No tool execution timeout enforcement (yet).** Every `ToolDefinition`
+  declares a `timeout_seconds`, and that value is real, honest metadata —
+  but nothing currently enforces it at the `ToolRegistry.execute()` call
+  site. A hung tool handler will hang the request that triggered it. This
+  is a known, named gap, not a documented feature.
+- **No per-session CSRF/mutation token on the REST API (yet).** The
+  WebSocket stream validates `Origin` on every handshake (see the table
+  above); the REST mutation endpoints (`POST /command`, `POST /actions/{id}/confirm`,
+  `POST /actions/{id}/cancel`, etc.) currently rely only on the CORS
+  origin allowlist and loopback binding, not an additional per-session
+  token. Given cross-origin `fetch`/`XHR` *is* subject to CORS (unlike
+  WebSocket), the fixed origin allowlist genuinely blocks a foreign page's
+  browser-enforced request from succeeding in a standards-compliant
+  browser — but this is a weaker guarantee than an explicit mutation
+  token, and is named here as a real gap for a future pass, not silently
+  treated as equivalent.
+- **Provider errors can still leak implementation detail to the browser.**
+  `app/core/brain.py::generate_response` currently attaches
+  `error=str(exc)` (the raw exception text from the Anthropic SDK call) to
+  its response on failure, and that string does reach the browser via
+  `CommandResponse.data.error`. This was flagged during this milestone's
+  audit (`docs/audit-v0.2.md`) and was not fixed in this pass — it is a
+  pre-existing gap, not a new one, but it remains open.
+- **Most tools' `verification_strategy` is descriptive, not enforced.**
+  Declaring how a tool's effect *could* be verified (see each tool's
+  `ToolDefinition` in `app/desktop/`) is not the same as JARVIS
+  independently checking that the effect actually happened. For most
+  tools in this milestone, "verification" is the tool's own reported
+  success/failure — see the honest per-tool notes in each module.
+
+## Threat scenarios considered
+
+**A malicious web page open in another tab tries to control JARVIS.**
+Blocked for WebSocket connections (Origin check, closes with 1008) and for
+CORS-subject `fetch`/`XHR` calls (origin allowlist) in a standards-compliant
+browser. Not blocked by an independent mutation token — see the gap noted
+above.
+
+**The AI provider returns a malicious or nonsensical instruction
+("delete all my files").** The response is plain text. There is no
+mechanism by which free text from `brain.generate_response` becomes a
+tool call — only `app/core/router.py`'s fixed `ROUTES` table maps a
+command to a tool, and that table is reviewed application code, not model
+output.
+
+**Two browser tabs (or a script) submit conflicting requests for the same
+pending action at once.** `PendingActionStore.confirm()`/`cancel()` are
+lock-protected; exactly one wins. Verified under real thread contention in
+`tests/test_concurrency.py`, not merely by calling the method twice in a
+row.
+
+**A user approves `read_clipboard` while something sensitive is
+copied.** The content is shown once, to that user, in that response. It
+is never written to a log line, the audit trail, or a WebSocket event —
+see the clipboard row in the defenses table above.
+
+**Someone else with access to the same Windows account reads
+`data/jarvis.db` directly.** Not defended against — see "No encrypted
+storage" above.
+
+## Reporting a concern
+
+This is a private, single-user personal project, not a public service.
+If you (the owner) notice a gap this document doesn't already name
+honestly, treat that itself as a bug: either the code should change, or
+this document should be corrected to describe reality accurately. See
+`SECURITY.md` for the short version of this file.
