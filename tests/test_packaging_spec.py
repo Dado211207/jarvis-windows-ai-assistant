@@ -63,6 +63,35 @@ def test_spec_includes_required_hidden_imports():
         assert expected in content
 
 
+def test_spec_collects_all_for_packages_that_need_full_collection():
+    """Regression guard for a real failure caught on windows-latest CI:
+    a real frozen JARVIS.exe launched, stayed running, and never
+    answered /health — consistent with an import failing silently
+    inside the background uvicorn thread (app/launcher/server_runner.py)
+    rather than crashing the process. The pre-existing, separate
+    .github/workflows/windows-build.yml build job already needed
+    `--collect-all pydantic_settings --collect-all anthropic
+    --collect-all pyttsx3` for exactly this reason; this spec had only
+    ever carried the narrower pyttsx3 driver hidden-import, which was
+    not enough on its own."""
+    tree = ast.parse(_read(SPEC_PATH))
+    collected_packages = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "collect_all":
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant):
+                collected_packages.add(arg.value)
+    if not collected_packages:
+        # Loop form (`for _pkg in (...): collect_all(_pkg)`) — find the
+        # iterated tuple instead of a literal argument at each call site.
+        for node in ast.walk(tree):
+            if isinstance(node, ast.For) and isinstance(node.iter, (ast.Tuple, ast.List)):
+                if any(isinstance(e, ast.Constant) and e.value == "anthropic" for e in node.iter.elts):
+                    collected_packages.update(e.value for e in node.iter.elts if isinstance(e, ast.Constant))
+    for expected in ("pydantic_settings", "anthropic", "pyttsx3"):
+        assert expected in collected_packages, f"{expected} must go through collect_all(), not just hiddenimports"
+
+
 def test_spec_bundles_templates_and_static():
     content = _read(SPEC_PATH)
     assert "app/ui/templates" in content

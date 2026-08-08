@@ -133,6 +133,25 @@ def test_refuses_to_run_on_non_windows():
 
 
 # ---------------------------------------------------------------------------
+# Diagnosability: a health-wait failure must not be a dead end
+# ---------------------------------------------------------------------------
+
+def test_health_wait_failure_surfaces_the_apps_own_log():
+    """Regression guard: an earlier real CI failure (a real frozen
+    JARVIS.exe that launched, stayed running, and never answered
+    /health) produced zero diagnostic trail beyond "never became
+    healthy" — the actual cause required guessing from precedent rather
+    than evidence. wait_for_health()'s failure path must read and
+    include the installed app's own log file, not just report the
+    timeout."""
+    tree = ast.parse(_read())
+    wait_for_health = _find_function(tree, "wait_for_health")
+    calls = _find_calls(wait_for_health, "_fail")
+    assert calls, "expected wait_for_health() to call _fail()"
+    assert any("log_tail" in ast.dump(call) for call in calls)
+
+
+# ---------------------------------------------------------------------------
 # All three phases exist and main() runs them in order
 # ---------------------------------------------------------------------------
 

@@ -38,6 +38,21 @@ class RunningServer:
         self.thread.join(timeout=join_timeout)
 
 
+def _run_server(server: uvicorn.Server) -> None:
+    """Thread target — never lets server.run() fail silently. A daemon
+    thread's uncaught exception is easy to lose entirely in a
+    console=False packaged build (there is no console for Python's
+    default threading.excepthook to write to); wait_until_healthy()
+    would then just time out with no diagnostic trail anywhere. Logging
+    it here means a real startup failure (a missing frozen-build import,
+    a bind error, etc.) is at least visible in the log file, not just
+    "never became healthy" with no further explanation."""
+    try:
+        server.run()
+    except Exception:
+        logger.error("Background uvicorn server crashed.", exc_info=True)
+
+
 def start_server_in_background(host: Optional[str] = None, port: Optional[int] = None) -> RunningServer:
     """*host*/*port* default to settings; tests pass explicit values for
     isolation on an ephemeral port, matching db/migrations.py::create_tables()'s
@@ -55,7 +70,7 @@ def start_server_in_background(host: Optional[str] = None, port: Optional[int] =
         log_level=settings.jarvis_log_level.lower(),
     )
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True, name="jarvis-uvicorn")
+    thread = threading.Thread(target=_run_server, args=(server,), daemon=True, name="jarvis-uvicorn")
     thread.start()
     logger.info("Background uvicorn thread started on %s:%s", host, port)
     return RunningServer(server=server, thread=thread)

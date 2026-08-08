@@ -17,6 +17,8 @@ stays gitignored.
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
 repo_root = Path(SPECPATH).resolve().parent  # packaging/jarvis.spec -> repo root
 
@@ -48,11 +50,33 @@ datas = [
     (str(repo_root / "docs" / "THIRD_PARTY_NOTICES.md"), "."),
     (str(repo_root / "README.md"), "."),
 ]
+binaries = []
+
+# collect_all(), not just hiddenimports: these three packages are
+# already known — empirically, not by guesswork — to need PyInstaller's
+# full submodule+data collection, not just its default static-import
+# analysis. The pre-existing .github/workflows/windows-build.yml build
+# job (separate from this one, untouched by this pass) already passes
+# `--collect-all pydantic_settings --collect-all anthropic --collect-all
+# pyttsx3` on the PyInstaller command line for exactly this reason; this
+# spec had only carried the narrower pyttsx3 driver hidden-import above,
+# which was not enough on its own — a real frozen JARVIS.exe launched on
+# windows-latest CI stayed running but never answered /health, matching
+# an import failing silently inside the background uvicorn thread
+# (app/launcher/server_runner.py) rather than crashing the process
+# outright. collect_all is additive and can only include more than the
+# default analysis would, so applying it here is a safe, proven step
+# regardless of exactly which submodule was missing.
+for _pkg in ("pydantic_settings", "anthropic", "pyttsx3"):
+    _pkg_datas, _pkg_binaries, _pkg_hiddenimports = collect_all(_pkg)
+    datas += _pkg_datas
+    binaries += _pkg_binaries
+    hidden_imports += _pkg_hiddenimports
 
 a = Analysis(
     [str(repo_root / "run_jarvis.py")],
     pathex=[str(repo_root)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[],

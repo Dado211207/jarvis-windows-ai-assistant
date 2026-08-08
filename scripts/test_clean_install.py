@@ -87,6 +87,10 @@ def expected_db_path() -> Path:
     return expected_data_dir() / "data" / "jarvis.db"
 
 
+def expected_log_file() -> Path:
+    return expected_data_dir() / "data" / "logs" / "jarvis.log"
+
+
 def expected_start_menu_shortcut() -> Path:
     return Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "JARVIS" / "JARVIS.lnk"
 
@@ -148,8 +152,23 @@ def wait_for_health(proc: subprocess.Popen, timeout_seconds: float = HEALTH_TIME
         except Exception:
             pass
         time.sleep(0.3)
-    _fail(f"JARVIS.exe never became healthy within {timeout_seconds}s ({HEALTH_URL}).")
+    log_tail = _read_app_log_tail()
+    _fail(f"JARVIS.exe never became healthy within {timeout_seconds}s ({HEALTH_URL}).\nJARVIS's own log ({expected_log_file()}):\n{log_tail}")
     return {}  # unreachable
+
+
+def _read_app_log_tail(max_chars: int = 4000) -> str:
+    """Best-effort diagnostic only — never raises, since a missing or
+    unreadable log file is a real possibility (e.g. the app crashed
+    before logging even initialized) and must not itself mask the real
+    failure this is being called to help explain."""
+    log_path = expected_log_file()
+    if not log_path.is_file():
+        return f"(no log file found at {log_path})"
+    try:
+        return log_path.read_text(encoding="utf-8", errors="replace")[-max_chars:]
+    except OSError as e:
+        return f"(could not read log file: {e})"
 
 
 def wait_for_health_to_stop(timeout_seconds: float = HEALTH_TIMEOUT_SECONDS) -> None:

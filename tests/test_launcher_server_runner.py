@@ -74,6 +74,30 @@ def test_request_shutdown_actually_frees_the_port(running_server):
         probe.bind(("127.0.0.1", port))  # raises OSError if still bound by the old server
 
 
+def test_run_server_logs_and_swallows_a_crashing_server(caplog):
+    """Regression guard for a real failure caught on windows-latest CI: a
+    real frozen JARVIS.exe launched and stayed running but never
+    answered /health, with zero diagnostic trace anywhere — consistent
+    with the background uvicorn thread's target (previously bare
+    server.run(), passed straight to threading.Thread) raising an
+    exception that a console=False build has nowhere to print. This
+    proves _run_server() catches and logs instead of losing it, and
+    critically does NOT re-raise (a daemon thread's uncaught exception
+    doesn't crash the process either way, but re-raising here would
+    still lose the traceback the same way)."""
+    from app.launcher import server_runner
+
+    class _CrashingServer:
+        def run(self):
+            raise RuntimeError("simulated frozen-build import failure")
+
+    with caplog.at_level("ERROR"):
+        server_runner._run_server(_CrashingServer())  # must not raise
+
+    assert any("crashed" in record.message.lower() for record in caplog.records)
+    assert any(record.exc_info for record in caplog.records), "exception traceback must be logged, not just a bare message"
+
+
 def test_server_shutdown_releases_tts_resources(running_server):
     """app/api/server.py's lifespan() calls tts_service.stop() on
     shutdown — proves the launcher's clean-shutdown path (uvicorn's
