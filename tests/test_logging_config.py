@@ -18,10 +18,18 @@ import pytest
 def isolated_log_file(tmp_path, monkeypatch):
     """Points settings.log_file at a throwaway path so this file's tests
     never depend on or interfere with the shared dev-mode data/logs/
-    directory other tests may also be writing to."""
+    directory other tests may also be writing to. Also pins
+    jarvis_log_level to DEBUG regardless of the ambient environment —
+    .github/workflows/ci.yml's own jobs set JARVIS_LOG_LEVEL=WARNING,
+    which silently filtered out this file's own logger.info() call
+    before it ever reached a handler and failed this test for real on
+    both the ubuntu-latest and windows-latest CI jobs, while passing
+    locally where that env var happened to be unset. A test must not
+    depend on an ambient setting it never controls."""
     from app.config import settings
     log_path = tmp_path / "test.log"
     monkeypatch.setattr(settings, "jarvis_log_file", str(log_path))
+    monkeypatch.setattr(settings, "jarvis_log_level", "DEBUG")
     return log_path
 
 
