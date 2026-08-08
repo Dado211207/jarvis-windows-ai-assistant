@@ -112,11 +112,17 @@ class Brain:
     # --- private helpers ---
 
     def _local_fallback(self, command: str) -> BrainResponse:
-        """Return a polite message when no API key is set or the call fails."""
+        """Return a polite message when no API key is set or the call fails.
+
+        Deliberately points at the in-app Settings page, not a .env file:
+        the packaged desktop app stores its key in the Windows credential
+        store (app/core/credentials.py) and a user of the installed app
+        has no repository, no .env, and no terminal to edit one in."""
         msg = (
             f"I received your message: \"{command}\"\n"
-            "Claude AI is not configured. "
-            "Add your ANTHROPIC_API_KEY to .env to enable AI responses."
+            "AI responses aren't set up yet. Open Settings and add an "
+            "Anthropic API key to enable them — everything else keeps "
+            "working without one."
         )
         return BrainResponse(
             content=msg,

@@ -38,7 +38,7 @@ class ErrorCategory(str, Enum):
 
 _SAFE_MESSAGES = {
     ErrorCategory.PROVIDER_UNAVAILABLE: "The AI provider is temporarily unavailable. Local commands still work normally.",
-    ErrorCategory.PROVIDER_AUTH: "The AI provider rejected the configured credentials. Check ANTHROPIC_API_KEY in your .env file.",
+    ErrorCategory.PROVIDER_AUTH: "The AI provider rejected the configured credentials. Open Settings to check or replace your API key.",
     ErrorCategory.PROVIDER_RATE_LIMIT: "The AI provider is rate-limiting requests right now. Please try again shortly.",
     ErrorCategory.PROVIDER_TIMEOUT: "The AI provider did not respond in time. Please try again.",
     ErrorCategory.PROVIDER_ERROR: "The AI provider returned an error. Local commands still work normally.",

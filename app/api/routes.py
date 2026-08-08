@@ -186,7 +186,7 @@ def voice_speak(req: SpeakRequest) -> dict:
     if not settings.jarvis_tts_enabled:
         return {
             "success": False,
-            "message": "TTS is disabled. Set JARVIS_TTS_ENABLED=true in .env to enable.",
+            "message": "Voice output is turned off. Turn it on from the Voice page.",
         }
     result = tts_service.speak(req.text)
     return {"success": result.success, "message": result.message}

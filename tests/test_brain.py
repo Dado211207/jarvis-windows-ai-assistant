@@ -63,7 +63,11 @@ def test_generate_response_local_fallback_when_no_key():
 
     assert result.used_api is False
     assert result.provider == "local"
-    assert "Claude AI is not configured" in result.content
+    # The fallback must point somewhere a packaged-app user can actually
+    # go (the in-app Settings page), never at a .env file they don't have
+    # — see tests/test_no_developer_instructions_in_ui.py.
+    assert "settings" in result.content.lower()
+    assert ".env" not in result.content
     assert result.error is None
 
 

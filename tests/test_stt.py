@@ -109,7 +109,13 @@ def test_faster_whisper_adapter_unavailable_when_disabled_by_config():
         mock_settings.jarvis_stt_enabled = False
         available, reason = adapter.is_available()
     assert available is False
-    assert "disabled" in reason.lower()
+    # Asserts the reason is *actionable for a packaged-app user*, not
+    # that it contains one specific word: this message reaches the Voice
+    # page, where "set an env var" was never a step anyone using the
+    # installed .exe could take (see
+    # tests/test_no_developer_instructions_in_ui.py).
+    assert "turned off" in reason.lower()
+    assert "voice page" in reason.lower()
 
 
 def test_faster_whisper_adapter_unavailable_when_package_missing():
@@ -119,7 +125,8 @@ def test_faster_whisper_adapter_unavailable_when_package_missing():
         with patch.dict("sys.modules", {"faster_whisper": None}):
             available, reason = adapter.is_available()
     assert available is False
-    assert "not installed" in reason.lower()
+    assert "speech engine" in reason.lower()
+    assert "pip" not in reason.lower(), "a packaged-app user has no terminal to run pip in"
 
 
 def test_faster_whisper_adapter_refuses_to_download_without_explicit_opt_in():

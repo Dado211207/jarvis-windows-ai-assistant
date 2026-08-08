@@ -84,11 +84,19 @@ class FasterWhisperAdapter:
         from app.config import settings
 
         if not settings.jarvis_stt_enabled:
-            return False, "STT is disabled (set JARVIS_STT_ENABLED=true in .env to enable)."
+            return False, "Voice input is turned off. Turn it on from the Voice page to use push-to-talk."
         try:
             import faster_whisper  # noqa: F401
         except ImportError:
-            return False, "faster-whisper is not installed. Run: pip install -r requirements-voice.txt"
+            # No pip instruction here on purpose: someone running the
+            # installed JARVIS.exe has no terminal and no source tree to
+            # run pip in. The speech engine ships with the installer, so
+            # if it's genuinely missing, that's a broken install to
+            # report — not a step to hand the user.
+            return False, (
+                "The local speech engine isn't available in this installation. "
+                "Reinstalling JARVIS should restore it."
+            )
         return True, "faster-whisper is available."
 
     def _guided_install_dir(self) -> Path:

@@ -368,12 +368,16 @@ def test_voice_status_no_secrets_exposed(api_client):
 
 
 def test_voice_speak_disabled_returns_disabled_message(api_client):
-    """When TTS is disabled in config, /voice/speak returns a clear message."""
+    """When voice output is off, /voice/speak says so in terms a
+    packaged-app user can act on — the Voice page, not an env var in a
+    .env file they don't have (see
+    tests/test_no_developer_instructions_in_ui.py)."""
     r = api_client.post("/voice/speak", json={"text": "hello"})
     assert r.status_code == 200
     body = r.json()
     assert body["success"] is False
-    assert "disabled" in body["message"].lower()
+    assert "turned off" in body["message"].lower()
+    assert ".env" not in body["message"]
 
 
 def test_voice_speak_empty_text_returns_422(api_client):
