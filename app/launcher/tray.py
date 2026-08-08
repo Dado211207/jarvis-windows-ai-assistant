@@ -192,14 +192,18 @@ def run_tray_loop(running: RunningServer, host: str, port: int) -> None:
         running = server_runner.start_server_in_background(host=host, port=port)
         server_runner.wait_until_healthy(host=host, port=port)
 
+    quit_started = threading.Event()
+
     def do_quit() -> None:
+        if quit_started.is_set():
+            return  # a menu-driven Quit and a WM_CLOSE could both reach here
+        quit_started.set()
         logger.info("Tray: quitting JARVIS.")
         stop_event.set()
         gui.shutdown(running)  # stops uvicorn (whose own shutdown releases TTS/voice resources) and the instance lock
         client.close()
         win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, (hwnd, ICON_UID))
-        win32gui.DestroyWindow(hwnd)
-        win32gui.PostQuitMessage(0)
+        win32gui.DestroyWindow(hwnd)  # synchronously delivers WM_DESTROY, which posts WM_QUIT below
 
     def show_context_menu() -> None:
         # Built fresh from current state on every click — a native popup
@@ -240,6 +244,13 @@ def run_tray_loop(running: RunningServer, host: str, port: int) -> None:
     def wnd_proc(hwnd_, msg, wparam, lparam):
         if msg == WM_TRAYICON and lparam in (win32con.WM_LBUTTONUP, win32con.WM_RBUTTONUP):
             show_context_menu()
+            return 0
+        if msg == win32con.WM_CLOSE:
+            # A graceful `taskkill` (no /F) and Inno Setup's
+            # CloseApplicationsFilter (Restart Manager close request)
+            # both deliver WM_CLOSE, not WM_DESTROY — without this handler
+            # neither would ever reach do_quit()'s cleanup.
+            do_quit()
             return 0
         if msg == win32con.WM_DESTROY:
             win32gui.PostQuitMessage(0)
