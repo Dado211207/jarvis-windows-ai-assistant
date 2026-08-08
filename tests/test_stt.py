@@ -46,6 +46,11 @@ def test_fake_adapter_records_calls_for_test_introspection():
     assert adapter.calls[0] == (Path("/tmp/a.webm"), 5.0)
 
 
+def test_fake_adapter_model_status_matches_availability():
+    assert FakeSTTAdapter(available=True).model_status()[0] is True
+    assert FakeSTTAdapter(available=False).model_status()[0] is False
+
+
 # --- STTService resolution + override ---
 
 def test_service_is_unavailable_by_default_without_faster_whisper():
@@ -85,6 +90,15 @@ def test_service_override_none_restores_the_real_adapter():
     service.set_adapter_override(None)
     available, _reason = service.is_available()
     assert available is False  # back to the real (unconfigured) adapter
+
+
+def test_service_model_status_delegates_to_the_active_adapter():
+    service = STTService()
+    service.set_adapter_override(FakeSTTAdapter(available=True))
+    try:
+        assert service.model_status()[0] is True
+    finally:
+        service.set_adapter_override(None)
 
 
 # --- FasterWhisperAdapter: contract tested via mocking, never real inference ---
@@ -192,3 +206,57 @@ def test_faster_whisper_transcribe_never_raises_on_model_error():
     result = adapter.transcribe(Path("/tmp/x.webm"))
     assert result.success is False
     assert "/some/local/path" not in result.message  # no raw internals leaked
+
+
+# --- FasterWhisperAdapter.model_status(): never loads the model, never downloads ---
+
+def test_model_status_ready_when_local_path_exists(tmp_path):
+    model_dir = tmp_path / "whisper-tiny"
+    model_dir.mkdir()
+    adapter = FasterWhisperAdapter()
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.jarvis_stt_model_path = str(model_dir)
+        ready, detail = adapter.model_status()
+    assert ready is True
+    assert str(model_dir) in detail
+
+
+def test_model_status_missing_when_local_path_does_not_exist(tmp_path):
+    adapter = FasterWhisperAdapter()
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.jarvis_stt_model_path = str(tmp_path / "does-not-exist")
+        ready, detail = adapter.model_status()
+    assert ready is False
+    assert "does not exist" in detail.lower()
+
+
+def test_model_status_missing_but_will_download_when_opted_in():
+    adapter = FasterWhisperAdapter()
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.jarvis_stt_model_path = ""
+        mock_settings.jarvis_stt_allow_download = True
+        ready, detail = adapter.model_status()
+    assert ready is False
+    assert "download" in detail.lower()
+
+
+def test_model_status_missing_with_no_path_and_no_download_opt_in():
+    adapter = FasterWhisperAdapter()
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.jarvis_stt_model_path = ""
+        mock_settings.jarvis_stt_allow_download = False
+        ready, detail = adapter.model_status()
+    assert ready is False
+    assert detail
+
+
+def test_model_status_never_loads_the_model():
+    """Distinguishing feature from is_available(): must not trigger
+    _get_model() (which would load or download a real model)."""
+    adapter = FasterWhisperAdapter()
+    adapter._get_model = MagicMock(side_effect=AssertionError("model_status() must not load the model"))
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.jarvis_stt_model_path = ""
+        mock_settings.jarvis_stt_allow_download = False
+        adapter.model_status()
+    adapter._get_model.assert_not_called()

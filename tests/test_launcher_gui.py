@@ -182,3 +182,20 @@ def test_show_error_dialog_on_windows_calls_message_box(monkeypatch):
     args = fake_message_box.call_args.args
     assert args[1] == "Message"
     assert args[2] == "Title"
+
+
+# ---------------------------------------------------------------------------
+# dashboard_url() — routes through first-run setup until it's complete
+# ---------------------------------------------------------------------------
+
+def test_dashboard_url_points_at_setup_before_onboarding_complete(monkeypatch):
+    from app.launcher import gui
+    monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: False)
+    assert gui.dashboard_url().endswith("/ui/setup")
+
+
+def test_dashboard_url_points_at_dashboard_after_onboarding_complete(monkeypatch):
+    from app.launcher import gui
+    monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: True)
+    assert gui.dashboard_url().endswith("/ui/")
+    assert not gui.dashboard_url().endswith("/ui/setup")

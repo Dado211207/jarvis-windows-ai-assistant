@@ -62,3 +62,8 @@ async def actions_page(request: Request) -> HTMLResponse:
 @router.get("/help", response_class=HTMLResponse, include_in_schema=False)
 async def help_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "help.html", {"page": "help"})
+
+
+@router.get("/setup", response_class=HTMLResponse, include_in_schema=False)
+async def setup_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "setup.html", {"page": "setup"})

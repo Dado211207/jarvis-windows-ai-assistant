@@ -48,6 +48,7 @@ class STTResult:
 
 class STTAdapter(Protocol):
     def is_available(self) -> Tuple[bool, str]: ...
+    def model_status(self) -> Tuple[bool, str]: ...
     def transcribe(self, audio_path: Path, timeout_seconds: float) -> STTResult: ...
 
 
@@ -63,6 +64,9 @@ class FakeSTTAdapter:
 
     def is_available(self) -> Tuple[bool, str]:
         return self._available, ("fake adapter available" if self._available else "fake adapter forced unavailable")
+
+    def model_status(self) -> Tuple[bool, str]:
+        return self._available, ("fake model ready — test only" if self._available else "fake adapter forced unavailable")
 
     def transcribe(self, audio_path: Path, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> STTResult:
         self.calls.append((audio_path, timeout_seconds))
@@ -86,6 +90,23 @@ class FasterWhisperAdapter:
         except ImportError:
             return False, "faster-whisper is not installed. Run: pip install -r requirements-voice.txt"
         return True, "faster-whisper is available."
+
+    def model_status(self) -> Tuple[bool, str]:
+        """Whether a usable model is ready *right now* — never loads the
+        model or touches the network. Distinct from is_available(),
+        which only checks the feature is enabled and the package is
+        installed; a model can still be missing even when both are
+        true, which is exactly the case the first-run onboarding
+        checklist (and the guided model-install flow) needs to detect."""
+        from app.config import settings
+
+        if settings.jarvis_stt_model_path:
+            if Path(settings.jarvis_stt_model_path).exists():
+                return True, f"Local model ready at {settings.jarvis_stt_model_path}"
+            return False, f"JARVIS_STT_MODEL_PATH is set but does not exist: {settings.jarvis_stt_model_path}"
+        if settings.jarvis_stt_allow_download:
+            return False, "No local model yet — will download on first use (JARVIS_STT_ALLOW_DOWNLOAD=true)."
+        return False, "No local speech model installed yet."
 
     def _get_model(self):
         if self._model is not None:
@@ -159,6 +180,9 @@ class STTService:
 
     def is_available(self) -> Tuple[bool, str]:
         return self._adapter().is_available()
+
+    def model_status(self) -> Tuple[bool, str]:
+        return self._adapter().model_status()
 
     def transcribe(self, audio_path: Path, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> STTResult:
         available, reason = self.is_available()

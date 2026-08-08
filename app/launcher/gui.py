@@ -26,7 +26,15 @@ logger = get_logger("launcher.gui")
 
 
 def dashboard_url() -> str:
-    return f"http://{settings.jarvis_host}:{settings.jarvis_port}/ui/"
+    """Routes to the first-run setup page until it's been completed,
+    then the normal dashboard — the packaged app's only entry point, so
+    this is the one place that decides which a fresh install sees
+    first. app/launcher/tray.py's "Open Command Center" deliberately
+    does NOT go through this — it's a direct, explicit link to /ui/chat
+    regardless of onboarding state."""
+    from app.core.onboarding import is_onboarding_complete
+    path = "/ui/" if is_onboarding_complete() else "/ui/setup"
+    return f"http://{settings.jarvis_host}:{settings.jarvis_port}{path}"
 
 
 def _format_error_message(reason: str, correlation_id: str) -> str:

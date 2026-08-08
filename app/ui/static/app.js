@@ -719,6 +719,134 @@ async function voiceStop() {
   }
 }
 
+// ── Setup / first-run onboarding ─────────────────────────────────────────────
+
+const SETUP_READINESS_FIELDS = [
+  "core", "text_chat", "ai_provider", "mode",
+  "stt_runtime", "speech_model", "tts", "database", "windows_automation",
+];
+
+async function checkMicrophonePresence() {
+  const el = $("ready-microphone");
+  if (!el) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    el.textContent = "Not supported by this browser";
+    el.className = "status-row-value text-err";
+    return;
+  }
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const hasMic = devices.some(d => d.kind === "audioinput");
+    el.textContent = hasMic ? "Device detected" : "No microphone detected";
+    el.className = `status-row-value ${hasMic ? "text-ok" : "text-err"}`;
+  } catch (e) {
+    el.textContent = "Could not check (browser permissions)";
+    el.className = "status-row-value text-err";
+  }
+}
+
+async function refreshSetupReadiness() {
+  SETUP_READINESS_FIELDS.forEach(key => {
+    const el = $("ready-" + key);
+    if (el) { el.textContent = "…"; el.className = "status-row-value loading"; }
+  });
+
+  try {
+    const r = await API.get("/onboarding/readiness");
+    SETUP_READINESS_FIELDS.forEach(key => {
+      const el = $("ready-" + key);
+      const item = r[key];
+      if (!el || !item) return;
+      el.textContent = item.ready ? "Ready" : "Not ready";
+      el.className = `status-row-value ${item.ready ? "text-ok" : "text-err"}`;
+      el.title = item.detail;
+    });
+
+    const speechModelEl = $("setup-speech-model-status");
+    if (speechModelEl && r.speech_model) {
+      speechModelEl.textContent = r.speech_model.detail;
+      speechModelEl.className = `status-row-value ${r.speech_model.ready ? "text-ok" : "text-err"}`;
+    }
+  } catch (e) {
+    console.error("readiness check error", e);
+  }
+
+  checkMicrophonePresence();
+}
+
+async function refreshSetupKeyStatus() {
+  const el = $("setup-key-status");
+  if (!el) return;
+  try {
+    const r = await API.get("/settings/api-key-status");
+    el.textContent = r.configured ? "Configured" : "Not configured";
+    el.className = `status-row-value ${r.configured ? "text-ok" : "text-err"}`;
+  } catch (e) {
+    el.textContent = "Unknown";
+    el.className = "status-row-value";
+  }
+}
+
+function _setSetupKeyMessage(text, ok) {
+  const el = $("setup-key-message");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
+}
+
+function initSetup() {
+  refreshSetupReadiness();
+  refreshSetupKeyStatus();
+
+  const saveBtn = $("setup-key-save");
+  const removeBtn = $("setup-key-remove");
+  const input = $("setup-key-input");
+  const continueBtn = $("setup-continue");
+
+  if (saveBtn) saveBtn.addEventListener("click", async () => {
+    const value = input ? input.value.trim() : "";
+    if (!value) {
+      _setSetupKeyMessage("Enter a key first.", false);
+      return;
+    }
+    saveBtn.disabled = true;
+    try {
+      const r = await API.post("/settings/api-key", { api_key: value });
+      _setSetupKeyMessage(r.message, r.success);
+      if (r.success && input) input.value = "";
+      refreshSetupKeyStatus();
+      refreshSetupReadiness();
+    } catch (e) {
+      _setSetupKeyMessage("Could not reach the server.", false);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  if (removeBtn) removeBtn.addEventListener("click", async () => {
+    removeBtn.disabled = true;
+    try {
+      const r = await API.post("/settings/api-key/remove", {});
+      _setSetupKeyMessage(r.message, r.success);
+      refreshSetupKeyStatus();
+      refreshSetupReadiness();
+    } catch (e) {
+      _setSetupKeyMessage("Could not reach the server.", false);
+    } finally {
+      removeBtn.disabled = false;
+    }
+  });
+
+  if (continueBtn) continueBtn.addEventListener("click", async () => {
+    try {
+      await API.post("/onboarding/complete", {});
+    } catch (e) {
+      // Non-fatal — the dashboard is still reachable directly either way.
+    }
+    window.location.href = "/ui/";
+  });
+}
+
 function initVoice() {
   const on   = $("btn-speak-on");
   const off  = $("btn-speak-off");
@@ -1023,5 +1151,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initMemory();
   } else if (path === "/ui/voice") {
     initVoice();
+  } else if (path === "/ui/setup") {
+    initSetup();
   }
 });

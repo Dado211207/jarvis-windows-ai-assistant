@@ -346,3 +346,106 @@ def remove_api_key() -> ApiKeyActionResponse:
         logger.info("Anthropic API key removed from the OS credential store.")
         return ApiKeyActionResponse(success=True, message="API key removed.")
     return ApiKeyActionResponse(success=False, message="Could not remove the key from the OS credential store.")
+
+
+# ---------------------------------------------------------------------------
+# First-run onboarding readiness (v0.2 packaging). One place that answers
+# "is JARVIS actually ready to use, and if not, exactly which part isn't" —
+# the packaged app must never send a user to .env or a config folder to
+# find this out themselves. Microphone readiness is deliberately absent
+# here: only the browser can know whether a mic device/permission exists
+# (see app/ui/static/app.js's own getUserMedia-based check on the
+# onboarding page), a server process cannot observe it.
+# ---------------------------------------------------------------------------
+
+class ReadinessItem(BaseModel):
+    ready: bool
+    detail: str
+
+
+class OnboardingReadinessResponse(BaseModel):
+    core: ReadinessItem
+    text_chat: ReadinessItem
+    ai_provider: ReadinessItem
+    mode: ReadinessItem
+    stt_runtime: ReadinessItem
+    speech_model: ReadinessItem
+    tts: ReadinessItem
+    database: ReadinessItem
+    windows_automation: ReadinessItem
+
+
+@router.get("/onboarding/readiness", response_model=OnboardingReadinessResponse)
+def onboarding_readiness() -> OnboardingReadinessResponse:
+    import platform
+
+    from app.config import settings
+    from app.voice.stt import stt_service
+    from app.voice.tts import tts_service
+
+    db_ok = False
+    try:
+        from db.database import get_db
+        get_db().get_recent_logs(limit=1)
+        db_ok = True
+    except Exception:
+        pass
+
+    ai_ready = settings.has_anthropic_key
+    stt_ready, stt_detail = stt_service.is_available()
+    model_ready, model_detail = stt_service.model_status()
+    tts_ready = tts_service.is_available()
+    is_windows = platform.system() == "Windows"
+
+    return OnboardingReadinessResponse(
+        core=ReadinessItem(ready=True, detail="JARVIS core is running."),
+        text_chat=ReadinessItem(ready=True, detail="Text chat works regardless of any other setting below."),
+        ai_provider=ReadinessItem(
+            ready=ai_ready,
+            detail="Anthropic API key configured." if ai_ready else "No Anthropic API key configured yet.",
+        ),
+        mode=ReadinessItem(
+            ready=True,
+            detail=(
+                "Cloud AI mode — natural-language questions use Claude."
+                if ai_ready else
+                "Local-only mode — deterministic commands work; natural-language chat uses simple local replies."
+            ),
+        ),
+        stt_runtime=ReadinessItem(ready=stt_ready, detail=stt_detail),
+        speech_model=ReadinessItem(ready=model_ready, detail=model_detail),
+        tts=ReadinessItem(
+            ready=tts_ready,
+            detail="Local text-to-speech engine available." if tts_ready else "pyttsx3 is not available on this system.",
+        ),
+        database=ReadinessItem(ready=db_ok, detail="SQLite database is accessible." if db_ok else "SQLite database could not be reached."),
+        windows_automation=ReadinessItem(
+            ready=True,
+            detail=(
+                "Windows action tools active (app launcher, folders, safe URLs)."
+                if is_windows else
+                "Running outside Windows — Windows-specific actions use a limited POSIX fallback (development only)."
+            ),
+        ),
+    )
+
+
+class OnboardingCompleteResponse(BaseModel):
+    success: bool
+
+
+@router.get("/onboarding/complete", response_model=OnboardingCompleteResponse)
+def onboarding_complete_status() -> OnboardingCompleteResponse:
+    from app.core.onboarding import is_onboarding_complete
+    return OnboardingCompleteResponse(success=is_onboarding_complete())
+
+
+@router.post(
+    "/onboarding/complete",
+    response_model=OnboardingCompleteResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def mark_onboarding_complete() -> OnboardingCompleteResponse:
+    from app.core.onboarding import mark_onboarding_complete as _mark
+    _mark()
+    return OnboardingCompleteResponse(success=True)

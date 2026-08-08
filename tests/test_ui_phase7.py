@@ -37,6 +37,7 @@ def api_client():
     "/ui/logs",
     "/ui/memory",
     "/ui/help",
+    "/ui/setup",
 ])
 def test_all_ui_pages_return_200(api_client, path):
     r = api_client.get(path)
@@ -76,6 +77,7 @@ def test_sidebar_nav_links_all_present(api_client):
     assert "/ui/memory" in html
     assert "/ui/voice" in html
     assert "/ui/help" in html
+    assert "/ui/setup" in html
 
 
 def test_sidebar_local_badge_present(api_client):
@@ -204,6 +206,50 @@ def test_help_has_planned_section(api_client):
     assert "planned" in html
 
 
+# ── Setup / first-run onboarding page ───────────────────────────────────────────
+
+def test_setup_readiness_ids_present(api_client):
+    r = api_client.get("/ui/setup")
+    html = r.text
+    for field in (
+        "core", "text_chat", "ai_provider", "mode", "microphone",
+        "stt_runtime", "speech_model", "tts", "database", "windows_automation",
+    ):
+        assert f'id="ready-{field}"' in html
+
+
+def test_setup_api_key_controls_present(api_client):
+    r = api_client.get("/ui/setup")
+    html = r.text
+    assert 'id="setup-key-input"' in html
+    assert 'id="setup-key-save"' in html
+    assert 'id="setup-key-remove"' in html
+    assert 'id="setup-key-status"' in html
+
+
+def test_setup_continue_button_present(api_client):
+    r = api_client.get("/ui/setup")
+    assert 'id="setup-continue"' in r.text
+
+
+def test_setup_does_not_send_user_to_env_file(api_client):
+    """The whole point of this page: no user is sent to .env to finish
+    setup. (The page's own reassuring copy legitimately says "you won't
+    need PowerShell" — mentioning the word to rule it out is fine; a
+    real PowerShell *command* block would not be, which is what the
+    absence of a <code> block containing one below actually checks.)"""
+    r = api_client.get("/ui/setup")
+    html = r.text.lower()
+    assert ".env" not in html
+    assert "set-executionpolicy" not in html
+    assert ".ps1" not in html
+
+
+def test_setup_api_key_input_is_password_type(api_client):
+    r = api_client.get("/ui/setup")
+    assert 'type="password"' in r.text
+
+
 # ── CSS design system ─────────────────────────────────────────────────────────
 
 def test_css_served_with_correct_content_type(api_client):
@@ -281,7 +327,7 @@ def test_js_no_api_key_exposure(api_client):
 
 @pytest.mark.parametrize("path", [
     "/ui/", "/ui/chat", "/ui/actions", "/ui/voice",
-    "/ui/logs", "/ui/memory",
+    "/ui/logs", "/ui/memory", "/ui/setup",
 ])
 def test_no_api_key_in_ui_pages(api_client, path):
     r = api_client.get(path)

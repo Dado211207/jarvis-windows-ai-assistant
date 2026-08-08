@@ -310,7 +310,7 @@ def test_ui_nav_includes_actions_link(api_client):
 
 
 def test_ui_nav_actions_link_on_all_pages(api_client):
-    for path in ("/ui/", "/ui/chat", "/ui/logs", "/ui/memory", "/ui/voice", "/ui/help"):
+    for path in ("/ui/", "/ui/chat", "/ui/logs", "/ui/memory", "/ui/voice", "/ui/help", "/ui/setup"):
         r = api_client.get(path)
         assert "/ui/actions" in r.text, f"Actions link missing on {path}"
 
