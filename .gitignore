@@ -40,7 +40,15 @@ jarvis.lock
 
 # PyInstaller
 *.spec
+!packaging/jarvis.spec
 JARVIS-Windows-Build.zip
+
+# Windows installer build output (scripts/build-installer.ps1) — never
+# committed; see docs/THIRD_PARTY_NOTICES.md and the packaging report
+# for how CI publishes the real installer as a private artifact instead.
+packaging/build/
+packaging/dist/
+installer-output/
 
 # IDE
 .idea/
