@@ -73,6 +73,8 @@ def _make_handlers(close_action: str, on_quit: Callable[[], None]):
     via an injected fake webview module in create_and_run()."""
 
     def on_closing() -> Optional[bool]:
+        from app.launcher import boot_trace
+        boot_trace.trace(f"webview on_closing (close_action={close_action}, shutdown_requested={_shutdown_requested.is_set()})")
         if _shutdown_requested.is_set():
             # A real shutdown is already underway (tray Quit, or anything
             # else that called request_shutdown()). Close-to-tray must
@@ -91,10 +93,13 @@ def _make_handlers(close_action: str, on_quit: Callable[[], None]):
 
     def on_closed() -> None:
         global _window
+        from app.launcher import boot_trace
+        boot_trace.trace("webview on_closed")
         with _window_lock:
             _window = None
         if close_action == "quit":
             on_quit()
+        boot_trace.trace("webview on_closed returned")
 
     return on_closing, on_closed
 
@@ -144,8 +149,11 @@ def create_and_run(
     with _window_lock:
         _window = window
 
+    from app.launcher import boot_trace
     logger.info("Starting native window (close_action=%s).", close_action)
+    boot_trace.trace("webview.start() calling")
     webview.start(gui="edgechromium", icon=icon_path, debug=False)
+    boot_trace.trace("webview.start() returned")
 
 
 def show_existing() -> bool:

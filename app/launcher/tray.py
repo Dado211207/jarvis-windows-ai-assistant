@@ -237,6 +237,8 @@ def run_tray_loop(
     def do_quit() -> None:
         if quit_started.is_set():
             return  # a menu-driven Quit and a WM_CLOSE could both reach here
+        from app.launcher import boot_trace
+        boot_trace.trace("tray do_quit() starting")
         quit_started.set()
         logger.info("Tray: quitting JARVIS.")
         stop_event.set()
@@ -245,10 +247,13 @@ def run_tray_loop(
         # webview_window.request_shutdown()'s docstring for the real CI
         # failure that made that necessary.
         webview_window.destroy_existing()  # lets the main thread's webview.start() return, if a native window exists
+        boot_trace.trace("tray do_quit() window destroyed")
         gui.shutdown(running)  # stops uvicorn (whose own shutdown releases TTS/voice resources) and the instance lock
+        boot_trace.trace("tray do_quit() server shut down")
         client.close()
         win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, (hwnd, ICON_UID))
         win32gui.DestroyWindow(hwnd)  # synchronously delivers WM_DESTROY, which posts WM_QUIT below
+        boot_trace.trace("tray do_quit() finished")
 
     def show_context_menu() -> None:
         # Built fresh from current state on every click — a native popup
@@ -344,4 +349,7 @@ def run_tray_loop(
     )
     poll_thread.start()
 
+    from app.launcher import boot_trace
+    boot_trace.trace("tray PumpMessages() starting")
     win32gui.PumpMessages()
+    boot_trace.trace("tray PumpMessages() returned")

@@ -23,6 +23,7 @@ for any reason, this falls back to opening the dashboard in the user's
 default browser, so JARVIS keeps working either way.
 """
 
+import os
 import sys
 import threading
 import uuid
@@ -36,6 +37,7 @@ from app.logging_config import get_logger, setup_logging
 logger = get_logger("launcher.gui")
 
 TRAY_HWND_READY_TIMEOUT_SECONDS = 10.0
+TRAY_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 def dashboard_url() -> str:
@@ -189,18 +191,51 @@ def run_windowed() -> None:
         # into do_quit() would touch Win32 objects the tray thread owns
         # from the wrong thread; PostMessage is the correct, standard way
         # to hand control back to the thread that owns them.
+        boot_trace.trace("_request_tray_quit() called")
         if not tray_hwnd_ready.wait(timeout=TRAY_HWND_READY_TIMEOUT_SECONDS):
             logger.warning("Tray window never signalled ready — shutting down directly instead.")
+            boot_trace.trace("_request_tray_quit() tray hwnd never ready; direct shutdown")
             shutdown(running)
             return
         hwnd = tray_hwnd.get("value")
         if hwnd is None:
+            boot_trace.trace("_request_tray_quit() hwnd missing; direct shutdown")
             shutdown(running)
             return
         import win32con
         import win32gui
+        boot_trace.trace("_request_tray_quit() posting WM_CLOSE to tray")
         win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
 
+    boot_trace.trace("run_windowed() opening main window")
     _open_main_window(running, _request_tray_quit)
+    boot_trace.trace("run_windowed() main window returned; joining tray thread")
 
-    tray_thread.join()
+    # A bounded join, then a forced exit, deliberately — not an
+    # optimistic wait. Two real windows-latest CI failures in a row
+    # ended with the packaged app still alive 15s after a graceful
+    # taskkill, and an unbounded join() here means any single
+    # non-terminating step anywhere in shutdown (a native window's
+    # message loop, a cross-thread Win32 call that never returns)
+    # silently becomes "this app cannot be closed" — the worst possible
+    # behavior for a desktop application, and one that also blocks the
+    # installer's own CloseApplications step at uninstall time.
+    #
+    # Everything that actually matters for data integrity has already
+    # completed before this point: gui.shutdown() stops uvicorn (whose
+    # lifespan shutdown releases TTS/voice resources) and releases the
+    # instance lock, and SQLite has committed each write as it went —
+    # there is no buffered application state left to flush here. So a
+    # forced exit at this point ends a process that is already done,
+    # rather than risking an unkillable one.
+    tray_thread.join(timeout=TRAY_SHUTDOWN_TIMEOUT_SECONDS)
+    if tray_thread.is_alive():
+        logger.warning(
+            "Tray thread did not finish within %.0fs of the window closing — "
+            "forcing exit so JARVIS never becomes unclosable.",
+            TRAY_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+        boot_trace.trace("run_windowed() tray thread still alive after timeout; forcing exit")
+        shutdown(running)  # idempotent; guarantees the lock is released even on this path
+        os._exit(0)
+    boot_trace.trace("run_windowed() clean exit")

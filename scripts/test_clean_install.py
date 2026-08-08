@@ -290,7 +290,17 @@ def phase_a_install_launch_and_stop(installer: Path, log_dir: Path) -> None:
         result = subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
         print(result.stdout.strip() or result.stderr.strip())
         if not wait_for_pid_exit(proc.pid):
-            _fail(f"JARVIS.exe (pid={proc.pid}) did not exit within {PROCESS_EXIT_TIMEOUT_SECONDS}s of a graceful taskkill.")
+            # Same reasoning as wait_for_health()'s own failure path: a
+            # shutdown that never completes is a dead end without the
+            # app's own trace, and boot_trace.py is deliberately
+            # independent of the logging subsystem so it still records
+            # something even when logging itself is the broken part.
+            _fail(
+                f"JARVIS.exe (pid={proc.pid}) did not exit within {PROCESS_EXIT_TIMEOUT_SECONDS}s "
+                f"of a graceful taskkill.\n"
+                f"JARVIS's own log ({expected_log_file()}):\n{_read_file_tail(expected_log_file())}\n"
+                f"Boot trace ({expected_boot_trace_file()}):\n{_read_file_tail(expected_boot_trace_file())}"
+            )
         wait_for_health_to_stop()
         print("OK: process exited and the health endpoint stopped responding")
     finally:
