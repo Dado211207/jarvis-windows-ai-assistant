@@ -17,6 +17,7 @@ import httpx
 import uvicorn
 
 from app.config import settings
+from app.launcher import boot_trace
 from app.logging_config import get_logger
 
 logger = get_logger("launcher.server_runner")
@@ -47,9 +48,12 @@ def _run_server(server: uvicorn.Server) -> None:
     it here means a real startup failure (a missing frozen-build import,
     a bind error, etc.) is at least visible in the log file, not just
     "never became healthy" with no further explanation."""
+    boot_trace.trace("_run_server() thread: calling server.run()")
     try:
         server.run()
-    except Exception:
+        boot_trace.trace("_run_server() thread: server.run() returned normally")
+    except Exception as e:
+        boot_trace.trace(f"_run_server() thread: server.run() raised {type(e).__name__}: {e}")
         logger.error("Background uvicorn server crashed.", exc_info=True)
 
 
@@ -57,8 +61,10 @@ def start_server_in_background(host: Optional[str] = None, port: Optional[int] =
     """*host*/*port* default to settings; tests pass explicit values for
     isolation on an ephemeral port, matching db/migrations.py::create_tables()'s
     own default-from-settings-but-overridable-for-tests pattern."""
+    boot_trace.trace("start_server_in_background() importing app.api.server")
     from app.api.server import app as fastapi_app
 
+    boot_trace.trace("start_server_in_background() import succeeded")
     host = host if host is not None else settings.jarvis_host
     port = port if port is not None else settings.jarvis_port
 

@@ -149,6 +149,12 @@ def test_health_wait_failure_surfaces_the_apps_own_log():
     calls = _find_calls(wait_for_health, "_fail")
     assert calls, "expected wait_for_health() to call _fail()"
     assert any("log_tail" in ast.dump(call) for call in calls)
+    assert any("trace_tail" in ast.dump(call) for call in calls), (
+        "a health-wait failure must also surface app/launcher/boot_trace.py's "
+        "own trace file — added after jarvis.log itself turned up completely "
+        "empty on a real CI failure, meaning the problem was before any "
+        "logger.*() call ever ran"
+    )
 
 
 # ---------------------------------------------------------------------------

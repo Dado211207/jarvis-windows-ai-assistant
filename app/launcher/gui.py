@@ -19,7 +19,7 @@ import webbrowser
 from typing import Optional
 
 from app.config import settings
-from app.launcher import instance_lock, server_runner
+from app.launcher import boot_trace, instance_lock, server_runner
 from app.logging_config import get_logger, setup_logging
 
 logger = get_logger("launcher.gui")
@@ -64,9 +64,12 @@ def launch() -> Optional[server_runner.RunningServer]:
     _fail -> sys.exit(1)) on any startup failure — callers should treat
     this as always either returning a usable RunningServer or not
     returning at all."""
+    boot_trace.trace("launch() starting")
     setup_logging()
+    boot_trace.trace("setup_logging() returned")
 
     check = instance_lock.check_existing_instance(settings.jarvis_host, settings.jarvis_port)
+    boot_trace.trace(f"check_existing_instance() -> another_running={check.another_instance_running} port_conflict={check.port_in_use_by_other}")
     if check.another_instance_running:
         logger.info("JARVIS is already running (pid=%s) — opening its dashboard instead of starting a second copy.", check.pid)
         webbrowser.open(dashboard_url())
@@ -80,13 +83,17 @@ def launch() -> Optional[server_runner.RunningServer]:
         return None  # unreachable — _fail() exits the process
 
     instance_lock.acquire_lock()
+    boot_trace.trace("lock acquired, starting server")
     running = server_runner.start_server_in_background()
+    boot_trace.trace("start_server_in_background() returned, waiting for health")
 
     if not server_runner.wait_until_healthy():
+        boot_trace.trace("wait_until_healthy() timed out")
         shutdown(running)
         _fail("JARVIS's local server did not become healthy in time.")
         return None  # unreachable
 
+    boot_trace.trace("wait_until_healthy() succeeded, opening dashboard")
     logger.info("JARVIS is healthy — opening the dashboard.")
     webbrowser.open(dashboard_url())
     return running
