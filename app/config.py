@@ -58,8 +58,23 @@ class Settings(BaseSettings):
         return default_screenshots_dir()
 
     @property
+    def effective_api_key(self) -> str:
+        """The Anthropic API key actually in effect. ANTHROPIC_API_KEY
+        (env var / .env) always wins when set — this is what development
+        and CI use, and it must never be shadowed by a credential store
+        that may not even exist in that context. Only when it's unset
+        does this fall back to the OS credential store (set via the
+        packaged app's onboarding/settings UI — see
+        app/core/credentials.py, which never raises even if the store
+        is unavailable)."""
+        if self.anthropic_api_key.strip():
+            return self.anthropic_api_key
+        from app.core.credentials import get_stored_api_key
+        return get_stored_api_key()
+
+    @property
     def has_anthropic_key(self) -> bool:
-        return bool(self.anthropic_api_key.strip())
+        return bool(self.effective_api_key.strip())
 
 
 settings = Settings()

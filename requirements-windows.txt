@@ -3,16 +3,22 @@
 # platform. Installed only by scripts/build-installer.ps1 before running
 # PyInstaller.
 #
-# Kept out of requirements.txt deliberately: both packages below ship
-# native code that either can't be imported (pywin32 has no non-Windows
-# wheel at all) or actively crashes (a display-probing library would)
-# outside Windows. app/launcher/tray.py already keeps every import of
-# these strictly local to the one function that needs it — this file is
-# a second, belt-and-suspenders layer: neither package is even present
-# unless you're actually building the Windows installer.
-# See docs/THIRD_PARTY_NOTICES.md for the license/maintenance reasoning,
-# including why this is pywin32 and not pystray.
+# Kept out of requirements.txt deliberately:
+#   - pywin32 has no non-Windows wheel at all (import fails outright).
+#   - keyring is technically importable elsewhere, but its Windows
+#     credential-store use only matters for the packaged app — dev/CI
+#     always set ANTHROPIC_API_KEY directly (see
+#     app/config.py::Settings.effective_api_key), and every keyring call
+#     already runs through app/core/credentials.py's own isolation, so
+#     nothing breaks if it's simply absent (get_stored_api_key() etc.
+#     just return a safe empty/False result).
+# app/launcher/tray.py and app/core/credentials.py both keep every
+# import of these strictly local to the function that needs it — this
+# file is a second, belt-and-suspenders layer on top of that.
+# See docs/THIRD_PARTY_NOTICES.md for the full license/maintenance
+# reasoning, including why the tray is pywin32 and not pystray.
 #
 #   pip install -r requirements.txt -r requirements-windows.txt
 #
 pywin32==312
+keyring==25.7.0

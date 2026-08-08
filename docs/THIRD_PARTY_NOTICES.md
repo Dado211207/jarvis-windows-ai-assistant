@@ -74,7 +74,53 @@ on the `pystray` library originally used in this pass's first draft.
   necessarily the manual Windows acceptance test, not automation — see
   the packaging report.
 
-### Where this ships
+## API key storage: keyring
+
+**Purpose:** stores the Anthropic API key in the Windows credential
+store (`app/core/credentials.py`) instead of a plaintext `.env` file —
+see `app/config.py::Settings.effective_api_key`.
+
+- **Version pinned:** `25.7.0` (see `requirements-windows.txt`),
+  uploaded 2025-11-16 — actively maintained.
+- **License:** MIT (confirmed via PyPI classifier). Permissive.
+- **Transitive dependency closure, every one individually verified via
+  PyPI (not assumed from keyring's own reputation):**
+
+  | Package | Condition | License |
+  |---|---|---|
+  | `pywin32-ctypes` | `sys_platform == "win32"` (this project's target) | BSD-3-Clause |
+  | `jaraco.classes` | unconditional | MIT |
+  | `jaraco.functools` | unconditional | MIT |
+  | `jaraco.context` | unconditional | MIT |
+  | `importlib_metadata` | `python_version < "3.12"` (applies — this project pins 3.11) | Apache-2.0 |
+  | `SecretStorage`, `jeepney` | `sys_platform == "linux"` | not applicable — never installed on the Windows build |
+
+  Every entry that actually applies to a Windows install is permissive;
+  no copyleft license anywhere in the closure. Note `pywin32-ctypes` is
+  a distinct, smaller package from the `pywin32` used by the tray (a
+  ctypes-only subset keyring depends on so it doesn't require the full
+  `pywin32` install) — both are pinned here and coexist without
+  conflict.
+- **A real robustness finding, not a hypothetical:** during development,
+  calling `keyring.get_password()` in this project's own Linux sandbox
+  crashed with a Rust-level `pyo3_runtime.PanicException` (a broken
+  `cryptography`/`cffi` native extension backing keyring's Linux
+  `SecretService` backend) — and a plain same-thread `try/except
+  Exception` around that call did **not** catch it; the interpreter
+  just exited. `app/core/credentials.py` isolates every keyring call on
+  its own thread with a bounded timeout (the same pattern already used
+  for tool execution and STT transcription) specifically because this
+  was observed, not assumed — verified empirically that reading the
+  result through `concurrent.futures.Future.result()` does catch it
+  reliably, restoring the "external call can never crash or hang the
+  caller" guarantee. The real target platform's backend
+  (`pywin32-ctypes`-based `WinVaultKeyring`) never goes near
+  `cryptography`/`SecretStorage`/Rust at all, so this exact failure
+  mode is Linux-sandbox-specific — but the isolation stays in place
+  regardless, on the same "don't fully trust an external call" basis
+  the rest of this codebase already applies elsewhere.
+
+## Where this ships
 
 `scripts/build-installer.ps1` copies this file into the PyInstaller
 onedir output as `THIRD_PARTY_NOTICES.md`, and the Inno Setup installer
@@ -89,6 +135,4 @@ repository's docs.
 - **Pillow:** MIT-CMU (SPDX `license_expression`, confirmed via PyPI).
   Permissive. Already a `requirements.txt` dependency (screenshots) —
   listed here because `app/launcher/tray.py`'s icon handling also uses
-  it, not because packaging introduced it. pywin32 itself has zero
-  transitive dependencies (`Requires-Dist: None`), so there is nothing
-  else in the Windows packaging closure to disclose.
+  it, not because packaging introduced it.

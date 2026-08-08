@@ -81,7 +81,7 @@ class Brain:
         try:
             import anthropic
             client = anthropic.Anthropic(
-                api_key=settings.anthropic_api_key,
+                api_key=settings.effective_api_key,
                 timeout=float(settings.jarvis_ai_timeout_seconds),
             )
             message = client.messages.create(

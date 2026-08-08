@@ -286,3 +286,63 @@ def privacy_status() -> PrivacyStatusResponse:
         active=privacy_mode.active,
         changed_at=changed_at.isoformat() if changed_at else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Anthropic API key storage (v0.2 packaging) — set through this local API
+# (the packaged app's first-run/settings UI), stored via the OS credential
+# store, never echoed back once submitted. See app/core/credentials.py and
+# app/config.py::Settings.effective_api_key for where ANTHROPIC_API_KEY
+# (dev/CI) still takes precedence when set.
+# ---------------------------------------------------------------------------
+
+class ApiKeyStatusResponse(BaseModel):
+    configured: bool
+
+
+class SetApiKeyRequest(BaseModel):
+    api_key: str
+
+    @field_validator("api_key")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("api_key must not be blank")
+        return value
+
+
+class ApiKeyActionResponse(BaseModel):
+    success: bool
+    message: str
+
+
+@router.get("/settings/api-key-status", response_model=ApiKeyStatusResponse)
+def api_key_status() -> ApiKeyStatusResponse:
+    from app.config import settings
+    return ApiKeyStatusResponse(configured=settings.has_anthropic_key)
+
+
+@router.post(
+    "/settings/api-key",
+    response_model=ApiKeyActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
+    from app.core.credentials import set_stored_api_key
+    if set_stored_api_key(req.api_key.strip()):
+        logger.info("Anthropic API key stored via the OS credential store.")
+        return ApiKeyActionResponse(success=True, message="API key saved.")
+    return ApiKeyActionResponse(success=False, message="Could not save the key to the OS credential store.")
+
+
+@router.post(
+    "/settings/api-key/remove",
+    response_model=ApiKeyActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def remove_api_key() -> ApiKeyActionResponse:
+    from app.core.credentials import clear_stored_api_key
+    if clear_stored_api_key():
+        logger.info("Anthropic API key removed from the OS credential store.")
+        return ApiKeyActionResponse(success=True, message="API key removed.")
+    return ApiKeyActionResponse(success=False, message="Could not remove the key from the OS credential store.")
