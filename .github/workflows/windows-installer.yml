@@ -46,7 +46,10 @@ jobs:
           cache: "pip"
 
       - name: Install Inno Setup
-        run: choco install innosetup --version=6.7.3 --no-progress -y
+        # 6.7.1, not the upstream-latest 6.7.3: Chocolatey's community
+        # package repository lags upstream and does not carry 6.7.3 — see
+        # packaging/jarvis.iss's header comment for the verified detail.
+        run: choco install innosetup --version=6.7.1 --no-progress -y
 
       - name: Build the installer (dependencies, tests, PyInstaller, Inno Setup, checksum)
         shell: pwsh

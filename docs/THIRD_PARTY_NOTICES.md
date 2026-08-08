@@ -155,8 +155,12 @@ dependency this pass touches, build-time or not.
   because PyInstaller's own GPL-covered source is not redistributed as
   part of the built executable in a way that would trigger that
   obligation.
-- **Inno Setup** (pinned `6.7.3` — see `packaging/jarvis.iss`'s own
-  header comment for why 6.x was chosen over the newer 7.0.2): a
+- **Inno Setup** (pinned `6.7.1` — the newest version actually published
+  on Chocolatey's community package repository, which is how this
+  project's build pipeline installs it; upstream's own latest is 6.7.3,
+  confirmed via jrsoftware.org/isdl.php, but Chocolatey lags upstream —
+  see `packaging/jarvis.iss`'s own header comment for the verified
+  detail and why 6.x was chosen over the newer 7.0.2 regardless): a
   modified zlib/libpng license (permissive, free for any use including
   commercial — verified via jrsoftware.org/files/is/license.txt
   directly, not assumed from the separate, non-binding "please consider

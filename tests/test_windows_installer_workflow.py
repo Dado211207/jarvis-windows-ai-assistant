@@ -43,9 +43,15 @@ def test_runs_on_windows_latest():
 
 
 def test_pins_the_same_inno_setup_version_as_jarvis_iss():
+    """6.7.1, not upstream's own latest (6.7.3) — Chocolatey's community
+    package repository, which is what this workflow actually installs
+    from, lags upstream and does not carry 6.7.3. An earlier pin at
+    6.7.3 here failed real CI for exactly that reason ("the package was
+    not found with the source(s) listed"); see packaging/jarvis.iss's
+    header comment for the verified detail."""
     iss_content = (REPO_ROOT / "packaging" / "jarvis.iss").read_text(encoding="utf-8")
-    assert "6.7.3" in iss_content  # sanity: the version this workflow must match
-    assert "--version=6.7.3" in _read()
+    assert "6.7.1" in iss_content  # sanity: the version this workflow must match
+    assert "--version=6.7.1" in _read()
 
 
 def test_build_script_runs_before_clean_install_test():

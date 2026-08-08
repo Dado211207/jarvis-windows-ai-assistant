@@ -101,7 +101,7 @@ $IsccCandidates.Add("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")
 $IsccCandidates.Add("${env:ProgramFiles}\Inno Setup 6\ISCC.exe")
 $Iscc = $IsccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $Iscc) {
-    throw "ISCC.exe (the Inno Setup compiler) was not found on PATH or in the usual Program Files locations. Install Inno Setup 6.x, e.g.: choco install innosetup --version=6.7.3"
+    throw "ISCC.exe (the Inno Setup compiler) was not found on PATH or in the usual Program Files locations. Install Inno Setup 6.x, e.g.: choco install innosetup --version=6.7.1"
 }
 Write-Host "Inno Setup compiler: $Iscc"
 

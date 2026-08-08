@@ -1,13 +1,20 @@
 ; JARVIS Windows installer — Inno Setup script.
 ;
-; Pinned/documented target: Inno Setup 6.7.3 (the latest stable 6.x
-; release at the time of writing — verified via jrsoftware.org/isdl.php,
-; not assumed. Inno Setup 7.0.2 exists but 6.x was chosen deliberately:
-; it is the long-established, CI-tooling-mature line (available via
-; Chocolatey's innosetup package, used in this project's
-; scripts/build-installer.ps1 and .github/workflows/windows-installer.yml)
-; versus a very recent major-version release with less-proven automation
-; support. Inno Setup itself is a modified zlib/libpng license
+; Pinned/documented target: Inno Setup 6.7.1. The actual latest stable
+; 6.x release upstream is 6.7.3 (jrsoftware.org/isdl.php) — but this
+; project's build pipeline installs Inno Setup via Chocolatey
+; (scripts/build-installer.ps1 and
+; .github/workflows/windows-installer.yml), and Chocolatey's community
+; package repository lags upstream: 6.7.1 is the newest version actually
+; published there (verified directly against
+; community.chocolatey.org/api/v2/FindPackagesById()?id='innosetup', not
+; assumed — an earlier pin at 6.7.3 failed CI for exactly this reason,
+; "the package was not found with the source(s) listed"). 6.x was chosen
+; deliberately over 7.0.2: it is the long-established, CI-tooling-mature
+; line versus a very recent major-version release with less-proven
+; automation support; a two-patch-release gap behind upstream within the
+; 6.x line has no bearing on that reasoning. Inno Setup itself is a
+; modified zlib/libpng license
 ; (permissive, free for any use including commercial — verified via
 ; jrsoftware.org/files/is/license.txt, not assumed from the website's
 ; separate, non-binding "please consider a commercial license" donation
