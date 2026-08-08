@@ -1,11 +1,13 @@
 """PyInstaller entry point for the JARVIS Windows executable.
 
 Default (no arguments): the real packaged-app experience — single
-instance guard, background server, health-wait, browser-open, and a
-system tray control (app/launcher/). This is also the only correct
-default for the installed JARVIS.exe, which is built --windowed
-(console=False): that build has no console at all, so the interactive
-CLI below cannot function in it regardless of arguments.
+instance guard, background server, health-wait, a native desktop window
+(falling back to the default browser if the native window can't be
+created — see app/launcher/webview_window.py), and a system tray control
+(app/launcher/). This is also the only correct default for the installed
+JARVIS.exe, which is built --windowed (console=False): that build has no
+console at all, so the interactive CLI below cannot function in it
+regardless of arguments.
 
 --api starts only the local FastAPI server (headless, console-mode
 builds/dev use), unchanged from before this file grew a windowed mode.

@@ -39,6 +39,17 @@ hidden_imports = [
     "keyring.backends.Windows",
 ]
 
+# webview/pythonnet (native desktop window, release-candidate packaging
+# pass — see app/launcher/webview_window.py and
+# docs/THIRD_PARTY_NOTICES.md): included in the collect_all() loop below
+# rather than just hiddenimports, on the same "known empirically, not by
+# guesswork, to need full submodule+data collection" basis already
+# established for pydantic_settings/anthropic/pyttsx3 — a frozen build
+# that silently fails to find its native GUI backend would fail exactly
+# the same "process stays alive, health check never answers" way that
+# happened before, hard to tell apart from any other startup issue
+# without a real windows-latest CI run to confirm it either way.
+
 # Deliberately NOT bundled: .env.example (the packaged app must never
 # need it — see app/ui/templates/setup.html and the onboarding flow),
 # and faster-whisper (optional, requirements-voice.txt only; the base
@@ -67,7 +78,7 @@ binaries = []
 # outright. collect_all is additive and can only include more than the
 # default analysis would, so applying it here is a safe, proven step
 # regardless of exactly which submodule was missing.
-for _pkg in ("pydantic_settings", "anthropic", "pyttsx3"):
+for _pkg in ("pydantic_settings", "anthropic", "pyttsx3", "webview", "pythonnet", "clr_loader"):
     _pkg_datas, _pkg_binaries, _pkg_hiddenimports = collect_all(_pkg)
     datas += _pkg_datas
     binaries += _pkg_binaries

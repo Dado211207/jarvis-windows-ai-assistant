@@ -12,9 +12,19 @@
 #     already runs through app/core/credentials.py's own isolation, so
 #     nothing breaks if it's simply absent (get_stored_api_key() etc.
 #     just return a safe empty/False result).
-# app/launcher/tray.py and app/core/credentials.py both keep every
-# import of these strictly local to the function that needs it — this
-# file is a second, belt-and-suspenders layer on top of that.
+#   - pywebview + pythonnet: pywebview's only Windows backend
+#     (webview/platforms/winforms.py) needs pythonnet (.NET/CLR
+#     interop) — verified directly against the real pywebview 6.2.1
+#     source, not assumed. Both are import-local to
+#     app/launcher/webview_window.py's create_and_run(), the one
+#     function that actually builds a real native window — see that
+#     module's docstring for why it forces the modern WebView2/Chromium
+#     backend and refuses to silently fall back to the legacy
+#     mshtml/IE engine.
+# app/launcher/tray.py, app/launcher/webview_window.py, and
+# app/core/credentials.py all keep every import of these strictly local
+# to the function that needs it — this file is a second,
+# belt-and-suspenders layer on top of that.
 # See docs/THIRD_PARTY_NOTICES.md for the full license/maintenance
 # reasoning, including why the tray is pywin32 and not pystray.
 #
@@ -22,3 +32,5 @@
 #
 pywin32==312
 keyring==25.7.0
+pywebview==6.2.1
+pythonnet==3.1.0

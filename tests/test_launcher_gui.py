@@ -75,7 +75,12 @@ def test_launch_fails_cleanly_when_port_used_by_unrelated_process(monkeypatch):
 # launch() — success
 # ---------------------------------------------------------------------------
 
-def test_launch_success_acquires_lock_starts_server_and_opens_browser(monkeypatch):
+def test_launch_success_acquires_lock_and_starts_server_without_opening_anything(monkeypatch):
+    """launch() itself no longer decides how the UI is presented — that's
+    run_windowed()'s job now (native window, falling back to the
+    browser). launch() succeeding must not have any UI side effect of
+    its own; see test_open_main_window_* below for the actual
+    window-vs-browser decision."""
     from app.launcher import gui
 
     monkeypatch.setattr(
@@ -96,7 +101,7 @@ def test_launch_success_acquires_lock_starts_server_and_opens_browser(monkeypatc
 
     assert result is fake_running
     acquire.assert_called_once()
-    opened.assert_called_once_with(gui.dashboard_url())
+    opened.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -205,3 +210,92 @@ def test_dashboard_url_points_at_dashboard_after_onboarding_complete(monkeypatch
     monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: True)
     assert gui.dashboard_url().endswith("/ui/")
     assert not gui.dashboard_url().endswith("/ui/setup")
+
+
+# ---------------------------------------------------------------------------
+# _open_main_window() — native window, falling back to the browser.
+# _open_main_window() itself does `from app.launcher import webview_window`
+# fresh on every call, so patching the real module's attributes (not an
+# attribute on the `gui` module) is what actually takes effect here.
+# ---------------------------------------------------------------------------
+
+def test_open_main_window_uses_the_native_window_when_supported(monkeypatch):
+    from app.launcher import gui, webview_window
+
+    monkeypatch.setattr(webview_window, "is_supported", lambda: True)
+    create_and_run = MagicMock()
+    monkeypatch.setattr(webview_window, "create_and_run", create_and_run)
+    opened = MagicMock()
+    monkeypatch.setattr(gui.webbrowser, "open", opened)
+    monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: True)
+    monkeypatch.setattr(gui.settings, "jarvis_close_action", "tray")
+
+    fake_running = _fake_running_server()
+    request_tray_quit = MagicMock()
+    gui._open_main_window(fake_running, request_tray_quit)
+
+    create_and_run.assert_called_once()
+    assert create_and_run.call_args.kwargs["url"] == gui.dashboard_url()
+    assert create_and_run.call_args.kwargs["close_action"] == "tray"
+    opened.assert_not_called()
+
+
+def test_open_main_window_falls_back_to_browser_when_not_supported(monkeypatch):
+    from app.launcher import gui, webview_window
+
+    monkeypatch.setattr(webview_window, "is_supported", lambda: False)
+    create_and_run = MagicMock()
+    monkeypatch.setattr(webview_window, "create_and_run", create_and_run)
+    opened = MagicMock()
+    monkeypatch.setattr(gui.webbrowser, "open", opened)
+
+    gui._open_main_window(_fake_running_server(), MagicMock())
+
+    create_and_run.assert_not_called()
+    opened.assert_called_once_with(gui.dashboard_url())
+
+
+def test_open_main_window_falls_back_to_browser_when_native_window_raises(monkeypatch):
+    """The core safety property from this milestone's own spec: JARVIS
+    must keep working even when the native shell can't be created for
+    some reason (WebView2 Runtime absent, pythonnet/.NET missing, ...) —
+    never a hard failure, never a silently broken/insecure window."""
+    from app.launcher import gui, webview_window
+
+    monkeypatch.setattr(webview_window, "is_supported", lambda: True)
+    monkeypatch.setattr(webview_window, "create_and_run", MagicMock(side_effect=RuntimeError("no WebView2 runtime")))
+    opened = MagicMock()
+    monkeypatch.setattr(gui.webbrowser, "open", opened)
+
+    gui._open_main_window(_fake_running_server(), MagicMock())
+
+    opened.assert_called_once_with(gui.dashboard_url())
+
+
+def test_open_main_window_on_quit_callback_shuts_down_and_requests_tray_quit(monkeypatch):
+    """The window's on_quit callback (only invoked by webview_window when
+    close_action="quit") must tear down both halves of the app: the
+    server/lock (shutdown()) and the tray running on its own thread
+    (request_tray_quit()) — otherwise one half would be left running
+    with the other gone."""
+    from app.launcher import gui, webview_window
+
+    monkeypatch.setattr(webview_window, "is_supported", lambda: True)
+    captured = {}
+
+    def _fake_create_and_run(**kwargs):
+        captured["on_quit"] = kwargs["on_quit"]
+
+    monkeypatch.setattr(webview_window, "create_and_run", _fake_create_and_run)
+    shutdown_mock = MagicMock()
+    monkeypatch.setattr(gui, "shutdown", shutdown_mock)
+
+    fake_running = _fake_running_server()
+    request_tray_quit = MagicMock()
+    gui._open_main_window(fake_running, request_tray_quit)
+
+    assert "on_quit" in captured
+    captured["on_quit"]()
+
+    shutdown_mock.assert_called_once_with(fake_running)
+    request_tray_quit.assert_called_once()

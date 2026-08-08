@@ -120,6 +120,70 @@ see `app/config.py::Settings.effective_api_key`.
   regardless, on the same "don't fully trust an external call" basis
   the rest of this codebase already applies elsewhere.
 
+## Native desktop window: pywebview + pythonnet
+
+**Purpose:** the release-candidate packaging pass replaced opening the
+dashboard in the user's default browser with a real, dedicated
+application window (`app/launcher/webview_window.py`) — title, icon,
+resizing, minimize/maximize/close, correct taskbar identity — instead of
+another browser tab.
+
+- **Version pinned:** `pywebview==6.2.1`, `pythonnet==3.1.0` (see
+  `requirements-windows.txt`) — both verified as the current release at
+  the time of writing by installing them directly and inspecting the
+  installed package metadata, not assumed from either project's PyPI
+  page description.
+- **License:** pywebview is BSD-3-Clause (confirmed via `pip show`).
+  pythonnet is MIT (confirmed via its `dist-info/METADATA`'s
+  `License-Expression: MIT`). Both permissive, no copyleft.
+- **Why pythonnet is a dependency at all:** verified directly by reading
+  pywebview 6.2.1's own source (`webview/guilib.py`), not assumed from
+  its "lightweight wrapper" reputation — on Windows, pywebview has
+  exactly one practical backend, `webview/platforms/winforms.py`, and it
+  requires `pythonnet` (.NET/CLR interop) to host a WinForms window.
+  There is no lighter Windows backend to pick instead (the only
+  alternative `guilib.py` offers on Windows is a Qt backend, which would
+  trade pythonnet for PyQt/PySide — a heavier and, in PyQt's GPL/
+  commercial-dual-license case, worse licensing trade, not a better one).
+- **A real finding this pass acted on, not just documented:**
+  `winforms.py` picks between the modern WebView2 (Chromium-based)
+  control and the legacy `mshtml` (Internet Explorer/Trident) control
+  based on a registry probe for the Edge/WebView2 runtime — silently,
+  with no signal to the caller either way (confirmed by reading both
+  `webview/platforms/winforms.py` and the separate `webview/platforms/
+  mshtml.py` fallback module directly). An old Trident-engine window
+  would be a real security downgrade for a screen that collects an API
+  key, so `webview_window.py` never allows that trade silently: it
+  forces `gui="edgechromium"` explicitly in `webview.start()`, and if
+  that can't initialise for any reason (WebView2 Runtime genuinely
+  absent, pythonnet/.NET missing, or anything else), window creation
+  raises and the app falls back to opening the dashboard in the default
+  browser instead — see that module's docstring and
+  `app/launcher/gui.py::_open_main_window()`.
+- **Transitive dependency closure, every one individually verified (not
+  assumed from either project's own reputation):**
+
+  | Package | License | Depends on |
+  |---|---|---|
+  | `bottle` (pywebview) | MIT | — |
+  | `proxy_tools` (pywebview) | MIT | — |
+  | `typing_extensions` (pywebview) | PSF-2.0 | — |
+  | `clr_loader` (pythonnet) | MIT | `cffi` |
+  | `cffi` (clr_loader) | MIT (MIT No Attribution variant) | — |
+
+  Every entry is permissive; no copyleft anywhere in the closure.
+- **Honesty note, matching this codebase's existing standard for native
+  code:** the actual native window — WinForms hosting, WebView2
+  rendering, the cross-thread coordination with the pywin32 tray running
+  on its own thread (`app/launcher/gui.py::run_windowed()`) — has no
+  automated test on this project's Linux dev/CI, the same honest
+  limitation already true of the tray's own native message loop (see
+  "Why pywin32" above). `tests/test_launcher_webview_window.py` proves
+  the actual close-to-tray-vs-quit decision logic and the forced-
+  edgechromium/browser-fallback behavior against an injected fake
+  `webview` module; the real native window is verified only by the
+  manual Windows acceptance test.
+
 ## Where this ships
 
 `scripts/build-installer.ps1` copies this file into the PyInstaller

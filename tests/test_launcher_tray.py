@@ -43,6 +43,7 @@ def test_build_menu_entries_shape_and_order():
         state,
         on_open_dashboard=lambda: calls.append("dashboard"),
         on_open_command_center=lambda: calls.append("command_center"),
+        on_open_in_browser=lambda: calls.append("browser"),
         on_toggle_privacy=lambda: calls.append("privacy"),
         on_restart=lambda: calls.append("restart"),
         on_quit=lambda: calls.append("quit"),
@@ -52,6 +53,7 @@ def test_build_menu_entries_shape_and_order():
     assert labels == [
         "Status: running",
         "Open JARVIS",
+        "Open in Browser",
         "Open Command Center",
         "Privacy mode: OFF",
         "Restart JARVIS",
@@ -62,9 +64,10 @@ def test_build_menu_entries_shape_and_order():
     assert entries[0].enabled is False
 
     # Every action-bearing entry actually invokes the callback it was given.
-    for entry, expected in zip(entries[1:], ["dashboard", "command_center", "privacy", "restart", "quit"]):
+    expected_order = ["dashboard", "browser", "command_center", "privacy", "restart", "quit"]
+    for entry in entries[1:]:
         entry.action()
-    assert calls == ["dashboard", "command_center", "privacy", "restart", "quit"]
+    assert calls == expected_order
 
 
 def test_privacy_entry_disabled_when_state_unknown():
@@ -74,6 +77,7 @@ def test_privacy_entry_disabled_when_state_unknown():
         TrayState(privacy_active=None),
         on_open_dashboard=lambda: None,
         on_open_command_center=lambda: None,
+        on_open_in_browser=lambda: None,
         on_toggle_privacy=lambda: None,
         on_restart=lambda: None,
         on_quit=lambda: None,

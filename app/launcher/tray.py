@@ -82,6 +82,7 @@ def build_menu_entries(
     state: TrayState,
     on_open_dashboard: Callable[[], None],
     on_open_command_center: Callable[[], None],
+    on_open_in_browser: Callable[[], None],
     on_toggle_privacy: Callable[[], None],
     on_restart: Callable[[], None],
     on_quit: Callable[[], None],
@@ -91,10 +92,19 @@ def build_menu_entries(
     the only place this gets turned into a real native popup menu, built
     fresh from current state on every right-click (see show_context_menu()
     inside run_tray_loop() — a native popup menu has no persistent object
-    to keep in sync the way a cross-platform library's Menu would)."""
+    to keep in sync the way a cross-platform library's Menu would).
+
+    "Open JARVIS" brings the native desktop window to front (creating
+    one isn't attempted from the tray — the window is always created by
+    app/launcher/gui.py::run_windowed() up front). "Open in Browser" is
+    the explicit fallback this milestone requires: always available,
+    regardless of whether the native window exists, for anyone who
+    prefers a browser tab or whose machine fell back to browser-only
+    mode (see app/launcher/webview_window.py)."""
     return [
         MenuEntry(status_label(state), None, enabled=False),
         MenuEntry("Open JARVIS", on_open_dashboard),
+        MenuEntry("Open in Browser", on_open_in_browser),
         MenuEntry("Open Command Center", on_open_command_center),
         MenuEntry(privacy_label(state), on_toggle_privacy, enabled=state.privacy_active is not None),
         MenuEntry("Restart JARVIS", on_restart),
@@ -157,12 +167,27 @@ def _poll_loop(client: TrayApiClient, state: TrayState, icon, stop_event: thread
             pass  # icon may already be tearing down
 
 
-def run_tray_loop(running: RunningServer, host: str, port: int) -> None:
+def run_tray_loop(
+    running: RunningServer,
+    host: str,
+    port: int,
+    on_hwnd_ready: Optional[Callable[[int], None]] = None,
+) -> None:
     """Blocks until Quit is chosen. The only function in this module
-    that imports pywin32 or constructs real Win32 objects."""
+    that imports pywin32 or constructs real Win32 objects.
+
+    *on_hwnd_ready*, if given, is called once with the tray's hidden
+    window handle as soon as it exists — app/launcher/gui.py::run_windowed()
+    uses this to learn the hwnd so a quit initiated from the native
+    desktop window (running on a different thread) can post WM_CLOSE to
+    it and reuse this function's own do_quit() cleanup, rather than
+    duplicating that cleanup or reaching into Win32 objects this thread
+    owns from another thread."""
     import win32api
     import win32con
     import win32gui
+
+    from app.launcher import webview_window
 
     client = TrayApiClient(host, port)
     state = TrayState()
@@ -172,6 +197,21 @@ def run_tray_loop(running: RunningServer, host: str, port: int) -> None:
     ICON_UID = 1
 
     def open_dashboard() -> None:
+        # Prefer bringing the existing native window to front; only a
+        # process that fell back to browser-only mode (or one where the
+        # window hasn't been created for some other reason) has none —
+        # see webview_window.show_existing()'s own "ready right now"
+        # honesty note.
+        if webview_window.show_existing():
+            return
+        import webbrowser
+        webbrowser.open(gui.dashboard_url())
+
+    def open_in_browser() -> None:
+        # Explicit, always-available fallback — independent of whether
+        # the native window exists, per this milestone's own requirement
+        # that a browser tab always remains an option, not just an
+        # emergency degrade path.
         import webbrowser
         webbrowser.open(gui.dashboard_url())
 
@@ -200,6 +240,7 @@ def run_tray_loop(running: RunningServer, host: str, port: int) -> None:
         quit_started.set()
         logger.info("Tray: quitting JARVIS.")
         stop_event.set()
+        webview_window.destroy_existing()  # lets the main thread's webview.start() return, if a native window exists
         gui.shutdown(running)  # stops uvicorn (whose own shutdown releases TTS/voice resources) and the instance lock
         client.close()
         win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, (hwnd, ICON_UID))
@@ -213,6 +254,7 @@ def run_tray_loop(running: RunningServer, host: str, port: int) -> None:
             state,
             on_open_dashboard=open_dashboard,
             on_open_command_center=open_command_center,
+            on_open_in_browser=open_in_browser,
             on_toggle_privacy=toggle_privacy,
             on_restart=do_restart,
             on_quit=do_quit,
@@ -268,6 +310,9 @@ def run_tray_loop(running: RunningServer, host: str, port: int) -> None:
     hwnd = win32gui.CreateWindow(
         class_atom, "JARVIS", 0, 0, 0, 0, 0, 0, 0, window_class.hInstance, None,
     )
+
+    if on_hwnd_ready is not None:
+        on_hwnd_ready(hwnd)
 
     icon_path = str(_resolve_icon_file())
     hicon = win32gui.LoadImage(

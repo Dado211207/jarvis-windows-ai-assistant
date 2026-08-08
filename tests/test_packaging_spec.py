@@ -88,7 +88,7 @@ def test_spec_collects_all_for_packages_that_need_full_collection():
             if isinstance(node, ast.For) and isinstance(node.iter, (ast.Tuple, ast.List)):
                 if any(isinstance(e, ast.Constant) and e.value == "anthropic" for e in node.iter.elts):
                     collected_packages.update(e.value for e in node.iter.elts if isinstance(e, ast.Constant))
-    for expected in ("pydantic_settings", "anthropic", "pyttsx3"):
+    for expected in ("pydantic_settings", "anthropic", "pyttsx3", "webview", "pythonnet", "clr_loader"):
         assert expected in collected_packages, f"{expected} must go through collect_all(), not just hiddenimports"
 
 

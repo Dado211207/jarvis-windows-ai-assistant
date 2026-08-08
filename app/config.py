@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     jarvis_stt_allow_download: bool = False  # must be explicit; faster-whisper otherwise refuses to fetch a model
     jarvis_stt_timeout_seconds: int = 30
 
+    # Native desktop window (packaging release-candidate pass). "tray":
+    # the window's close (X) button hides it instead of quitting — JARVIS
+    # keeps running, same as most normal Windows tray apps. "quit": close
+    # actually shuts JARVIS down. See app/launcher/webview_window.py.
+    # Invalid values fall back to "tray" (see resolve_close_action()) —
+    # the safer default, since it never surprises the user by silently
+    # ending a running server they didn't ask to stop.
+    jarvis_close_action: str = "tray"
+
     @property
     def db_path(self) -> Path:
         return Path(self.jarvis_db_path) if self.jarvis_db_path else default_db_path()
