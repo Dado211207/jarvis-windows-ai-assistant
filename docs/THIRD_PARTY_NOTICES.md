@@ -136,3 +136,29 @@ repository's docs.
   Permissive. Already a `requirements.txt` dependency (screenshots) —
   listed here because `app/launcher/tray.py`'s icon handling also uses
   it, not because packaging introduced it.
+
+## Build tools (not bundled — a different category from everything above)
+
+Neither of these ships inside `JARVIS.exe` or the installer; they only
+run at build time, on the machine producing the release. Documented
+here anyway because "verify the license" was applied to every
+dependency this pass touches, build-time or not.
+
+- **PyInstaller** (pinned `6.21.0` — the latest stable release at the
+  time of writing, verified via PyPI, not assumed): "GPLv2-or-later
+  with a special exception which allows [it] to build and distribute
+  non-free programs (including commercial ones)" (PyPI classifier,
+  verbatim). That exception is exactly what makes this a non-issue for
+  JARVIS's own licensing — the well-established "compiler exception"
+  pattern (the same shape as GCC's runtime library exception): programs
+  *built with* PyInstaller are not thereby placed under the GPL,
+  because PyInstaller's own GPL-covered source is not redistributed as
+  part of the built executable in a way that would trigger that
+  obligation.
+- **Inno Setup** (pinned `6.7.3` — see `packaging/jarvis.iss`'s own
+  header comment for why 6.x was chosen over the newer 7.0.2): a
+  modified zlib/libpng license (permissive, free for any use including
+  commercial — verified via jrsoftware.org/files/is/license.txt
+  directly, not assumed from the separate, non-binding "please consider
+  a commercial license" donation request on the project's info page).
+  Not bundled; only its compiler (ISCC.exe) runs at build time.
