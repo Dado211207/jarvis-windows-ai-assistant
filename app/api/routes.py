@@ -449,3 +449,98 @@ def mark_onboarding_complete() -> OnboardingCompleteResponse:
     from app.core.onboarding import mark_onboarding_complete as _mark
     _mark()
     return OnboardingCompleteResponse(success=True)
+
+
+# ---------------------------------------------------------------------------
+# Guided speech-model download (v0.2 packaging) — see
+# app/voice/model_installer.py for the full honesty/verification story.
+# Never starts without an explicit POST from the user; GET endpoints are
+# read-only previews/status.
+# ---------------------------------------------------------------------------
+
+class ModelFileInfoResponse(BaseModel):
+    name: str
+    size: int
+    sha256_verified: bool
+
+
+class SpeechModelInfoResponse(BaseModel):
+    available: bool
+    repo: Optional[str] = None
+    display_name: Optional[str] = None
+    license: Optional[str] = None
+    source_url: Optional[str] = None
+    destination: Optional[str] = None
+    language_note: Optional[str] = None
+    total_size: Optional[int] = None
+    files: List[ModelFileInfoResponse] = []
+    error: Optional[str] = None
+
+
+@router.get("/onboarding/speech-model/info", response_model=SpeechModelInfoResponse)
+def speech_model_info() -> SpeechModelInfoResponse:
+    from app.voice.model_installer import fetch_model_info
+    try:
+        info = fetch_model_info()
+    except Exception:
+        logger.warning("Could not fetch speech model info.", exc_info=True)
+        return SpeechModelInfoResponse(available=False, error="Could not reach Hugging Face to check the model. Check your connection and try again.")
+
+    return SpeechModelInfoResponse(
+        available=True,
+        repo=info.repo,
+        display_name=info.display_name,
+        license=info.license,
+        source_url=info.source_url,
+        destination=info.destination,
+        language_note=info.language_note,
+        total_size=info.total_size,
+        files=[ModelFileInfoResponse(name=f.name, size=f.size, sha256_verified=f.sha256 is not None) for f in info.files],
+    )
+
+
+class SpeechModelInstallStatusResponse(BaseModel):
+    status: str
+    current_file: str
+    bytes_downloaded: int
+    bytes_total: int
+    message: str
+
+
+def _installer_state_response() -> SpeechModelInstallStatusResponse:
+    from app.voice.model_installer import model_installer
+    state = model_installer.state()
+    return SpeechModelInstallStatusResponse(
+        status=state.status,
+        current_file=state.current_file,
+        bytes_downloaded=state.bytes_downloaded,
+        bytes_total=state.bytes_total,
+        message=state.message,
+    )
+
+
+@router.get("/onboarding/speech-model/install-status", response_model=SpeechModelInstallStatusResponse)
+def speech_model_install_status() -> SpeechModelInstallStatusResponse:
+    return _installer_state_response()
+
+
+@router.post(
+    "/onboarding/speech-model/install",
+    response_model=SpeechModelInstallStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def speech_model_install_start() -> SpeechModelInstallStatusResponse:
+    from app.voice.model_installer import model_installer
+    model_installer.start()  # False (already running) is not an error — status reflects the truth either way
+    return _installer_state_response()
+
+
+@router.post(
+    "/onboarding/speech-model/cancel",
+    response_model=SpeechModelInstallStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def speech_model_install_cancel() -> SpeechModelInstallStatusResponse:
+    from app.voice.model_installer import model_installer
+    model_installer.cancel()
+    return _installer_state_response()

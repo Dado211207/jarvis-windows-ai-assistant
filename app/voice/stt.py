@@ -91,6 +91,15 @@ class FasterWhisperAdapter:
             return False, "faster-whisper is not installed. Run: pip install -r requirements-voice.txt"
         return True, "faster-whisper is available."
 
+    def _guided_install_dir(self) -> Path:
+        """Where app/voice/model_installer.py's "Install local speech
+        model" action puts a model. Checking this here — not just
+        JARVIS_STT_MODEL_PATH — is what makes a guided install usable
+        immediately: no .env edit, no restart, matching CLAUDE.md's
+        first-run requirement."""
+        from app.voice.model_installer import default_install_dir
+        return default_install_dir()
+
     def model_status(self) -> Tuple[bool, str]:
         """Whether a usable model is ready *right now* — never loads the
         model or touches the network. Distinct from is_available(),
@@ -104,6 +113,9 @@ class FasterWhisperAdapter:
             if Path(settings.jarvis_stt_model_path).exists():
                 return True, f"Local model ready at {settings.jarvis_stt_model_path}"
             return False, f"JARVIS_STT_MODEL_PATH is set but does not exist: {settings.jarvis_stt_model_path}"
+        guided_dir = self._guided_install_dir()
+        if guided_dir.exists():
+            return True, f"Local model ready at {guided_dir}"
         if settings.jarvis_stt_allow_download:
             return False, "No local model yet — will download on first use (JARVIS_STT_ALLOW_DOWNLOAD=true)."
         return False, "No local speech model installed yet."
@@ -117,16 +129,20 @@ class FasterWhisperAdapter:
             from app.config import settings
             from faster_whisper import WhisperModel
 
+            guided_dir = self._guided_install_dir()
             if settings.jarvis_stt_model_path:
                 model_ref = settings.jarvis_stt_model_path  # a local path never triggers a download
+            elif guided_dir.exists():
+                model_ref = str(guided_dir)  # installed via the setup page's guided download
             elif settings.jarvis_stt_allow_download:
                 model_ref = settings.jarvis_stt_model_size  # explicit opt-in to fetch from HF Hub
             else:
                 raise RuntimeError(
-                    f"No local model at JARVIS_STT_MODEL_PATH and JARVIS_STT_ALLOW_DOWNLOAD is "
-                    f"not set — refusing to silently download '{settings.jarvis_stt_model_size}'. "
-                    "Set JARVIS_STT_MODEL_PATH to an already-downloaded local model, or set "
-                    "JARVIS_STT_ALLOW_DOWNLOAD=true to allow fetching it."
+                    f"No local model at JARVIS_STT_MODEL_PATH, no guided-install model at "
+                    f"{guided_dir}, and JARVIS_STT_ALLOW_DOWNLOAD is not set — refusing to "
+                    f"silently download '{settings.jarvis_stt_model_size}'. Install a model from "
+                    "the Setup page, set JARVIS_STT_MODEL_PATH to an already-downloaded local "
+                    "model, or set JARVIS_STT_ALLOW_DOWNLOAD=true to allow fetching it."
                 )
             logger.info("Loading STT model: %s", model_ref)
             self._model = WhisperModel(model_ref, device="cpu", compute_type="int8")

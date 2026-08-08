@@ -794,14 +794,130 @@ function _setSetupKeyMessage(text, ok) {
   el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
 }
 
+// ── Guided speech-model download ────────────────────────────────────────────
+
+const MODEL_ACTIVE_STATES = ["checking", "downloading", "verifying", "installing"];
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return "0 MB";
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1000 ? (mb / 1024).toFixed(2) + " GB" : mb.toFixed(1) + " MB";
+}
+
+async function refreshModelPreview() {
+  const errorEl = $("model-info-error");
+  const startBtn = $("model-install-start");
+  try {
+    const info = await API.get("/onboarding/speech-model/info");
+    if (!info.available) {
+      if (errorEl) errorEl.textContent = info.error || "Could not check the model right now.";
+      if (startBtn) startBtn.disabled = true;
+      return;
+    }
+    if (errorEl) errorEl.textContent = "";
+    if (startBtn) startBtn.disabled = false;
+
+    setText("model-info-name", info.display_name);
+    setText("model-info-source", info.source_url);
+    setText("model-info-license", info.license);
+    setText("model-info-size", formatBytes(info.total_size));
+    setText("model-info-destination", info.destination);
+    const hashedCount = info.files.filter(f => f.sha256_verified).length;
+    setText(
+      "model-info-checksum",
+      `SHA-256 verified for ${hashedCount} of ${info.files.length} files (the model itself); ` +
+      "remaining small files verified by exact download size"
+    );
+    setText("model-info-language-note", info.language_note);
+  } catch (e) {
+    console.error("model info error", e);
+    if (errorEl) errorEl.textContent = "Could not check the model right now.";
+  }
+}
+
+function _renderModelInstallState(state) {
+  const startBtn = $("model-install-start");
+  const cancelBtn = $("model-install-cancel");
+  const retryBtn = $("model-install-retry");
+  const progressWrap = $("model-install-progress-wrap");
+  const progressBar = $("model-install-progress-bar");
+  const progressText = $("model-install-progress-text");
+
+  const active = MODEL_ACTIVE_STATES.includes(state.status);
+
+  if (startBtn) startBtn.hidden = active || state.status === "error";
+  if (cancelBtn) cancelBtn.hidden = !active;
+  if (retryBtn) retryBtn.hidden = state.status !== "error";
+  if (progressWrap) progressWrap.hidden = !active && state.status !== "complete";
+
+  if (progressBar) {
+    const pct = state.bytes_total > 0
+      ? Math.min(100, Math.round((state.bytes_downloaded / state.bytes_total) * 100))
+      : 0;
+    progressBar.style.width = pct + "%";
+  }
+  if (progressText) {
+    progressText.textContent = state.status === "downloading"
+      ? `Downloading ${state.current_file}… ${formatBytes(state.bytes_downloaded)} / ${formatBytes(state.bytes_total)}`
+      : (state.message || state.status);
+  }
+
+  if (state.status === "complete" || state.status === "error") {
+    refreshSetupReadiness();
+  }
+}
+
+let _modelPollTimer = null;
+
+async function pollModelInstallStatus() {
+  try {
+    const state = await API.get("/onboarding/speech-model/install-status");
+    _renderModelInstallState(state);
+    _modelPollTimer = MODEL_ACTIVE_STATES.includes(state.status)
+      ? setTimeout(pollModelInstallStatus, 500)
+      : null;
+  } catch (e) {
+    console.error("model install status error", e);
+    _modelPollTimer = null;
+  }
+}
+
+async function startModelInstall() {
+  try {
+    const state = await API.post("/onboarding/speech-model/install", {});
+    _renderModelInstallState(state);
+    if (!_modelPollTimer) pollModelInstallStatus();
+  } catch (e) {
+    console.error("model install start error", e);
+  }
+}
+
+async function cancelModelInstall() {
+  try {
+    const state = await API.post("/onboarding/speech-model/cancel", {});
+    _renderModelInstallState(state);
+  } catch (e) {
+    console.error("model install cancel error", e);
+  }
+}
+
 function initSetup() {
   refreshSetupReadiness();
   refreshSetupKeyStatus();
+  refreshModelPreview();
+  pollModelInstallStatus();  // covers an install already running from a previous page load
 
   const saveBtn = $("setup-key-save");
   const removeBtn = $("setup-key-remove");
   const input = $("setup-key-input");
   const continueBtn = $("setup-continue");
+  const modelStartBtn = $("model-install-start");
+  const modelCancelBtn = $("model-install-cancel");
+  const modelRetryBtn = $("model-install-retry");
+
+  if (modelStartBtn) modelStartBtn.addEventListener("click", startModelInstall);
+  if (modelCancelBtn) modelCancelBtn.addEventListener("click", cancelModelInstall);
+  if (modelRetryBtn) modelRetryBtn.addEventListener("click", startModelInstall);
 
   if (saveBtn) saveBtn.addEventListener("click", async () => {
     const value = input ? input.value.trim() : "";

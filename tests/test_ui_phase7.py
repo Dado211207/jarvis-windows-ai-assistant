@@ -232,6 +232,18 @@ def test_setup_continue_button_present(api_client):
     assert 'id="setup-continue"' in r.text
 
 
+def test_setup_model_install_controls_present(api_client):
+    r = api_client.get("/ui/setup")
+    html = r.text
+    for expected_id in (
+        "model-info-name", "model-info-source", "model-info-license",
+        "model-info-size", "model-info-destination", "model-info-checksum",
+        "model-install-start", "model-install-cancel", "model-install-retry",
+        "model-install-progress-bar",
+    ):
+        assert f'id="{expected_id}"' in html
+
+
 def test_setup_does_not_send_user_to_env_file(api_client):
     """The whole point of this page: no user is sent to .env to finish
     setup. (The page's own reassuring copy legitimately says "you won't

@@ -260,3 +260,68 @@ def test_model_status_never_loads_the_model():
         mock_settings.jarvis_stt_allow_download = False
         adapter.model_status()
     adapter._get_model.assert_not_called()
+
+
+# --- FasterWhisperAdapter: the guided-install default directory (see
+# app/voice/model_installer.py) is checked automatically, so a model
+# installed from the setup page becomes usable with no .env edit and no
+# restart ---
+
+def test_model_status_ready_when_guided_install_dir_exists(tmp_path):
+    adapter = FasterWhisperAdapter()
+    adapter._guided_install_dir = MagicMock(return_value=tmp_path)
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.jarvis_stt_model_path = ""
+        ready, detail = adapter.model_status()
+    assert ready is True
+    assert str(tmp_path) in detail
+
+
+def test_model_status_explicit_path_takes_priority_over_guided_install_dir(tmp_path):
+    """JARVIS_STT_MODEL_PATH is an explicit override — it must win even
+    when it doesn't exist, rather than silently falling back."""
+    adapter = FasterWhisperAdapter()
+    adapter._guided_install_dir = MagicMock(return_value=tmp_path)
+    missing = tmp_path / "explicit-path-does-not-exist"
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.jarvis_stt_model_path = str(missing)
+        ready, detail = adapter.model_status()
+    assert ready is False
+    assert "does not exist" in detail.lower()
+
+
+def test_get_model_uses_guided_install_dir_when_no_explicit_path(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    fake_module = types.ModuleType("faster_whisper")
+    fake_model_cls = MagicMock()
+    fake_module.WhisperModel = fake_model_cls
+
+    adapter = FasterWhisperAdapter()
+    adapter._guided_install_dir = MagicMock(return_value=tmp_path)
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.jarvis_stt_model_path = ""
+        mock_settings.jarvis_stt_allow_download = False
+        with patch.dict(sys.modules, {"faster_whisper": fake_module}):
+            adapter._get_model()
+
+    assert fake_model_cls.call_args.args[0] == str(tmp_path)
+
+
+def test_get_model_raises_when_neither_path_nor_guided_install_nor_download_available(tmp_path):
+    import sys
+    import types
+
+    fake_module = types.ModuleType("faster_whisper")
+    fake_module.WhisperModel = MagicMock()
+
+    adapter = FasterWhisperAdapter()
+    adapter._guided_install_dir = MagicMock(return_value=tmp_path / "does-not-exist")
+    with patch("app.config.settings") as mock_settings:
+        mock_settings.jarvis_stt_model_path = ""
+        mock_settings.jarvis_stt_allow_download = False
+        mock_settings.jarvis_stt_model_size = "tiny"
+        with patch.dict(sys.modules, {"faster_whisper": fake_module}):
+            with pytest.raises(RuntimeError, match="refusing to silently download"):
+                adapter._get_model()
