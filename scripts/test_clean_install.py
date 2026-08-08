@@ -52,6 +52,7 @@ STATIC_ASSET_URL = f"http://{settings.jarvis_host}:{settings.jarvis_port}/ui/sta
 HEALTH_TIMEOUT_SECONDS = 30.0
 PROCESS_EXIT_TIMEOUT_SECONDS = 15.0
 INSTALL_TIMEOUT_SECONDS = 120.0
+UNINSTALL_CLEANUP_TIMEOUT_SECONDS = 10.0
 
 
 def _step(text: str) -> None:
@@ -208,6 +209,28 @@ def wait_for_pid_exit(pid: int, timeout_seconds: float = PROCESS_EXIT_TIMEOUT_SE
     return False
 
 
+def wait_for_path_removed(path: Path, timeout_seconds: float = UNINSTALL_CLEANUP_TIMEOUT_SECONDS) -> bool:
+    """Poll until *path* no longer exists, instead of checking exactly once
+    right after run_silent() returns.
+
+    Real race, confirmed against Inno Setup's own FAQ (jrsoftware.org/isfaq.php):
+    a running unins000.exe can't delete its own .exe file, so it spawns a
+    clone into %TEMP% that does the actual removal work; that clone signals
+    the originally-invoked unins000.exe process to exit *before* the clone
+    has finished deleting unins000.exe/.dat and removing the (by then
+    empty) install directory. subprocess.run() on the uninstaller we
+    launched can therefore return before that tail end of cleanup is
+    actually done — caught for real on windows-latest CI as an install-dir
+    removal check failing immediately after a /VERYSILENT uninstall
+    reported exit code 0."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not path.exists():
+            return True
+        time.sleep(0.3)
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Phases
 # ---------------------------------------------------------------------------
@@ -281,7 +304,7 @@ def phase_b_uninstall_preserves_data_by_default(log_dir: Path) -> None:
     run_silent(uninstaller, log_dir / "uninstall-1.log")
 
     _step("Phase B.2: Verify the install directory was removed")
-    if expected_install_dir().exists():
+    if not wait_for_path_removed(expected_install_dir()):
         _fail(f"Expected {expected_install_dir()} to be removed after uninstall.")
     print(f"OK: {expected_install_dir()} removed")
 
@@ -312,7 +335,7 @@ def phase_c_reinstall_then_explicit_data_removal(installer: Path, log_dir: Path)
     run_silent(uninstaller, log_dir / "uninstall-2.log", extra_args=["/DELETEDATA=yes"])
 
     _step("Phase C.3: Verify the install directory was removed")
-    if expected_install_dir().exists():
+    if not wait_for_path_removed(expected_install_dir()):
         _fail(f"Expected {expected_install_dir()} to be removed after uninstall.")
     print(f"OK: {expected_install_dir()} removed")
 

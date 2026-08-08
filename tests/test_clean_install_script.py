@@ -113,6 +113,32 @@ def test_explicit_deletedata_opt_in_is_used_in_phase_c():
 
 
 # ---------------------------------------------------------------------------
+# Install-dir removal must be polled, not checked exactly once
+# ---------------------------------------------------------------------------
+
+def test_uninstall_directory_removal_is_polled_not_checked_once():
+    """Regression guard for a real CI failure: Inno Setup's uninstaller
+    can't delete its own running .exe (confirmed against Inno Setup's own
+    FAQ at jrsoftware.org/isfaq.php), so unins000.exe spawns a clone into
+    %TEMP% that finishes the actual cleanup — deleting unins000.exe/.dat
+    and removing the install directory — *after* signaling the originally
+    invoked process to exit. subprocess.run() on the uninstaller can
+    therefore return before that tail end of cleanup is actually done, so
+    checking expected_install_dir().exists() exactly once immediately
+    afterward is a real race, not a safety property worth failing fast on.
+    Both phases that assert the install directory is gone must poll via
+    wait_for_path_removed() instead."""
+    tree = ast.parse(_read())
+    for phase_name in (
+        "phase_b_uninstall_preserves_data_by_default",
+        "phase_c_reinstall_then_explicit_data_removal",
+    ):
+        phase = _find_function(tree, phase_name)
+        calls = _find_calls(phase, "wait_for_path_removed")
+        assert calls, f"expected {phase_name} to poll install-dir removal via wait_for_path_removed()"
+
+
+# ---------------------------------------------------------------------------
 # Install dir / data dir stay separate trees (mirrors
 # tests/test_installer_script.py's equivalent guarantee for jarvis.iss)
 # ---------------------------------------------------------------------------
