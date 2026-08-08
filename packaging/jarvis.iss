@@ -41,6 +41,18 @@
 
 #define MyAppName "JARVIS"
 #define MyAppVersion "0.2.0-rc1"
+; VersionInfoVersion (below) sets the Setup.exe/uninstaller's numeric
+; Windows FILEVERSION/PRODUCTVERSION resource fields, which Inno Setup
+; requires in strict X.X.X.X numeric form — "0.2.0-rc1" is rejected at
+; compile time ("Value of [Setup] section directive "VersionInfoVersion"
+; is invalid", caught for real on windows-latest CI). Matches
+; packaging/version_info.txt's identical (0, 2, 0, 1) encoding for
+; JARVIS.exe itself: 0.2.0, build 1 ("rc1"). VersionInfoTextVersion /
+; VersionInfoProductTextVersion below carry the real "0.2.0-rc1" string
+; into the same file's human-readable version fields, same split as
+; version_info.txt's numeric filevers/prodvers vs. its FileVersion/
+; ProductVersion StringStructs.
+#define MyAppVersionInfo "0.2.0.1"
 #define MyAppPublisher "Dado211207"
 #define MyAppURL "https://github.com/Dado211207/jarvis-windows-ai-assistant"
 #define MyAppExeName "JARVIS.exe"
@@ -83,7 +95,9 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-VersionInfoVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersionInfo}
+VersionInfoTextVersion={#MyAppVersion}
+VersionInfoProductTextVersion={#MyAppVersion}
 ; Detects a running JARVIS.exe (via Windows Restart Manager) before
 ; install/upgrade/uninstall and prompts to close it — covers "detect a
 ; running process" and "prevent locked-file failures" without hand-

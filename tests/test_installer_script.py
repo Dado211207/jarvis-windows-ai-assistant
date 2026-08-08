@@ -96,6 +96,31 @@ def test_output_filename_matches_requested_pattern():
     assert "OutputBaseFilename=JARVIS-Setup-v{#MyAppVersion}-x64" in setup
 
 
+def test_version_info_version_is_strictly_numeric():
+    """Regression guard for a real bug caught on windows-latest CI:
+    Inno Setup's VersionInfoVersion directive sets Setup.exe's numeric
+    Windows FILEVERSION/PRODUCTVERSION resource fields and rejects
+    anything but strict X.X.X.X numeric form at compile time — pointing
+    it directly at MyAppVersion ("0.2.0-rc1") failed with 'Value of
+    [Setup] section directive "VersionInfoVersion" is invalid.' This
+    can't be caught by ISCC itself in this project's Linux sandbox, so
+    it's enforced here instead."""
+    content = _read()
+    match = re.search(r'#define MyAppVersionInfo "([^"]*)"', content)
+    assert match, "MyAppVersionInfo #define not found"
+    parts = match.group(1).split(".")
+    assert 2 <= len(parts) <= 4, f"expected 2-4 dot-separated components, got {match.group(1)!r}"
+    assert all(part.isdigit() for part in parts), f"VersionInfoVersion must be strictly numeric, got {match.group(1)!r}"
+
+    setup = _section("Setup")
+    assert "VersionInfoVersion={#MyAppVersionInfo}" in setup
+    # The real "0.2.0-rc1" string still shows up in the file's
+    # human-readable version fields (same numeric-resource /
+    # string-display split as packaging/version_info.txt).
+    assert "VersionInfoTextVersion={#MyAppVersion}" in setup
+    assert "VersionInfoProductTextVersion={#MyAppVersion}" in setup
+
+
 # ---------------------------------------------------------------------------
 # Shortcuts / tasks — desktop and startup opt-in, off by default; launch
 # on finish opt-out, on by default
