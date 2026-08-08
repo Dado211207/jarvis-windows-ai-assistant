@@ -42,8 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from app.launcher import gui, server_runner
-from app.launcher.server_runner import RunningServer
+from app.launcher import gui
 from app.launcher.tray_client import TrayApiClient
 from app.logging_config import get_logger
 
@@ -167,8 +166,23 @@ def _poll_loop(client: TrayApiClient, state: TrayState, icon, stop_event: thread
             pass  # icon may already be tearing down
 
 
+def _show_restart_failure() -> None:
+    """An honest, native failure notice when Restart could not bring the
+    runtime back — silently leaving a dead tray icon would be worse. Uses
+    the launcher's own dialog helper so the message carries a correlation
+    ID and the safe log folder, never a raw traceback."""
+    gui._show_error_dialog(
+        "JARVIS couldn't restart",
+        gui._format_error_message(
+            "The JARVIS runtime did not come back up after a restart.\n"
+            "Use Quit and start JARVIS again.",
+            __import__("uuid").uuid4().hex,
+        ),
+    )
+
+
 def run_tray_loop(
-    running: RunningServer,
+    supervisor,
     host: str,
     port: int,
     on_hwnd_ready: Optional[Callable[[int], None]] = None,
@@ -176,18 +190,17 @@ def run_tray_loop(
     """Blocks until Quit is chosen. The only function in this module
     that imports pywin32 or constructs real Win32 objects.
 
+    Runs on the parent process's MAIN thread — see
+    app/launcher/gui.py's module docstring for why that matters for
+    graceful shutdown. *supervisor* is the LauncherSupervisor owning the
+    server and window children; this loop never touches a child process
+    directly, it only asks the supervisor to act.
+
     *on_hwnd_ready*, if given, is called once with the tray's hidden
-    window handle as soon as it exists — app/launcher/gui.py::run_windowed()
-    uses this to learn the hwnd so a quit initiated from the native
-    desktop window (running on a different thread) can post WM_CLOSE to
-    it and reuse this function's own do_quit() cleanup, rather than
-    duplicating that cleanup or reaching into Win32 objects this thread
-    owns from another thread."""
+    window handle as soon as it exists."""
     import win32api
     import win32con
     import win32gui
-
-    from app.launcher import webview_window
 
     client = TrayApiClient(host, port)
     state = TrayState()
@@ -197,12 +210,11 @@ def run_tray_loop(
     ICON_UID = 1
 
     def open_dashboard() -> None:
-        # Prefer bringing the existing native window to front; only a
-        # process that fell back to browser-only mode (or one where the
-        # window hasn't been created for some other reason) has none —
-        # see webview_window.show_existing()'s own "ready right now"
-        # honesty note.
-        if webview_window.show_existing():
+        # Focus the live window child, or start a fresh one if it
+        # crashed — show_or_restart() never creates a second window.
+        # Falls back to the browser only if no window can be started at
+        # all, so "Open JARVIS" is never a dead menu entry.
+        if supervisor.open_or_focus_window():
             return
         import webbrowser
         webbrowser.open(gui.dashboard_url())
@@ -226,11 +238,16 @@ def run_tray_loop(
         state.privacy_active = client.privacy_active()
 
     def do_restart() -> None:
-        nonlocal running
+        """Window down, server down, fresh server, health, fresh window —
+        the supervisor owns that ordering. The tray process and the
+        instance lock are deliberately untouched: this parent stays the
+        authoritative owner across a restart."""
         logger.info("Tray: restarting JARVIS.")
-        running.request_shutdown()
-        running = server_runner.start_server_in_background(host=host, port=port)
-        server_runner.wait_until_healthy(host=host, port=port)
+        state.status = "starting"
+        if not supervisor.restart():
+            state.status = "offline"
+            logger.error("Tray: restart failed.")
+            _show_restart_failure()
 
     quit_started = threading.Event()
 
@@ -242,19 +259,13 @@ def run_tray_loop(
         quit_started.set()
         logger.info("Tray: quitting JARVIS.")
         stop_event.set()
-        # From here on the process is committed to exiting. A native GUI
-        # loop that refuses to unwind must not be able to leave JARVIS
-        # running invisibly — see force_exit_after()'s docstring for why
-        # a bounded force-exit is safe for this app's state model.
-        webview_window.force_exit_after()
-        # destroy_existing() calls request_shutdown() first, so a window
-        # configured to close-to-tray does not veto this teardown — see
-        # webview_window.request_shutdown()'s docstring for the real CI
-        # failure that made that necessary.
-        webview_window.destroy_existing()  # lets the main thread's webview.start() return, if a native window exists
-        boot_trace.trace("tray do_quit() window destroyed")
-        gui.shutdown(running)  # stops uvicorn (whose own shutdown releases TTS/voice resources) and the instance lock
-        boot_trace.trace("tray do_quit() server shut down")
+        # supervisor.quit() sets its own quitting flag first, so no
+        # recovery path can resurrect a child mid-shutdown, then stops the
+        # window child, stops the server child, and releases the instance
+        # lock — each with a bounded timeout and escalation, and only
+        # against processes this launcher itself started.
+        supervisor.quit()
+        boot_trace.trace("tray do_quit() children stopped and lock released")
         client.close()
         win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, (hwnd, ICON_UID))
         win32gui.DestroyWindow(hwnd)  # synchronously delivers WM_DESTROY, which posts WM_QUIT below

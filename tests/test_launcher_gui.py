@@ -1,301 +1,399 @@
-"""Tests for app/launcher/gui.py's pre-tray startup orchestration.
+"""Tests for app/launcher/gui.py — the parent launcher's lifecycle.
 
-instance_lock and server_runner are mocked here — they have their own
-dedicated test files exercising the real logic. This file only proves
-gui.launch() sequences and branches on their results correctly, never
-starts two servers, and never lets a raw exception/traceback surface.
+LauncherSupervisor is exercised with injected child supervisors, so the
+whole sequence (startup order, health-before-window, restart ordering,
+quit, server-failure detection) is provable without spawning real
+processes. The child supervisors have their own dedicated test files
+covering the real spawn/stop behaviour.
 """
 
-from dataclasses import dataclass
 from unittest.mock import MagicMock
 
 import pytest
 
 
-@dataclass
-class _FakeRunningServer:
-    request_shutdown: MagicMock
-    shut_down_called: bool = False
+class _FakeServer:
+    def __init__(self, healthy=True, running=True):
+        self.session_secret = "secret-" + str(id(self))
+        self._healthy = healthy
+        self._running = running
+        self.started = False
+        self.stopped = False
+        self.stop_calls = 0
+
+    def start(self):
+        self.started = True
+
+    def wait_until_healthy(self, timeout_seconds=None):
+        return self._healthy
+
+    def is_running(self):
+        return self._running
+
+    def stop(self, timeout_seconds=None):
+        self.stopped = True
+        self.stop_calls += 1
+        self._running = False
+        return "graceful"
 
 
-def _fake_running_server() -> _FakeRunningServer:
-    return _FakeRunningServer(request_shutdown=MagicMock())
+class _FakeWindow:
+    def __init__(self, starts=True):
+        self._starts = starts
+        self.started = False
+        self.stopped = False
+        self.shown = False
+
+    def start(self, base_env=None):
+        self.started = True
+        return self._starts
+
+    def show_or_restart(self, base_env=None):
+        self.shown = True
+        return True
+
+    def stop(self, timeout_seconds=None):
+        self.stopped = True
+        return "graceful"
 
 
-# ---------------------------------------------------------------------------
-# launch() — already running
-# ---------------------------------------------------------------------------
-
-def test_launch_opens_existing_dashboard_and_exits_cleanly_when_already_running(monkeypatch):
+@pytest.fixture
+def supervisor_factory(monkeypatch):
+    """Builds a LauncherSupervisor whose start_server/start_window create
+    the fakes above, recording the order they were called in."""
     from app.launcher import gui
 
-    monkeypatch.setattr(
-        gui.instance_lock, "check_existing_instance",
-        lambda host, port: gui.instance_lock.InstanceCheckResult(another_instance_running=True, port_in_use_by_other=False, pid=777),
-    )
-    started = MagicMock()
-    monkeypatch.setattr(gui.server_runner, "start_server_in_background", started)
-    opened = MagicMock()
-    monkeypatch.setattr(gui.webbrowser, "open", opened)
+    def _make(server_healthy=True, window_starts=True):
+        order = []
+        created = {}
+        sup = gui.LauncherSupervisor()
 
-    with pytest.raises(SystemExit) as exc_info:
-        gui.launch()
+        def _start_server():
+            order.append("server")
+            created["server"] = _FakeServer(healthy=server_healthy)
+            sup._server = created["server"]
+            created["server"].start()
+            return server_healthy
 
-    assert exc_info.value.code == 0
-    started.assert_not_called()
-    opened.assert_called_once_with(gui.dashboard_url())
+        def _start_window():
+            order.append("window")
+            created["window"] = _FakeWindow(starts=window_starts)
+            sup._window = created["window"]
+            created["window"].start()
+            return window_starts
+
+        monkeypatch.setattr(sup, "start_server", _start_server)
+        monkeypatch.setattr(sup, "start_window", _start_window)
+        return sup, order, created
+
+    return _make
 
 
 # ---------------------------------------------------------------------------
-# launch() — port held by something else
+# Startup ordering — the window must never precede a healthy server
 # ---------------------------------------------------------------------------
 
-def test_launch_fails_cleanly_when_port_used_by_unrelated_process(monkeypatch):
+def test_launch_starts_the_server_before_the_window(monkeypatch, supervisor_factory):
     from app.launcher import gui
 
-    monkeypatch.setattr(
-        gui.instance_lock, "check_existing_instance",
-        lambda host, port: gui.instance_lock.InstanceCheckResult(another_instance_running=False, port_in_use_by_other=True),
-    )
-    started = MagicMock()
-    monkeypatch.setattr(gui.server_runner, "start_server_in_background", started)
+    sup, order, _ = supervisor_factory()
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(False, False))
+    monkeypatch.setattr(gui.instance_lock, "acquire_lock", MagicMock())
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
+
+    gui.launch()
+
+    assert order == ["server", "window"], "the window must only start after a healthy server"
+
+
+def test_launch_never_starts_the_window_when_the_server_is_unhealthy(monkeypatch, supervisor_factory):
+    """The core safety property: a window must never come up pointing at
+    a server that never became healthy, or it would show a misleading
+    connected state."""
+    from app.launcher import gui
+
+    sup, order, _ = supervisor_factory(server_healthy=False)
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(False, False))
+    monkeypatch.setattr(gui.instance_lock, "acquire_lock", MagicMock())
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
     dialog = MagicMock()
     monkeypatch.setattr(gui, "_show_error_dialog", dialog)
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(SystemExit) as exc:
         gui.launch()
 
-    assert exc_info.value.code == 1
-    started.assert_not_called()
+    assert exc.value.code == 1
+    assert "window" not in order
     dialog.assert_called_once()
-    assert "port" in dialog.call_args.args[1].lower() or "port" in dialog.call_args.args[1]
 
 
-# ---------------------------------------------------------------------------
-# launch() — success
-# ---------------------------------------------------------------------------
-
-def test_launch_success_acquires_lock_and_starts_server_without_opening_anything(monkeypatch):
-    """launch() itself no longer decides how the UI is presented — that's
-    run_windowed()'s job now (native window, falling back to the
-    browser). launch() succeeding must not have any UI side effect of
-    its own; see test_open_main_window_* below for the actual
-    window-vs-browser decision."""
+def test_failed_startup_releases_the_lock(monkeypatch, supervisor_factory):
+    """No stale lock may survive a failed startup, or the next launch
+    would wrongly believe JARVIS is already running."""
     from app.launcher import gui
 
-    monkeypatch.setattr(
-        gui.instance_lock, "check_existing_instance",
-        lambda host, port: gui.instance_lock.InstanceCheckResult(another_instance_running=False, port_in_use_by_other=False),
-    )
-    acquire = MagicMock()
-    monkeypatch.setattr(gui.instance_lock, "acquire_lock", acquire)
-
-    fake_running = _fake_running_server()
-    monkeypatch.setattr(gui.server_runner, "start_server_in_background", lambda: fake_running)
-    monkeypatch.setattr(gui.server_runner, "wait_until_healthy", lambda: True)
-
-    opened = MagicMock()
-    monkeypatch.setattr(gui.webbrowser, "open", opened)
-
-    result = gui.launch()
-
-    assert result is fake_running
-    acquire.assert_called_once()
-    opened.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# launch() — health-wait timeout cleans up instead of hanging around
-# ---------------------------------------------------------------------------
-
-def test_launch_cleans_up_and_fails_when_never_healthy(monkeypatch):
-    from app.launcher import gui
-
-    monkeypatch.setattr(
-        gui.instance_lock, "check_existing_instance",
-        lambda host, port: gui.instance_lock.InstanceCheckResult(another_instance_running=False, port_in_use_by_other=False),
-    )
+    sup, _, _ = supervisor_factory(server_healthy=False)
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(False, False))
     monkeypatch.setattr(gui.instance_lock, "acquire_lock", MagicMock())
     release = MagicMock()
     monkeypatch.setattr(gui.instance_lock, "release_lock", release)
+    monkeypatch.setattr(gui, "_show_error_dialog", MagicMock())
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
 
-    fake_running = _fake_running_server()
-    monkeypatch.setattr(gui.server_runner, "start_server_in_background", lambda: fake_running)
-    monkeypatch.setattr(gui.server_runner, "wait_until_healthy", lambda: False)
+    with pytest.raises(SystemExit):
+        gui.launch()
 
-    dialog = MagicMock()
-    monkeypatch.setattr(gui, "_show_error_dialog", dialog)
+    release.assert_called_once()
+
+
+def test_window_failure_is_degraded_not_fatal(monkeypatch, supervisor_factory):
+    """A healthy server with no window must fall back to the browser
+    rather than refusing to run."""
+    from app.launcher import gui
+
+    sup, order, _ = supervisor_factory(window_starts=False)
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(False, False))
+    monkeypatch.setattr(gui.instance_lock, "acquire_lock", MagicMock())
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
     opened = MagicMock()
     monkeypatch.setattr(gui.webbrowser, "open", opened)
 
-    with pytest.raises(SystemExit) as exc_info:
+    result = gui.launch()  # must not raise SystemExit
+
+    assert result is sup
+    opened.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Single instance
+# ---------------------------------------------------------------------------
+
+def test_second_launch_creates_nothing_and_opens_the_running_instance(monkeypatch, supervisor_factory):
+    from app.launcher import gui
+
+    sup, order, _ = supervisor_factory()
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(True, False, pid=999))
+    acquire = MagicMock()
+    monkeypatch.setattr(gui.instance_lock, "acquire_lock", acquire)
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
+    opened = MagicMock()
+    monkeypatch.setattr(gui.webbrowser, "open", opened)
+
+    with pytest.raises(SystemExit) as exc:
         gui.launch()
 
-    assert exc_info.value.code == 1
-    fake_running.request_shutdown.assert_called_once()
-    release.assert_called_once()
-    dialog.assert_called_once()
-    assert "healthy" in dialog.call_args.args[1].lower()
-    # The dashboard must never open on an unhealthy server — opening is
-    # gated strictly behind a successful health-wait, not just attempted
-    # unconditionally after starting the server.
-    opened.assert_not_called()
+    assert exc.value.code == 0
+    assert order == [], "a second launch must not create a server or window"
+    acquire.assert_not_called(), "a second launch must not take the lock"
+    opened.assert_called_once()
+
+
+def test_port_held_by_an_unrelated_process_fails_with_a_dialog(monkeypatch, supervisor_factory):
+    from app.launcher import gui
+
+    sup, order, _ = supervisor_factory()
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(False, True))
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
+    dialog = MagicMock()
+    monkeypatch.setattr(gui, "_show_error_dialog", dialog)
+
+    with pytest.raises(SystemExit) as exc:
+        gui.launch()
+
+    assert exc.value.code == 1
+    assert order == []
+    assert "port" in dialog.call_args.args[1].lower()
 
 
 # ---------------------------------------------------------------------------
-# shutdown()
+# Restart
 # ---------------------------------------------------------------------------
 
-def test_shutdown_stops_server_and_releases_lock(monkeypatch):
+def test_restart_stops_window_then_server_then_starts_fresh_ones(supervisor_factory):
+    """Ordering matters: no child may be left pointing at a runtime that
+    is going away."""
+    from app.launcher import gui
+
+    sup = gui.LauncherSupervisor()
+    old_server, old_window = _FakeServer(), _FakeWindow()
+    sup._server, sup._window = old_server, old_window
+
+    events = []
+    sup.start_server = lambda: (events.append("start_server"), True)[1]
+    sup.start_window = lambda: (events.append("start_window"), True)[1]
+    original_server_stop = old_server.stop
+    original_window_stop = old_window.stop
+    old_server.stop = lambda timeout_seconds=None: (events.append("stop_server"), original_server_stop(timeout_seconds))[1]
+    old_window.stop = lambda timeout_seconds=None: (events.append("stop_window"), original_window_stop(timeout_seconds))[1]
+
+    assert sup.restart() is True
+    assert events == ["stop_window", "stop_server", "start_server", "start_window"]
+
+
+def test_restart_creates_a_fresh_server_with_a_new_session_secret(monkeypatch):
+    """Each ServerProcess generates its own secret, so a restart cannot
+    reuse the previous session's."""
+    from app.launcher import gui, server_process
+
+    sup = gui.LauncherSupervisor()
+    monkeypatch.setattr(server_process.ServerProcess, "start", lambda self: None)
+    monkeypatch.setattr(server_process.ServerProcess, "wait_until_healthy", lambda self, timeout_seconds=None: True)
+
+    assert sup.start_server() is True
+    first_secret = sup.server.session_secret
+    assert sup.start_server() is True
+    assert sup.server.session_secret != first_secret
+
+
+def test_restart_reports_failure_when_the_new_server_is_unhealthy():
+    from app.launcher import gui
+
+    sup = gui.LauncherSupervisor()
+    sup._server, sup._window = _FakeServer(), _FakeWindow()
+    sup.start_server = lambda: False
+    sup.start_window = lambda: pytest.fail("must not start a window after a failed server start")
+
+    assert sup.restart() is False
+
+
+# ---------------------------------------------------------------------------
+# Quit
+# ---------------------------------------------------------------------------
+
+def test_quit_stops_both_children_and_releases_the_lock(monkeypatch):
     from app.launcher import gui
 
     release = MagicMock()
     monkeypatch.setattr(gui.instance_lock, "release_lock", release)
-    fake_running = _fake_running_server()
 
-    gui.shutdown(fake_running)
+    sup = gui.LauncherSupervisor()
+    server, window = _FakeServer(), _FakeWindow()
+    sup._server, sup._window = server, window
 
-    fake_running.request_shutdown.assert_called_once()
+    sup.quit()
+
+    assert window.stopped and server.stopped
     release.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# Error message formatting and dialog dispatch
-# ---------------------------------------------------------------------------
-
-def test_format_error_message_includes_reason_and_correlation_id():
+def test_quit_is_idempotent(monkeypatch):
     from app.launcher import gui
-    msg = gui._format_error_message("Something broke.", "abc-123")
-    assert "Something broke." in msg
-    assert "abc-123" in msg
-    assert "Log file" in msg
+
+    release = MagicMock()
+    monkeypatch.setattr(gui.instance_lock, "release_lock", release)
+    sup = gui.LauncherSupervisor()
+    server = _FakeServer()
+    sup._server = server
+
+    sup.quit()
+    sup.quit()
+
+    assert server.stop_calls == 1
+    release.assert_called_once()
 
 
-def test_show_error_dialog_on_non_windows_does_not_raise(monkeypatch):
+def test_quit_blocks_further_recovery(monkeypatch):
+    """Once quitting, a dead server must not be reported as an unexpected
+    failure — otherwise a recovery path could resurrect a child during
+    shutdown."""
+    from app.launcher import gui
+
+    monkeypatch.setattr(gui.instance_lock, "release_lock", MagicMock())
+    sup = gui.LauncherSupervisor()
+    sup._server = _FakeServer(running=False)
+
+    assert sup.server_failed_unexpectedly() is True
+    sup.quit()
+    assert sup.quitting is True
+    assert sup.server_failed_unexpectedly() is False
+
+
+# ---------------------------------------------------------------------------
+# Server failure detection
+# ---------------------------------------------------------------------------
+
+def test_a_running_server_is_not_reported_as_failed():
+    from app.launcher import gui
+    sup = gui.LauncherSupervisor()
+    sup._server = _FakeServer(running=True)
+    assert sup.server_failed_unexpectedly() is False
+
+
+def test_an_unexpected_server_exit_is_detected():
+    from app.launcher import gui
+    sup = gui.LauncherSupervisor()
+    sup._server = _FakeServer(running=False)
+    assert sup.server_failed_unexpectedly() is True
+
+
+# ---------------------------------------------------------------------------
+# Open / focus
+# ---------------------------------------------------------------------------
+
+def test_open_or_focus_shows_an_existing_window():
+    from app.launcher import gui
+    sup = gui.LauncherSupervisor()
+    window = _FakeWindow()
+    sup._window = window
+
+    assert sup.open_or_focus_window() is True
+    assert window.shown is True
+
+
+def test_open_or_focus_starts_a_window_when_there_is_none(monkeypatch):
+    from app.launcher import gui
+    sup = gui.LauncherSupervisor()
+    started = {}
+    monkeypatch.setattr(sup, "start_window", lambda: started.setdefault("yes", True))
+
+    assert sup.open_or_focus_window() is True
+    assert started == {"yes": True}
+
+
+# ---------------------------------------------------------------------------
+# Error dialog content — safe by construction
+# ---------------------------------------------------------------------------
+
+def test_error_message_carries_a_correlation_id_and_a_log_folder():
+    from app.launcher import gui
+    message = gui._format_error_message("Something broke.", "abc-123")
+    assert "Something broke." in message
+    assert "abc-123" in message
+    assert "Logs:" in message
+
+
+def test_error_message_never_contains_a_secret(monkeypatch):
+    """A crash dialog is user-visible; it must never leak the session
+    secret or an API key."""
+    from app.launcher import gui
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-never-appear")
+    message = gui._format_error_message("Startup failed.", "corr-1")
+    assert "sk-" not in message
+
+
+def test_show_error_dialog_off_windows_does_not_raise(monkeypatch):
     from app.launcher import gui
     monkeypatch.setattr(gui.sys, "platform", "linux")
     gui._show_error_dialog("Title", "Message")  # must not raise
 
 
-def test_show_error_dialog_on_windows_calls_message_box(monkeypatch):
-    import ctypes
-    from app.launcher import gui
-
-    monkeypatch.setattr(gui.sys, "platform", "win32")
-    fake_message_box = MagicMock()
-    fake_user32 = MagicMock(MessageBoxW=fake_message_box)
-    fake_windll = MagicMock(user32=fake_user32)
-    monkeypatch.setattr(ctypes, "windll", fake_windll, raising=False)
-
-    gui._show_error_dialog("Title", "Message")
-
-    fake_message_box.assert_called_once()
-    args = fake_message_box.call_args.args
-    assert args[1] == "Message"
-    assert args[2] == "Title"
-
-
 # ---------------------------------------------------------------------------
-# dashboard_url() — routes through first-run setup until it's complete
+# dashboard_url()
 # ---------------------------------------------------------------------------
 
-def test_dashboard_url_points_at_setup_before_onboarding_complete(monkeypatch):
+def test_dashboard_url_points_at_setup_before_onboarding_completes(monkeypatch):
     from app.launcher import gui
     monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: False)
     assert gui.dashboard_url().endswith("/ui/setup")
 
 
-def test_dashboard_url_points_at_dashboard_after_onboarding_complete(monkeypatch):
+def test_dashboard_url_points_at_the_dashboard_after_onboarding(monkeypatch):
     from app.launcher import gui
     monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: True)
     assert gui.dashboard_url().endswith("/ui/")
-    assert not gui.dashboard_url().endswith("/ui/setup")
-
-
-# ---------------------------------------------------------------------------
-# _open_main_window() — native window, falling back to the browser.
-# _open_main_window() itself does `from app.launcher import webview_window`
-# fresh on every call, so patching the real module's attributes (not an
-# attribute on the `gui` module) is what actually takes effect here.
-# ---------------------------------------------------------------------------
-
-def test_open_main_window_uses_the_native_window_when_supported(monkeypatch):
-    from app.launcher import gui, webview_window
-
-    monkeypatch.setattr(webview_window, "is_supported", lambda: True)
-    create_and_run = MagicMock()
-    monkeypatch.setattr(webview_window, "create_and_run", create_and_run)
-    opened = MagicMock()
-    monkeypatch.setattr(gui.webbrowser, "open", opened)
-    monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: True)
-    monkeypatch.setattr(gui.settings, "jarvis_close_action", "tray")
-
-    fake_running = _fake_running_server()
-    request_tray_quit = MagicMock()
-    gui._open_main_window(fake_running, request_tray_quit)
-
-    create_and_run.assert_called_once()
-    assert create_and_run.call_args.kwargs["url"] == gui.dashboard_url()
-    assert create_and_run.call_args.kwargs["close_action"] == "tray"
-    opened.assert_not_called()
-
-
-def test_open_main_window_falls_back_to_browser_when_not_supported(monkeypatch):
-    from app.launcher import gui, webview_window
-
-    monkeypatch.setattr(webview_window, "is_supported", lambda: False)
-    create_and_run = MagicMock()
-    monkeypatch.setattr(webview_window, "create_and_run", create_and_run)
-    opened = MagicMock()
-    monkeypatch.setattr(gui.webbrowser, "open", opened)
-
-    gui._open_main_window(_fake_running_server(), MagicMock())
-
-    create_and_run.assert_not_called()
-    opened.assert_called_once_with(gui.dashboard_url())
-
-
-def test_open_main_window_falls_back_to_browser_when_native_window_raises(monkeypatch):
-    """The core safety property from this milestone's own spec: JARVIS
-    must keep working even when the native shell can't be created for
-    some reason (WebView2 Runtime absent, pythonnet/.NET missing, ...) —
-    never a hard failure, never a silently broken/insecure window."""
-    from app.launcher import gui, webview_window
-
-    monkeypatch.setattr(webview_window, "is_supported", lambda: True)
-    monkeypatch.setattr(webview_window, "create_and_run", MagicMock(side_effect=RuntimeError("no WebView2 runtime")))
-    opened = MagicMock()
-    monkeypatch.setattr(gui.webbrowser, "open", opened)
-
-    gui._open_main_window(_fake_running_server(), MagicMock())
-
-    opened.assert_called_once_with(gui.dashboard_url())
-
-
-def test_open_main_window_on_quit_callback_shuts_down_and_requests_tray_quit(monkeypatch):
-    """The window's on_quit callback (only invoked by webview_window when
-    close_action="quit") must tear down both halves of the app: the
-    server/lock (shutdown()) and the tray running on its own thread
-    (request_tray_quit()) — otherwise one half would be left running
-    with the other gone."""
-    from app.launcher import gui, webview_window
-
-    monkeypatch.setattr(webview_window, "is_supported", lambda: True)
-    captured = {}
-
-    def _fake_create_and_run(**kwargs):
-        captured["on_quit"] = kwargs["on_quit"]
-
-    monkeypatch.setattr(webview_window, "create_and_run", _fake_create_and_run)
-    shutdown_mock = MagicMock()
-    monkeypatch.setattr(gui, "shutdown", shutdown_mock)
-
-    fake_running = _fake_running_server()
-    request_tray_quit = MagicMock()
-    gui._open_main_window(fake_running, request_tray_quit)
-
-    assert "on_quit" in captured
-    captured["on_quit"]()
-
-    shutdown_mock.assert_called_once_with(fake_running)
-    request_tray_quit.assert_called_once()
