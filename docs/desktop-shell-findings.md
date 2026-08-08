@@ -1,7 +1,32 @@
 # Desktop shell: pywebview in-process shutdown is not reliable
 
-Status: **open blocker for the release candidate.** Recorded here so the
-evidence is not lost between sessions.
+Status: **RESOLVED** by the three-process architecture (commit
+`0a5c9a2`). The analysis below is kept because it is the evidence that
+justified the redesign, and because the failure mode it documents is
+easy to reintroduce by moving the tray off the parent's main thread.
+
+## Resolution
+
+The server and the window each became their own child process, and the
+tray's message loop went back onto the parent's main thread — the
+configuration that was reliably green before pywebview ever existed:
+
+    parent JARVIS.exe        tray message loop on the MAIN thread
+      +-- JARVIS.exe --api      FastAPI/uvicorn, loopback only
+      +-- JARVIS.exe --window   pywebview, owning that child's main thread
+
+Measured on the real `Windows Installer` job, same test, same assertions:
+
+| Architecture | Runs | Passed |
+|---|---|---|
+| Single process (pywebview on the parent main thread) | 6 | 2 |
+| Three processes (`0a5c9a2`) | 4 | 4 |
+
+Four consecutive passes against a ~33% observed base rate is about 1.2%
+likely by chance, and it agrees with the mechanism: the parent once again
+owns a main-thread window, so a graceful close has somewhere to land. No
+installer assertion was weakened to get there — `scripts/test_clean_install.py`
+still uses `taskkill` with no `/F`.
 
 ## What was built
 
