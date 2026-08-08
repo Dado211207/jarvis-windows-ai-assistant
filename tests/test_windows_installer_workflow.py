@@ -95,3 +95,55 @@ def test_path_scoped_not_unconditional():
     assert "workflow_dispatch" in on
     assert "paths" in on["pull_request"]
     assert "packaging/**" in on["pull_request"]["paths"]
+
+
+# ---------------------------------------------------------------------------
+# Docs-only pushes must not require the expensive installer job
+# ---------------------------------------------------------------------------
+
+def _jobs() -> dict:
+    return _parsed()["jobs"]
+
+
+def test_a_gate_job_decides_whether_the_installer_build_is_needed():
+    """Regression guard for a real, verified waste: three consecutive
+    documentation-only commits each triggered a full Windows installer
+    build (PyInstaller + Inno Setup + install/uninstall of a real app).
+
+    The `paths:` filters alone cannot prevent this. For pull_request
+    events GitHub evaluates them against the PR's *cumulative* diff
+    versus the base branch, not the commits just pushed — and this PR
+    genuinely changes many files under app/ and packaging/, so the filter
+    matches on every push including docs-only ones. A separate gate job
+    that inspects only the pushed range is what actually expresses "skip
+    if this push changed nothing relevant"."""
+    jobs = _jobs()
+    assert "detect-relevant-changes" in jobs, "expected a cheap gate job before the installer build"
+
+    build = jobs["build-and-test-installer"]
+    assert build.get("needs") == "detect-relevant-changes"
+    assert "relevant" in (build.get("if") or ""), "the build must be conditional on the gate's output"
+
+
+def test_the_gate_treats_packaging_paths_as_relevant():
+    gate = _jobs()["detect-relevant-changes"]
+    script = " ".join(str(step.get("run", "")) for step in gate["steps"])
+    for required in ("app/", "packaging/", "run_jarvis", "build-installer", "test_clean_install"):
+        assert required in script, f"{required} must count as a packaging-relevant change"
+
+
+def test_the_gate_fails_safe_and_builds_when_the_range_is_unknown():
+    """A gate that skipped on uncertainty could silently drop a build that
+    mattered. Unknown range, or a manual dispatch, must always build."""
+    gate = _jobs()["detect-relevant-changes"]
+    script = " ".join(str(step.get("run", "")) for step in gate["steps"])
+    assert "workflow_dispatch" in script
+    assert script.count("relevant=true") >= 2, "expected explicit fail-safe branches that still build"
+
+
+def test_superseded_runs_are_cancelled():
+    """This job installs and uninstalls a real application; two of them
+    racing on one runner is both wasteful and a source of spurious
+    failures."""
+    data = _parsed()
+    assert data["concurrency"]["cancel-in-progress"] is True

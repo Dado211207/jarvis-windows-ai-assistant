@@ -30,10 +30,71 @@ on:
       - "requirements-windows.txt"
       - "run_jarvis.py"
 
+# Supersede an in-flight run when a newer commit lands on the same branch:
+# this job takes several minutes and installs/uninstalls a real
+# application, so racing two of them against one runner's registry and
+# %LOCALAPPDATA% is both wasteful and a source of spurious failures.
+concurrency:
+  group: windows-installer-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Why this gate exists, verified rather than assumed: the `paths:`
+  # filters above do NOT do what they appear to for pull_request events.
+  # GitHub evaluates them against the PR's *cumulative* diff versus the
+  # base branch, not against the commits just pushed. This PR genuinely
+  # changes 60 files under app/ and packaging/, so the filter matches on
+  # every push to the branch — including documentation-only ones, which
+  # is exactly what was observed (three docs-only commits each triggered
+  # a full installer build). The filter is behaving as designed; the
+  # design just does not express "skip if this push changed nothing
+  # relevant".
+  #
+  # This job answers that narrower question by diffing only the range the
+  # push actually introduced. It fails safe: any time the range cannot be
+  # determined (a first push, a force-push, a manual dispatch), it runs
+  # the expensive job rather than risk skipping a build that mattered.
+  detect-relevant-changes:
+    name: "Detect packaging-relevant changes"
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.check.outputs.relevant }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the installer job is needed
+        id: check
+        shell: bash
+        env:
+          RANGE_BEFORE: ${{ github.event.before || github.event.pull_request.base.sha }}
+          RANGE_AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — always build."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "${RANGE_BEFORE}" ] || ! git cat-file -e "${RANGE_BEFORE}^{commit}" 2>/dev/null; then
+            echo "Push range unavailable — failing safe and building."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CHANGED="$(git diff --name-only "${RANGE_BEFORE}" "${RANGE_AFTER}")"
+          echo "Files changed in this push range:"; echo "${CHANGED}"
+          if echo "${CHANGED}" | grep -qE '^(app/|packaging/|run_jarvis\.py|requirements.*\.txt|scripts/build-installer\.ps1|scripts/test_clean_install\.py|\.github/workflows/windows-installer\.yml)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Only unrelated files (docs, etc.) changed — skipping the installer build."
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build-and-test-installer:
     name: "Windows Installer / windows-latest"
     runs-on: windows-latest
+    needs: detect-relevant-changes
+    if: needs.detect-relevant-changes.outputs.relevant == 'true'
 
     steps:
       - name: Checkout repository
