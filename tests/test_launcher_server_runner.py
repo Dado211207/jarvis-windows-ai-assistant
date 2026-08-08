@@ -5,6 +5,7 @@ fixture already use, not a mocked HTTP layer.
 """
 
 import socket
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -96,6 +97,44 @@ def test_run_server_logs_and_swallows_a_crashing_server(caplog):
 
     assert any("crashed" in record.message.lower() for record in caplog.records)
     assert any(record.exc_info for record in caplog.records), "exception traceback must be logged, not just a bare message"
+
+
+def test_server_starts_successfully_when_stdout_and_stderr_are_none():
+    """Regression test for the real root cause behind the CI failure the
+    two tests above were added to help diagnose: uvicorn.Config()'s
+    default logging setup calls logging.config.dictConfig() on a config
+    that wires "ext://sys.stdout"/"ext://sys.stderr" StreamHandlers —
+    both are None in a real --windowed/console=False PyInstaller build
+    (the exact condition app/logging_config.py's own console-handler fix
+    already accounts for), and dictConfig() raises ValueError trying to
+    configure them. That exception was never caught anywhere in
+    start_server_in_background(), so it reached PyInstaller's own
+    bootloader (disable_windowed_traceback=False in packaging/jarvis.spec),
+    which shows a native traceback dialog box with no human on a CI
+    runner to dismiss it — matching exactly what real CI runs showed: the
+    process stayed alive, jarvis.log never received a single line, and
+    wait_until_healthy() just timed out with no explanation anywhere.
+
+    This reproduces the real condition directly (not mocked) with the
+    real uvicorn library and proves start_server_in_background() still
+    produces a genuinely healthy, responding server — the strongest
+    possible evidence the fix (log_config=None when stdout/stderr are
+    None) actually works, not just that the right keyword was passed."""
+    from app.launcher import server_runner
+
+    port = _free_port()
+    original_stdout, original_stderr = sys.stdout, sys.stderr
+    sys.stdout = None
+    sys.stderr = None
+    try:
+        running = server_runner.start_server_in_background(host="127.0.0.1", port=port)
+    finally:
+        sys.stdout, sys.stderr = original_stdout, original_stderr
+
+    try:
+        assert server_runner.wait_until_healthy(host="127.0.0.1", port=port, timeout_seconds=10) is True
+    finally:
+        running.request_shutdown(join_timeout=5)
 
 
 def test_server_shutdown_releases_tts_resources(running_server):

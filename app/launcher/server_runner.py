@@ -8,6 +8,7 @@ approach to "start real uvicorn, wait for real health, shut down
 cleanly" instead of the launcher inventing a second one.
 """
 
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -68,12 +69,38 @@ def start_server_in_background(host: Optional[str] = None, port: Optional[int] =
     host = host if host is not None else settings.jarvis_host
     port = port if port is not None else settings.jarvis_port
 
+    config_kwargs = {}
+    if sys.stdout is None or sys.stderr is None:
+        # Root cause of a real hang found via a boot-trace CI investigation:
+        # uvicorn.Config.__init__() calls configure_logging(), whose default
+        # log_config wires "ext://sys.stdout"/"ext://sys.stderr" StreamHandlers
+        # through logging.config.dictConfig() — both are None in a
+        # --windowed/console=False PyInstaller build, and dictConfig() raises
+        # ValueError trying to configure them (reproduced directly: calling
+        # dictConfig(uvicorn.config.LOGGING_CONFIG) with sys.stdout/stderr set
+        # to None raises "Unable to configure formatter 'default'"). That
+        # exception is never caught here, so it propagates to PyInstaller's
+        # own bootloader (jarvis.spec sets disable_windowed_traceback=False),
+        # which shows a native traceback dialog box — with no human on a CI
+        # runner (or any unattended machine) to dismiss it, this blocks
+        # forever: the process stays alive, jarvis.log never receives a
+        # single line (nothing got far enough to log it), and
+        # wait_until_healthy() just times out with no explanation, which is
+        # exactly what 30+ seconds of real CI runs showed before this was
+        # tracked down. Passing log_config=None disables uvicorn's own
+        # dictConfig() call entirely (log_level= below still works — it's
+        # handled in a separate, independent branch of configure_logging());
+        # app/logging_config.py's own "jarvis" logger already handles a None
+        # sys.stdout safely, so this app's own logging is unaffected.
+        config_kwargs["log_config"] = None
+
     config = uvicorn.Config(
         fastapi_app,
         host=host,
         port=port,
         reload=False,
         log_level=settings.jarvis_log_level.lower(),
+        **config_kwargs,
     )
     boot_trace.trace("start_server_in_background() uvicorn.Config built")
     server = uvicorn.Server(config)
