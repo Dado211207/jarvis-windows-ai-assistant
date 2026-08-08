@@ -75,10 +75,14 @@ def start_server_in_background(host: Optional[str] = None, port: Optional[int] =
         reload=False,
         log_level=settings.jarvis_log_level.lower(),
     )
+    boot_trace.trace("start_server_in_background() uvicorn.Config built")
     server = uvicorn.Server(config)
+    boot_trace.trace("start_server_in_background() uvicorn.Server built, about to start thread")
     thread = threading.Thread(target=_run_server, args=(server,), daemon=True, name="jarvis-uvicorn")
     thread.start()
+    boot_trace.trace("start_server_in_background() thread.start() returned, about to call logger.info")
     logger.info("Background uvicorn thread started on %s:%s", host, port)
+    boot_trace.trace("start_server_in_background() logger.info() returned")
     return RunningServer(server=server, thread=thread)
 
 
