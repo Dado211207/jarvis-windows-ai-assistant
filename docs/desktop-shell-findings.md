@@ -24,17 +24,27 @@ keeps running invisibly and an upgrade cannot close it automatically.
 
 ## Why we know it is nondeterministic, not just broken
 
-Two consecutive CI runs on **byte-identical code**:
+Three consecutive CI runs on **identical application code**:
 
 | Commit | Code difference | `Windows Installer` job |
 |---|---|---|
 | `d109d7c` | — | ✅ pass (`ALL CLEAN-INSTALL CHECKS PASSED`) |
-| `9a8ca9c` | **empty commit** — message only, zero code change | ❌ fail (Phase A.9) |
+| `9a8ca9c` | **empty commit** — message only, zero change | ❌ fail (Phase A.9) |
+| `5a5bee7` | **docs only** — adds this file, no code touched | ❌ fail (Phase A.9) |
 
-`git diff d109d7c 9a8ca9c` is empty. Same installer, same test, opposite
-outcomes. So this is a race, not a deterministic defect — which is worse
-for a release candidate than a consistent failure, because a green run
-proves nothing.
+`git diff d109d7c 9a8ca9c` is empty, and `5a5bee7` changes nothing under
+`app/`, `scripts/` or `packaging/`. Same installer, same test, differing
+outcomes.
+
+So this is a race, not a deterministic defect — which is worse for a
+release candidate than a consistent failure, because a green run proves
+nothing on its own. Note the direction: **it mostly fails.** One pass in
+three is the outlier, not a 50/50 coin flip, so `d109d7c`'s green run
+should be read as luck rather than as evidence the mitigations landed.
+
+All three failures share one signature: the trace ends at
+`tray PumpMessages() starting` (plus the second instance's own startup
+lines from Phase A.8) and stops. No shutdown message is ever traced.
 
 ## What the boot trace proves
 
