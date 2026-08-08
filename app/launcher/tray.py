@@ -242,6 +242,11 @@ def run_tray_loop(
         quit_started.set()
         logger.info("Tray: quitting JARVIS.")
         stop_event.set()
+        # From here on the process is committed to exiting. A native GUI
+        # loop that refuses to unwind must not be able to leave JARVIS
+        # running invisibly — see force_exit_after()'s docstring for why
+        # a bounded force-exit is safe for this app's state model.
+        webview_window.force_exit_after()
         # destroy_existing() calls request_shutdown() first, so a window
         # configured to close-to-tray does not veto this teardown — see
         # webview_window.request_shutdown()'s docstring for the real CI
@@ -292,10 +297,37 @@ def run_tray_loop(
         if selected in action_by_id:
             action_by_id[selected]()
 
+    # Diagnostic only: which window messages does this hidden window
+    # actually receive? Added after a real windows-latest CI failure
+    # where a graceful `taskkill` (no /F) produced *no* trace from either
+    # this wnd_proc or the native window's own closing handler — the
+    # process simply ignored the request. Tracing a small allowlist of
+    # shutdown-related messages (not every message, which would flood the
+    # trace file) is what distinguishes "the message never arrived" from
+    # "it arrived and the handler misbehaved" — two very different bugs
+    # that look identical from the outside.
+    _SHUTDOWN_MESSAGES = {
+        win32con.WM_CLOSE: "WM_CLOSE",
+        win32con.WM_DESTROY: "WM_DESTROY",
+        win32con.WM_QUIT: "WM_QUIT",
+        win32con.WM_QUERYENDSESSION: "WM_QUERYENDSESSION",
+        win32con.WM_ENDSESSION: "WM_ENDSESSION",
+    }
+
     def wnd_proc(hwnd_, msg, wparam, lparam):
+        if msg in _SHUTDOWN_MESSAGES:
+            from app.launcher import boot_trace
+            boot_trace.trace(f"tray wnd_proc received {_SHUTDOWN_MESSAGES[msg]}")
         if msg == WM_TRAYICON and lparam in (win32con.WM_LBUTTONUP, win32con.WM_RBUTTONUP):
             show_context_menu()
             return 0
+        if msg == win32con.WM_QUERYENDSESSION:
+            # Windows logoff/shutdown asks permission first; answering
+            # non-zero (allow) and treating it as a real close request is
+            # what lets JARVIS exit cleanly on a session end instead of
+            # being killed outright.
+            do_quit()
+            return 1
         if msg == win32con.WM_CLOSE:
             # A graceful `taskkill` (no /F) and Inno Setup's
             # CloseApplicationsFilter (Restart Manager close request)

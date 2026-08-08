@@ -175,6 +175,38 @@ def show_existing() -> bool:
         return False
 
 
+def force_exit_after(grace_seconds: float = 8.0) -> "threading.Timer":
+    """Guarantees the process actually dies once a shutdown has been
+    requested, even if a native GUI loop refuses to unwind.
+
+    This app has no unsaved in-memory user state to lose: every SQLite
+    write is committed synchronously at the point of the operation, the
+    pending-approval queue is deliberately in-memory/reset-on-restart
+    (see app/core/pending_actions.py), and privacy mode is documented as
+    per-process. So once uvicorn has been asked to stop and the instance
+    lock released, an os._exit() is a clean end, not a data-loss risk —
+    and a packaged desktop app that cannot be closed is a far worse
+    outcome than one that exits abruptly after a bounded grace period.
+
+    Runs on a daemon timer thread so it never itself keeps the process
+    alive; if normal teardown finishes first, the interpreter exits and
+    this never fires. Returns the timer so tests can cancel it instead of
+    waiting for a real os._exit() to take the test runner down with it."""
+
+    def _bail() -> None:
+        import os
+
+        from app.launcher import boot_trace
+        boot_trace.trace(f"force_exit_after({grace_seconds}s) firing — normal teardown did not finish")
+        logger.warning("Shutdown did not complete within %.1fs — forcing exit.", grace_seconds)
+        os._exit(0)
+
+    timer = threading.Timer(grace_seconds, _bail)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def request_shutdown() -> None:
     """Marks a real shutdown as underway, so any subsequent close is
     allowed through instead of being converted into a minimize-to-tray.

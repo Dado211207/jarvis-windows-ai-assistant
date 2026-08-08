@@ -355,3 +355,40 @@ def test_quit_is_the_default_close_action_in_settings():
     failure above, so it's worth failing loudly on."""
     from app.config import Settings
     assert Settings().jarvis_close_action == "quit"
+
+
+# ---------------------------------------------------------------------------
+# force_exit_after — the "JARVIS must never become unclosable" guarantee
+# ---------------------------------------------------------------------------
+
+def test_force_exit_after_schedules_a_daemon_timer_that_has_not_fired_yet():
+    """Deliberately never lets the real timer elapse: its callback is
+    os._exit(), which would take the test runner down with it. Proving
+    the timer is armed and daemonic is the testable part; that
+    os._exit() ends a process needs no test."""
+    from app.launcher import webview_window
+
+    timer = webview_window.force_exit_after(grace_seconds=30)
+    try:
+        assert timer.is_alive()
+        assert timer.daemon is True, "the watchdog must never itself keep the process alive"
+    finally:
+        timer.cancel()
+
+
+def test_force_exit_after_callback_calls_os_exit(monkeypatch):
+    """Runs the watchdog's callback directly (never via a real elapsed
+    timer) with os._exit patched, so the actual "does it force the
+    process to exit" behaviour is proven rather than assumed from the
+    source reading."""
+    import os
+
+    from app.launcher import webview_window
+
+    exit_calls = []
+    monkeypatch.setattr(os, "_exit", lambda code: exit_calls.append(code))
+
+    timer = webview_window.force_exit_after(grace_seconds=0.01)
+    timer.join(timeout=5)
+
+    assert exit_calls == [0]
