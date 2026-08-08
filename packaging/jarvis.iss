@@ -60,14 +60,30 @@
 ; Inno Setup recognize "this is an upgrade of the same product" (so
 ; Programs & Features shows one entry with repair/upgrade/uninstall,
 ; not a duplicate) rather than an unrelated fresh install each time.
-; No enclosing braces here — AppId= below supplies them via the {{
-; escape (a literal "{") followed by this constant's raw text, which is
-; the standard Inno Setup idiom. Defining the braces in *both* places
-; would double them up into a malformed GUID.
+;
+; No {curly-brace} GUID wrapper, deliberately: two earlier attempts at
+; combining ISPP's {#MyAppId} substitution with Inno Setup's own {{
+; literal-brace escape both failed — braces in both places doubled up
+; into a malformed GUID (caught in review); braces in neither place plus
+; a {{ escape left the value with no closing brace at all (caught for
+; real on windows-latest CI, "A "}" is missing at the end of the
+; constant"). Both failures came from the same root cause: ISPP
+; substitution runs before Inno Setup's own {-escaping, so a { adjacent
+; to the ISPP token gets consumed as part of {#MyAppId} instead of
+; pairing the way it would in a plain, non-preprocessed value. Per
+; Inno Setup's own AppId documentation (jrsoftware.org/ishelp/
+; topic_setup_appid.htm), the braces were never required in the first
+; place — its own example is the bare string "MyProgram", and "AppId is
+; not used for display anywhere" — the {GUID} bracketed form is a
+; Windows/COM styling convention, not an Inno Setup parsing requirement.
+; Dropping it removes the escaping interaction entirely rather than
+; attempting a third variation of it: AppId below is plain, unescaped
+; {#MyAppId} substitution, resolving to the bare GUID text with no
+; wrapping braces — still fixed, still unique, still under 127 chars.
 #define MyAppId "B4E6D9A1-7C2E-4F3A-9B1D-6A8E3F0C5D42"
 
 [Setup]
-AppId={{#MyAppId}
+AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}

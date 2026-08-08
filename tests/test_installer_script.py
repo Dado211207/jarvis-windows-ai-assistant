@@ -64,21 +64,32 @@ def test_default_install_dir_is_per_user_localappdata():
 
 
 # ---------------------------------------------------------------------------
-# AppId GUID formed correctly (regression guard for the brace-doubling
-# bug caught during development — AppId={{#MyAppId} with an *unbraced*
-# #define MyAppId, not both)
+# AppId formed correctly. Regression guard for two real, sequential
+# failures caught during development: braces in *both* the #define value
+# and a {{ escape doubled up into a malformed GUID (caught in review);
+# braces in *neither* place plus a {{ escape left the value with no
+# closing brace at all ('A "}" is missing at the end of the constant',
+# caught for real on windows-latest CI — ISPP's {#MyAppId} substitution
+# runs before Inno Setup's own {-escaping, so a { adjacent to the ISPP
+# token gets consumed by it instead of pairing as intended). Resolved by
+# dropping the {} GUID-styling wrapper entirely, per Inno Setup's own
+# AppId documentation (jrsoftware.org/ishelp/topic_setup_appid.htm),
+# whose own example is the bare string "MyProgram" — braces were never
+# a parsing requirement, only a Windows/COM display convention, and
+# "AppId is not used for display anywhere."
 # ---------------------------------------------------------------------------
 
 def test_app_id_constant_has_no_own_braces():
     content = _read()
     match = re.search(r'#define MyAppId "([^"]*)"', content)
     assert match, "MyAppId #define not found"
-    assert not match.group(1).startswith("{"), "MyAppId must not include its own braces — AppId={{#MyAppId} already supplies them"
+    assert not match.group(1).startswith("{"), "MyAppId is deliberately unbraced — see the [Setup] section's own comment"
 
 
-def test_app_id_directive_uses_the_escape_pattern():
+def test_app_id_directive_uses_plain_unescaped_substitution():
     setup = _section("Setup")
-    assert "AppId={{#MyAppId}" in setup
+    assert "AppId={#MyAppId}" in setup
+    assert "AppId={{#MyAppId}" not in setup
 
 
 # ---------------------------------------------------------------------------
