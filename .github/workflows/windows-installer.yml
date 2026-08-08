@@ -1,0 +1,86 @@
+name: Windows Installer
+
+# Separate from ci.yml deliberately: this job installs Inno Setup, runs
+# the full test suite, produces a real PyInstaller + Inno Setup build,
+# and then silent-installs/launches/uninstalls the *real* result — a
+# slower, heavier, more side-effecting job than ci.yml's fast per-PR
+# feedback loop. Path-scoped so it only runs when packaging-relevant
+# files actually change, plus workflow_dispatch for an on-demand build.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/**"
+      - "packaging/**"
+      - "scripts/build-installer.ps1"
+      - "scripts/test_clean_install.py"
+      - "requirements.txt"
+      - "requirements-windows.txt"
+      - "run_jarvis.py"
+      - ".github/workflows/windows-installer.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "packaging/**"
+      - "scripts/build-installer.ps1"
+      - "scripts/test_clean_install.py"
+      - "requirements.txt"
+      - "requirements-windows.txt"
+      - "run_jarvis.py"
+
+jobs:
+  build-and-test-installer:
+    name: "Windows Installer / windows-latest"
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --version=6.7.3 --no-progress -y
+
+      - name: Build the installer (dependencies, tests, PyInstaller, Inno Setup, checksum)
+        shell: pwsh
+        run: .\scripts\build-installer.ps1
+
+      - name: Automated clean-install acceptance test
+        shell: pwsh
+        # Runs against the real installer produced above: silent install,
+        # launch the real JARVIS.exe (not repository Python), real
+        # /health + dashboard HTTP traffic, single-instance check,
+        # graceful stop, silent uninstall (data preserved by default),
+        # reinstall, silent uninstall with explicit /DELETEDATA=yes.
+        run: python scripts\test_clean_install.py
+
+      - name: Upload installer-test logs (always, for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Installer-Test-Logs
+          path: packaging/dist/installer-test-logs/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # This repository is private, so this artifact is only visible to
+      # accounts with read access to it — never publicly downloadable.
+      # No release is published or made public by this workflow; see
+      # the packaging report for the browser-based download/verification
+      # instructions this artifact is meant to be used with.
+      - name: Upload installer artifact (private)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Windows-Installer
+          path: |
+            packaging/dist/installer/JARVIS-Setup-*.exe
+            packaging/dist/installer/JARVIS-Setup-*.exe.sha256
+          retention-days: 30

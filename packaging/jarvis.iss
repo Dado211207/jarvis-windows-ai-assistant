@@ -5,8 +5,8 @@
 ; not assumed. Inno Setup 7.0.2 exists but 6.x was chosen deliberately:
 ; it is the long-established, CI-tooling-mature line (available via
 ; Chocolatey's innosetup package, used in this project's
-; scripts/build-installer.ps1 and .github/workflows/ci.yml) versus a
-; very recent major-version release with less-proven automation
+; scripts/build-installer.ps1 and .github/workflows/windows-installer.yml)
+; versus a very recent major-version release with less-proven automation
 ; support. Inno Setup itself is a modified zlib/libpng license
 ; (permissive, free for any use including commercial — verified via
 ; jrsoftware.org/files/is/license.txt, not assumed from the website's
