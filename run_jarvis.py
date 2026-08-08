@@ -27,8 +27,18 @@ import sys
 def _run() -> None:
     argv = sys.argv[1:]
     if "--api" in argv:
+        # Internal mode: the server child. Started by the parent launcher
+        # (app/launcher/server_process.py), never by a Start-menu
+        # shortcut.
         from app.api.server import run_api
         run_api()
+    elif "--window" in argv:
+        # Internal mode: the window child. Started by the parent launcher
+        # (app/launcher/window_process.py) with an inherited IPC context;
+        # exits with a clear message if that context is absent, so running
+        # it by hand is harmless rather than confusing.
+        from app.launcher.window_main import main as window_main
+        sys.exit(window_main(argv))
     elif "--cli" in argv:
         from app.main import main
         main()

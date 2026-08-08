@@ -156,6 +156,15 @@ def create_and_run(
     boot_trace.trace("webview.start() returned")
 
 
+def current_window():
+    """The live window object, or None before create_and_run() has built
+    one (or after it has closed). Exists so the window child's IPC pump
+    thread can wait for the window rather than race its construction —
+    see app/launcher/window_main.py."""
+    with _window_lock:
+        return _window
+
+
 def show_existing() -> bool:
     """Brings the existing window to the front, un-hiding it if it was
     previously closed-to-tray. Returns False if no window exists yet (it
