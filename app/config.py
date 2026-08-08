@@ -45,14 +45,25 @@ class Settings(BaseSettings):
     jarvis_stt_allow_download: bool = False  # must be explicit; faster-whisper otherwise refuses to fetch a model
     jarvis_stt_timeout_seconds: int = 30
 
-    # Native desktop window (packaging release-candidate pass). "tray":
-    # the window's close (X) button hides it instead of quitting — JARVIS
-    # keeps running, same as most normal Windows tray apps. "quit": close
-    # actually shuts JARVIS down. See app/launcher/webview_window.py.
+    # Native desktop window (packaging release-candidate pass). "quit":
+    # the window's close (X) button shuts JARVIS down — the default, and
+    # what most people expect an X button to do. "tray": close hides the
+    # window instead and JARVIS keeps running in the system tray.
+    #
+    # "quit" is the default for a real, CI-verified reason, not just
+    # convention: a graceful `taskkill` (which is what Windows, and the
+    # Inno Setup uninstaller's CloseApplications, use to ask this process
+    # to exit) delivers the very same WM_CLOSE message a user's X click
+    # does, and they cannot be told apart at the pywebview level. With
+    # "tray" as the default, the app cancelled that close and refused to
+    # exit — caught on windows-latest CI. See
+    # app/launcher/webview_window.py::request_shutdown(), which keeps the
+    # opt-in "tray" mode stoppable too.
+    #
     # Invalid values fall back to "tray" (see resolve_close_action()) —
-    # the safer default, since it never surprises the user by silently
-    # ending a running server they didn't ask to stop.
-    jarvis_close_action: str = "tray"
+    # that fallback is about an unparseable *user setting*, where not
+    # silently killing a running server is the safer reading.
+    jarvis_close_action: str = "quit"
 
     @property
     def db_path(self) -> Path:

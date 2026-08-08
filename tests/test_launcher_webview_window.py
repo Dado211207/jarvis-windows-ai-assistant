@@ -64,13 +64,15 @@ class _FakeWebviewModule:
 
 @pytest.fixture(autouse=True)
 def _reset_module_window():
-    """create_and_run() sets a module-level _window — reset it around
-    every test so one test's fake window can never leak into another's
-    show_existing()/destroy_existing() assertions."""
+    """create_and_run() sets a module-level _window, and request_shutdown()
+    sets a module-level Event — reset both around every test so one
+    test's state can never leak into another's assertions."""
     from app.launcher import webview_window
     webview_window._window = None
+    webview_window._shutdown_requested.clear()
     yield
     webview_window._window = None
+    webview_window._shutdown_requested.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -299,3 +301,57 @@ def test_destroy_existing_never_raises_even_if_destroy_fails():
     fake.created_window.destroy.side_effect = RuntimeError("already gone")
 
     webview_window.destroy_existing()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# request_shutdown — the close-to-tray veto must never block a real shutdown
+# ---------------------------------------------------------------------------
+
+def test_tray_close_action_stops_cancelling_the_close_once_shutdown_is_requested():
+    """Regression test for a real windows-latest CI failure: with
+    close_action="tray", the window's close handler cancelled the
+    WM_CLOSE that a graceful `taskkill` sends, so the packaged app
+    refused to exit and the clean-install test timed out waiting for it
+    (Phase A.9). A user's X click and an OS/installer shutdown request
+    are the same WM_CLOSE message and can't be told apart at the
+    pywebview level — request_shutdown() is the explicit signal that
+    distinguishes them."""
+    from app.launcher import webview_window
+
+    fake = _FakeWebviewModule()
+    webview_window.create_and_run(
+        url="http://x/", icon_path=None, close_action="tray", on_quit=MagicMock(), webview_module=fake,
+    )
+    assert fake.created_window.events.closing.fire() is False  # normal X click: still minimizes to tray
+
+    webview_window.request_shutdown()
+
+    assert fake.created_window.events.closing.fire() is not False, (
+        "a close arriving after request_shutdown() must proceed, not be converted to a hide"
+    )
+
+
+def test_destroy_existing_requests_shutdown_first():
+    """The tray's Quit path calls destroy_existing(); that must itself
+    disarm the close-to-tray veto, so a tray-initiated quit can never be
+    silently swallowed by the window's own close handler."""
+    from app.launcher import webview_window
+
+    fake = _FakeWebviewModule()
+    webview_window.create_and_run(
+        url="http://x/", icon_path=None, close_action="tray", on_quit=MagicMock(), webview_module=fake,
+    )
+
+    webview_window.destroy_existing()
+
+    assert webview_window._shutdown_requested.is_set()
+
+
+def test_quit_is_the_default_close_action_in_settings():
+    """Not a style preference: "quit" is the default specifically because
+    a graceful taskkill must be able to stop the packaged app (see
+    request_shutdown()'s docstring and app/config.py's own comment).
+    Flipping this default back to "tray" would reintroduce the exact CI
+    failure above, so it's worth failing loudly on."""
+    from app.config import Settings
+    assert Settings().jarvis_close_action == "quit"

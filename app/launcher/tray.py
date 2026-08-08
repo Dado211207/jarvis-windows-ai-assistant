@@ -240,6 +240,10 @@ def run_tray_loop(
         quit_started.set()
         logger.info("Tray: quitting JARVIS.")
         stop_event.set()
+        # destroy_existing() calls request_shutdown() first, so a window
+        # configured to close-to-tray does not veto this teardown — see
+        # webview_window.request_shutdown()'s docstring for the real CI
+        # failure that made that necessary.
         webview_window.destroy_existing()  # lets the main thread's webview.start() return, if a native window exists
         gui.shutdown(running)  # stops uvicorn (whose own shutdown releases TTS/voice resources) and the instance lock
         client.close()

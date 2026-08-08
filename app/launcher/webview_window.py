@@ -44,6 +44,7 @@ VALID_CLOSE_ACTIONS = ("tray", "quit")
 
 _window = None  # the one window this process ever creates
 _window_lock = threading.Lock()
+_shutdown_requested = threading.Event()
 
 
 def resolve_close_action(configured: str) -> str:
@@ -72,6 +73,13 @@ def _make_handlers(close_action: str, on_quit: Callable[[], None]):
     via an injected fake webview module in create_and_run()."""
 
     def on_closing() -> Optional[bool]:
+        if _shutdown_requested.is_set():
+            # A real shutdown is already underway (tray Quit, or anything
+            # else that called request_shutdown()). Close-to-tray must
+            # never veto that — otherwise the app would refuse to die and
+            # the caller would just time out waiting for it.
+            logger.info("Window close requested during shutdown — allowing it.")
+            return None
         if close_action == "tray":
             logger.info("Window close requested — minimizing to tray (close_action=tray).")
             with _window_lock:
@@ -159,12 +167,35 @@ def show_existing() -> bool:
         return False
 
 
+def request_shutdown() -> None:
+    """Marks a real shutdown as underway, so any subsequent close is
+    allowed through instead of being converted into a minimize-to-tray.
+
+    Exists because of a real windows-latest CI failure: with
+    close_action="tray" (the safer default for a user clicking the X
+    button), the window's own close handler cancelled the WM_CLOSE that
+    a graceful `taskkill` sends — so the packaged app deliberately
+    refused to exit and the clean-install test timed out waiting for it.
+    Before the native window existed, the tray's hidden window was the
+    process's only top-level window and always received that WM_CLOSE;
+    a visible window changes which window Windows delivers it to, which
+    is exactly what made a previously-passing check start failing.
+
+    "The user clicked X" and "the OS/installer asked this process to
+    exit" arrive as the same WM_CLOSE message and cannot be told apart
+    at the pywebview level, so this is the explicit signal that
+    distinguishes them: everything that initiates a genuine shutdown
+    (see app/launcher/tray.py::do_quit) calls this first."""
+    _shutdown_requested.set()
+
+
 def destroy_existing() -> None:
     """Best-effort teardown of the native window from outside its own
     thread — used by the tray's Quit path so a tray-initiated quit also
     ends the window (and, via its own on_closed handler, the rest of
     clean shutdown). Safe to call when no window exists (browser-fallback
     mode, or the window was already closed)."""
+    request_shutdown()
     with _window_lock:
         window = _window
     if window is None:
