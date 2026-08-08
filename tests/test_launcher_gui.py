@@ -120,6 +120,8 @@ def test_launch_cleans_up_and_fails_when_never_healthy(monkeypatch):
 
     dialog = MagicMock()
     monkeypatch.setattr(gui, "_show_error_dialog", dialog)
+    opened = MagicMock()
+    monkeypatch.setattr(gui.webbrowser, "open", opened)
 
     with pytest.raises(SystemExit) as exc_info:
         gui.launch()
@@ -129,6 +131,10 @@ def test_launch_cleans_up_and_fails_when_never_healthy(monkeypatch):
     release.assert_called_once()
     dialog.assert_called_once()
     assert "healthy" in dialog.call_args.args[1].lower()
+    # The dashboard must never open on an unhealthy server — opening is
+    # gated strictly behind a successful health-wait, not just attempted
+    # unconditionally after starting the server.
+    opened.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

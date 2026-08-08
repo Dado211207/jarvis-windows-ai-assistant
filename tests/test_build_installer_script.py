@@ -84,6 +84,7 @@ def test_verifies_no_forbidden_files_in_build_output():
     assert ".env" in content
     assert ".env.example" in content
     assert "*.db" in content
+    assert "*.log" in content
 
 
 def test_computes_sha256_checksum():

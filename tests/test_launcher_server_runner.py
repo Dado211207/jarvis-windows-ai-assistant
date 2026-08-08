@@ -55,6 +55,25 @@ def test_request_shutdown_is_safe_to_call_twice(running_server):
     running.request_shutdown(join_timeout=1)  # must not raise
 
 
+def test_request_shutdown_actually_frees_the_port(running_server):
+    """Not just "the Python thread object reports not alive" (the
+    existing thread.is_alive() check above) but the real, observable
+    property app/launcher/tray.py::do_restart() depends on: a fresh
+    listener can bind the exact same port immediately afterward. If
+    uvicorn's socket were left lingering, a restart on the same port
+    would fail with "address already in use" instead of the health-wait
+    simply timing out — silently worse, not louder."""
+    from app.launcher import server_runner
+    running, port = running_server
+    assert server_runner.wait_until_healthy(host="127.0.0.1", port=port, timeout_seconds=10) is True
+
+    running.request_shutdown(join_timeout=5)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("127.0.0.1", port))  # raises OSError if still bound by the old server
+
+
 def test_server_shutdown_releases_tts_resources(running_server):
     """app/api/server.py's lifespan() calls tts_service.stop() on
     shutdown — proves the launcher's clean-shutdown path (uvicorn's

@@ -159,15 +159,16 @@ Write-Host "Found $ExePath"
 
 # Regression guard, not a fix for a known bug: packaging/jarvis.spec's own
 # `datas` list is a fixed, enumerated set (templates, static,
-# THIRD_PARTY_NOTICES.md, README.md) that never references .env, .env.example,
-# or any database file, so none of these should ever be able to appear in
-# real output — this just makes sure a future edit to the spec can't
-# silently start bundling them.
-$Leaked = Get-ChildItem -Path $AppDir -Recurse -Include ".env", ".env.example", "*.db" -ErrorAction SilentlyContinue
+# THIRD_PARTY_NOTICES.md, README.md) that never references .env,
+# .env.example, a database file, or a log file, so none of these should
+# ever be able to appear in real output — this just makes sure a future
+# edit to the spec can't silently start bundling them (secrets, local
+# test/user data, or logs that could contain either).
+$Leaked = Get-ChildItem -Path $AppDir -Recurse -Include ".env", ".env.example", "*.db", "*.log" -ErrorAction SilentlyContinue
 if ($Leaked) {
     throw "The PyInstaller output contains files it must never bundle: $($Leaked.FullName -join ', ')"
 }
-Write-Host "OK - no .env, .env.example, or *.db files in the build output."
+Write-Host "OK - no .env, .env.example, *.db, or *.log files in the build output."
 
 # ---------------------------------------------------------------------------
 # Step 9: Inno Setup compile
