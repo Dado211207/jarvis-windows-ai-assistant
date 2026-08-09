@@ -38,6 +38,16 @@ logger = get_logger("launcher.gui")
 SERVER_HEALTH_TIMEOUT_SECONDS = 30.0
 SERVER_STOP_TIMEOUT_SECONDS = 8.0
 WINDOW_STOP_TIMEOUT_SECONDS = 6.0
+# Quit runs on tighter budgets than a restart. A restart can afford to
+# wait for a child that is merely slow; someone who chose Quit is
+# watching a tray icon that has not disappeared yet, and every second
+# past the first few reads as "it is broken". Each stop() escalates
+# quit -> terminate -> kill on its own budget, so the worst case is
+# three times these numbers, and the tray arms a force-exit watchdog
+# above even that.
+QUIT_WINDOW_STOP_TIMEOUT_SECONDS = 4.0
+QUIT_SERVER_STOP_TIMEOUT_SECONDS = 5.0
+QUIT_PORT_RELEASE_TIMEOUT_SECONDS = 5.0
 
 
 def dashboard_url() -> str:
@@ -222,18 +232,46 @@ class LauncherSupervisor:
     # --- shutdown ---
 
     def quit(self) -> None:
-        """Idempotent. Sets the quitting flag first so no recovery path
-        can resurrect a child while shutdown is in progress."""
+        """Full shutdown, in a deliberate order, on bounded budgets.
+
+        Idempotent, and the quitting flag is set *first* so no recovery
+        path can resurrect a child while shutdown is in progress.
+
+        The order is the reason this works:
+
+        1. **Window first.** It is the product's interface, so closing it
+           is what actually stops new work being submitted. (The API is
+           loopback-only; the only other client is this tray.) Stopping
+           it also ends anything the page had running — speech capture
+           and playback both live behind that page and the server child.
+        2. **Server second**, which ends every remaining request, the
+           speech runtime and any audio still playing with it.
+        3. **Port**, verified released rather than assumed — otherwise
+           the next launch meets its own dying predecessor and is told
+           the port is "in use by another application".
+        4. **Lock last**, so nothing can start a second instance while
+           this one is still tearing down.
+
+        Every step is bounded and none can block the next: a child that
+        refuses to die is escalated to kill and then reported, never
+        waited on indefinitely.
+        """
         if self._quitting:
             return
         self._quitting = True
         logger.info("JARVIS shutting down.")
         if self._window is not None:
-            self._window.stop(timeout_seconds=WINDOW_STOP_TIMEOUT_SECONDS)
+            self._window.stop(timeout_seconds=QUIT_WINDOW_STOP_TIMEOUT_SECONDS)
             self._window = None
         if self._server is not None:
-            self._server.stop(timeout_seconds=SERVER_STOP_TIMEOUT_SECONDS)
+            server = self._server
             self._server = None
+            server.stop(timeout_seconds=QUIT_SERVER_STOP_TIMEOUT_SECONDS)
+            if not server.wait_until_port_released(timeout_seconds=QUIT_PORT_RELEASE_TIMEOUT_SECONDS):
+                logger.error(
+                    "Port %s was still held at the end of shutdown; the next launch may "
+                    "report it as in use.", settings.jarvis_port,
+                )
         instance_lock.release_lock()
 
     # --- failure detection ---

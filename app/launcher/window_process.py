@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from app.launcher import ipc
+from app.launcher.process_tree import descendant_pids, terminate_pids
 from app.launcher.server_process import _creation_flags
 from app.logging_config import get_logger
 
@@ -39,62 +40,6 @@ DEFAULT_STOP_TIMEOUT_SECONDS = 6.0
 def window_log_path() -> Path:
     from app.core.app_paths import logs_dir
     return logs_dir() / "jarvis-window.log"
-
-
-def _descendant_pids(pid: Optional[int]) -> List[int]:
-    """PIDs descended from *pid*, captured while it is still alive.
-
-    Used only for WebView2's browser processes, which outlive the window
-    child that spawned them and then show up in Task Manager as JARVIS
-    leftovers. Captured *before* the parent is killed, because once it is
-    gone the parent/child relationship needed to identify them is gone
-    too.
-
-    Returns an empty list on any error, including psutil being absent:
-    tidying up leftovers must never be able to break shutdown.
-    """
-    if pid is None:
-        return []
-    try:
-        import psutil
-
-        return [child.pid for child in psutil.Process(pid).children(recursive=True)]
-    except Exception:  # noqa: BLE001 — best-effort cleanup only
-        return []
-
-
-def _terminate_pids(pids: List[int]) -> None:
-    """Terminates processes captured by _descendant_pids().
-
-    Each PID is re-checked against the recorded creation time before
-    being signalled, so a PID recycled by an unrelated process between
-    capture and cleanup is never touched — the same ownership rule the
-    rest of this module follows.
-    """
-    if not pids:
-        return
-    try:
-        import psutil
-    except Exception:  # noqa: BLE001
-        return
-
-    for pid in pids:
-        try:
-            process = psutil.Process(pid)
-            process.terminate()
-        except Exception:  # noqa: BLE001 — already gone, or not ours to touch
-            continue
-    try:
-        gone, alive = psutil.wait_procs(
-            [psutil.Process(pid) for pid in pids if psutil.pid_exists(pid)], timeout=3
-        )
-        for process in alive:
-            try:
-                process.kill()
-            except Exception:  # noqa: BLE001
-                continue
-    except Exception:  # noqa: BLE001
-        return
 
 
 @dataclass
@@ -297,7 +242,7 @@ class WindowProcess:
             self._close_listener()
             return "not_started"
         if self._process.poll() is not None:
-            _terminate_pids(_descendant_pids(self.pid))
+            terminate_pids(descendant_pids(self.pid))
             self._close_listener()
             return "already_exited"
 
@@ -306,7 +251,7 @@ class WindowProcess:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
-                _terminate_pids(_descendant_pids(self.pid))
+                terminate_pids(descendant_pids(self.pid))
                 self._close_listener()
                 return "graceful"
             time.sleep(0.1)
@@ -320,12 +265,12 @@ class WindowProcess:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
-                _terminate_pids(_descendant_pids(self.pid))
+                terminate_pids(descendant_pids(self.pid))
                 self._close_listener()
                 return "terminated"
             time.sleep(0.1)
 
-        descendants = _descendant_pids(self.pid)
+        descendants = descendant_pids(self.pid)
         try:
             self._process.kill()
         except Exception:
@@ -345,7 +290,7 @@ class WindowProcess:
         # normal lifetime: killing the window child can leave msedge
         # children behind that the user then sees in Task Manager. Only
         # processes that were descendants of *our own* child are touched.
-        _terminate_pids(descendants)
+        terminate_pids(descendants)
         self._close_listener()
         return "killed"
 

@@ -55,6 +55,10 @@ POLL_INTERVAL_SECONDS = 5.0
 # seconds stale without anyone noticing; someone who just double-clicked
 # the Start-menu shortcut is watching for a window right now.
 ATTENTION_POLL_INTERVAL_SECONDS = 0.5
+# The backstop behind Quit. Must exceed the worst case of every bounded
+# shutdown step below it (see gui.LauncherSupervisor.quit) — verified by
+# test_the_force_exit_backstop_cannot_cut_a_working_shutdown_short.
+QUIT_FORCE_EXIT_SECONDS = 45.0
 ICON_ASSET_PATH = Path(__file__).resolve().parent.parent / "ui" / "static" / "icon.ico"
 
 
@@ -334,10 +338,18 @@ def run_tray_loop(
     def do_quit() -> None:
         if quit_started.is_set():
             return  # a menu-driven Quit and a WM_CLOSE could both reach here
-        from app.launcher import boot_trace
+        from app.launcher import boot_trace, webview_window
         boot_trace.trace("tray do_quit() starting")
         quit_started.set()
         logger.info("Tray: quitting JARVIS.")
+        # Armed first, and deliberately never cancelled: once Quit has
+        # been chosen, this process ends. Everything below is individually
+        # bounded, so this should never fire — but "should never" is not a
+        # guarantee, and a desktop app that cannot be closed is a worse
+        # outcome than one that exits abruptly. The grace period is set
+        # above the sum of every bounded step so a slow-but-working
+        # shutdown is never cut short.
+        webview_window.force_exit_after(QUIT_FORCE_EXIT_SECONDS)
         stop_event.set()
         # supervisor.quit() sets its own quitting flag first, so no
         # recovery path can resurrect a child mid-shutdown, then stops the

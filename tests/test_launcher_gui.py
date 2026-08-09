@@ -456,6 +456,74 @@ def test_quit_stops_both_children_and_releases_the_lock(monkeypatch):
     release.assert_called_once()
 
 
+def test_quit_runs_in_order_and_verifies_the_port_is_free(monkeypatch):
+    """Window (the interface, so no new work can be submitted), then the
+    server (which ends the speech runtime and any audio with it), then a
+    real check that the port is free, then the lock — so the next launch
+    never meets its own dying predecessor."""
+    from app.launcher import gui
+
+    events = []
+    monkeypatch.setattr(gui.instance_lock, "release_lock", lambda: events.append("release_lock"))
+
+    sup = gui.LauncherSupervisor()
+    server, window = _FakeServer(), _FakeWindow()
+    sup._server, sup._window = server, window
+
+    original_server_stop = server.stop
+    original_window_stop = window.stop
+    original_release = server.wait_until_port_released
+    server.stop = lambda timeout_seconds=None: (events.append("stop_server"), original_server_stop(timeout_seconds))[1]
+    window.stop = lambda timeout_seconds=None: (events.append("stop_window"), original_window_stop(timeout_seconds))[1]
+    server.wait_until_port_released = lambda timeout_seconds=None: (
+        events.append("await_port_release"), original_release(timeout_seconds),
+    )[1]
+
+    sup.quit()
+
+    assert events == ["stop_window", "stop_server", "await_port_release", "release_lock"]
+
+
+def test_quit_uses_tighter_budgets_than_a_restart(monkeypatch):
+    """Someone who chose Quit is watching a tray icon that has not gone
+    away yet; a restart can afford to wait on a merely slow child."""
+    from app.launcher import gui
+
+    monkeypatch.setattr(gui.instance_lock, "release_lock", MagicMock())
+
+    sup = gui.LauncherSupervisor()
+    server, window = _FakeServer(), _FakeWindow()
+    sup._server, sup._window = server, window
+    budgets = {}
+    server.stop = lambda timeout_seconds=None: budgets.setdefault("server", timeout_seconds)
+    window.stop = lambda timeout_seconds=None: budgets.setdefault("window", timeout_seconds)
+
+    sup.quit()
+
+    assert budgets["window"] == gui.QUIT_WINDOW_STOP_TIMEOUT_SECONDS
+    assert budgets["server"] == gui.QUIT_SERVER_STOP_TIMEOUT_SECONDS
+    assert gui.QUIT_WINDOW_STOP_TIMEOUT_SECONDS < gui.WINDOW_STOP_TIMEOUT_SECONDS
+    assert gui.QUIT_SERVER_STOP_TIMEOUT_SECONDS < gui.SERVER_STOP_TIMEOUT_SECONDS
+
+
+def test_a_port_that_never_frees_still_lets_quit_finish(monkeypatch):
+    """A failed child shutdown must not leave the parent stuck: the lock
+    is still released and the process still ends."""
+    from app.launcher import gui
+
+    release = MagicMock()
+    monkeypatch.setattr(gui.instance_lock, "release_lock", release)
+
+    sup = gui.LauncherSupervisor()
+    sup._server = _FakeServer(port_released=False)
+    sup._window = _FakeWindow()
+
+    sup.quit()
+
+    release.assert_called_once()
+    assert sup.quitting is True
+
+
 def test_quit_is_idempotent(monkeypatch):
     from app.launcher import gui
 

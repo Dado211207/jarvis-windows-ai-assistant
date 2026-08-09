@@ -340,9 +340,9 @@ def test_stop_cleans_up_webview2_processes_the_child_left_behind(monkeypatch):
     window, process, _, _ = _make(process=_FakeProcess(ignore_quit=True, ignore_terminate=True))
     window.start(base_env={})
 
-    monkeypatch.setattr(wp, "_descendant_pids", lambda pid: [4242, 4243] if pid == process.pid else [])
+    monkeypatch.setattr(wp, "descendant_pids", lambda pid: [4242, 4243] if pid == process.pid else [])
     terminated = []
-    monkeypatch.setattr(wp, "_terminate_pids", terminated.extend)
+    monkeypatch.setattr(wp, "terminate_pids", terminated.extend)
 
     assert window.stop(timeout_seconds=0.3) == "killed"
     assert terminated == [4242, 4243]
@@ -358,8 +358,8 @@ def test_descendants_are_captured_before_the_kill_not_after(monkeypatch):
     window.start(base_env={})
 
     order = []
-    monkeypatch.setattr(wp, "_descendant_pids", lambda pid: (order.append("capture"), [99])[1])
-    monkeypatch.setattr(wp, "_terminate_pids", lambda pids: order.append("terminate"))
+    monkeypatch.setattr(wp, "descendant_pids", lambda pid: (order.append("capture"), [99])[1])
+    monkeypatch.setattr(wp, "terminate_pids", lambda pids: order.append("terminate"))
     original_kill = process.kill
 
     def _kill():
@@ -378,15 +378,15 @@ def test_descendant_lookup_never_breaks_shutdown(monkeypatch):
     have vanished mid-lookup. Neither may propagate."""
     from app.launcher import window_process as wp
 
-    monkeypatch.setattr(wp, "_descendant_pids", MagicMock(side_effect=RuntimeError("psutil is unhappy")))
+    monkeypatch.setattr(wp, "descendant_pids", MagicMock(side_effect=RuntimeError("psutil is unhappy")))
     window, _, _, _ = _make()
     window.start(base_env={})
 
     with pytest.raises(RuntimeError):
-        wp._descendant_pids(1)  # the patched stand-in really does raise
+        wp.descendant_pids(1)  # the patched stand-in really does raise
 
     # ...and the real implementation swallows exactly that.
     monkeypatch.undo()
-    assert wp._descendant_pids(None) == []
-    assert wp._descendant_pids(-1) == []
-    wp._terminate_pids([])  # must not raise
+    assert wp.descendant_pids(None) == []
+    assert wp.descendant_pids(-1) == []
+    wp.terminate_pids([])  # must not raise

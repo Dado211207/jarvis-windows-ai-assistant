@@ -307,3 +307,46 @@ def test_failure_messages_carry_a_reference_id_and_a_log_folder(monkeypatch):
         assert "Reference ID:" in message
         assert "Logs:" in message
         assert "sk-" not in message
+
+
+# ---------------------------------------------------------------------------
+# Quit's force-exit backstop
+# ---------------------------------------------------------------------------
+
+def test_the_force_exit_backstop_cannot_cut_a_working_shutdown_short():
+    """Quit arms a watchdog so JARVIS can never become unclosable. Its
+    grace period has to exceed the worst case of every bounded step
+    below it, or a slow-but-working shutdown would be killed mid-way and
+    leave exactly the orphaned children the watchdog exists to prevent.
+
+    Worst case, from gui.LauncherSupervisor.quit(): each stop() escalates
+    quit -> terminate -> kill on its own budget (three times the
+    configured timeout), then the port release is waited out."""
+    from app.launcher import gui, tray
+
+    worst_case = (
+        3 * gui.QUIT_WINDOW_STOP_TIMEOUT_SECONDS
+        + 3 * gui.QUIT_SERVER_STOP_TIMEOUT_SECONDS
+        + gui.QUIT_PORT_RELEASE_TIMEOUT_SECONDS
+    )
+
+    assert tray.QUIT_FORCE_EXIT_SECONDS > worst_case, (
+        f"the backstop ({tray.QUIT_FORCE_EXIT_SECONDS}s) must exceed the bounded "
+        f"worst case ({worst_case}s)"
+    )
+
+
+def test_the_force_exit_backstop_is_actually_reachable():
+    """It was previously a tested function that nothing in production
+    called — a guarantee on paper only."""
+    import inspect
+
+    from app.launcher import tray
+
+    source = inspect.getsource(tray.run_tray_loop)
+
+    assert "force_exit_after(QUIT_FORCE_EXIT_SECONDS)" in source
+    quit_body = source.split("def do_quit()", 1)[1].split("def show_context_menu", 1)[0]
+    assert quit_body.index("force_exit_after") < quit_body.index("supervisor.quit()"), (
+        "the backstop must be armed before the shutdown it is guarding"
+    )
