@@ -228,6 +228,19 @@ def expand_acronyms(text: str) -> str:
     return re.sub(r"\b[A-Za-z0-9]{4,}\b", _identifier, text)
 
 
+def expand_versions(text: str) -> str:
+    """`0.2.0` -> `zero point two point zero`.
+
+    Without this the dots survive into the phoneme string as sentence
+    breaks, and a version number is read as three separate sentences.
+    """
+    def _version(match: re.Match) -> str:
+        parts = match.group(0).split(".")
+        return " point ".join(number_to_words(int(part)) for part in parts)
+
+    return re.sub(r"\b\d+(?:\.\d+){1,3}\b", _version, text)
+
+
 def expand_numbers(text: str) -> str:
     """Plain integers as words; long digit runs read out one by one, the
     way a person reads a reference number."""
@@ -275,6 +288,7 @@ def normalise(text: str) -> str:
     text = expand_windows_paths(text)
     text = expand_dates(text)
     text = expand_times(text)
+    text = expand_versions(text)
     text = expand_acronyms(text)
     text = expand_numbers(text)
     return strip_unspeakable(text)

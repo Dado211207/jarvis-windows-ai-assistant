@@ -116,6 +116,14 @@ jobs:
         shell: pwsh
         run: .\scripts\build-installer.ps1
 
+      - name: Licence policy — inspect the real packaged tree
+        shell: pwsh
+        # Runs *after* PyInstaller, so the packaged-tree checks in
+        # tests/test_licence_policy.py have a real build to inspect
+        # instead of skipping. Declared package metadata alone would not
+        # catch a DLL a wheel brought with it.
+        run: python -m pytest tests/test_licence_policy.py -v
+
       - name: Automated clean-install acceptance test
         shell: pwsh
         # Runs against the real installer produced above: silent install,

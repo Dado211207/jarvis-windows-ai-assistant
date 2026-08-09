@@ -13,16 +13,30 @@ its rewrite) is out. That rules out the usual Kokoro plumbing too:
 
   - `kokoro-onnx` depends on `espeakng-loader` and `phonemizer-fork`,
     which exist to drive espeak-ng (GPL-3.0). Not used.
-  - `misaki`'s English G2P is Apache-2.0 but falls back to espeak-ng for
-    out-of-vocabulary words. Not used.
+  - `misaki` itself is Apache-2.0 and its English G2P can run without an
+    espeak fallback, so the licence is not the objection. Its `[en]`
+    extra is: as a set it pulls `espeakng-loader` and `phonemizer-fork`
+    (verified against the published metadata, not assumed), so that
+    extra is never installed. Taking only the permissive minimum would
+    still bring spacy and a separate model download for tagging this use
+    barely needs, so g2p.py uses a dictionary lookup instead.
   - the `cmudict` *PyPI package* is GPL-3.0-or-later, even though the
-    dictionary it wraps is not. Not used — see g2p.py, which reads the
-    upstream CMU data (BSD-2-Clause, Carnegie Mellon University)
-    directly.
+    dictionary it distributes is not. Not installed — see
+    lexicon_source.py, which pins the upstream data files by SHA-256 and
+    converts them with a script in this repository.
 
 So the shipped chain is: onnxruntime (MIT) + the Kokoro model and voices
-(Apache-2.0) + CMU's dictionary data (BSD-2-Clause) + this project's own
-code. Nothing here is copyleft.
+(Apache-2.0) + a lexicon derived from CMU's dictionary data under CMU's
+own licence + this project's own code. Nothing here is copyleft.
+
+The CMU data is deliberately *not* labelled with an SPDX identifier. Its
+licence is CMU's own text: it permits redistribution in source and binary
+form and asks for acknowledgement of the dictionary's origin. That reads
+like a two-clause BSD licence but is not literally one, and calling it
+"BSD-2-Clause" — as an earlier revision of this file did — buys a small
+convenience with a factual misstatement. The verbatim text ships at
+docs/licences/CMUDICT-LICENSE.txt and the acknowledgement appears in
+lexicon_source.py, the About page and THIRD_PARTY_NOTICES.
 
 **On the voice identity.** `bm_george` is an original voice from the
 Kokoro model, released under Apache-2.0. JARVIS presents it under its own
@@ -174,10 +188,14 @@ LICENCE_MANIFEST = (
         "distributed": "Bundled in the installer",
     },
     {
-        "component": "CMU Pronouncing Dictionary",
+        "component": "CMU Pronouncing Dictionary (derived lexicon)",
         "role": "Word to phoneme lookup",
-        "licence": "BSD-2-Clause",
+        "licence": "CMU's own licence — verbatim at docs/licences/CMUDICT-LICENSE.txt",
         "source": "https://github.com/cmusphinx/cmudict",
-        "distributed": "Bundled in the installer",
+        "distributed": "Bundled in the installer, pinned by SHA-256",
+        "acknowledgement": (
+            "Derived from the CMU Pronouncing Dictionary, created at "
+            "Carnegie Mellon University."
+        ),
     },
 )
