@@ -293,11 +293,80 @@ class TranscribeResponse(BaseModel):
     message: str
 
 
+class STTDiagnosticsResponse(BaseModel):
+    """Everything the server can honestly say about voice input.
+
+    Deliberately several fields rather than one "available" boolean: a
+    switched-off feature, a missing engine, a missing model and a model
+    in a folder JARVIS is not looking at are four different problems, and
+    the single "Speech runtime — Not ready" line that used to be shown
+    could not tell them apart. The browser fills in what only it can
+    know — microphone permission, the selected input device, the live
+    level — since a server process cannot observe any of those.
+    """
+
+    enabled: bool
+    available: bool
+    reason: str
+    runtime_ready: bool
+    runtime_detail: str
+    model_ready: bool
+    model_detail: str
+    model_path: str
+
+
+class SetSTTEnabledRequest(BaseModel):
+    enabled: bool
+
+
 @router.get("/voice/stt-status", response_model=STTStatusResponse)
 def voice_stt_status() -> STTStatusResponse:
     from app.voice.stt import stt_service
     available, reason = stt_service.is_available()
     return STTStatusResponse(available=available, reason=reason)
+
+
+@router.get("/voice/diagnostics", response_model=STTDiagnosticsResponse)
+def voice_diagnostics() -> STTDiagnosticsResponse:
+    from app.voice.stt import input_enabled, stt_service
+
+    available, reason = stt_service.is_available()
+    runtime_ready, runtime_detail = stt_service.runtime_status()
+    model_ready, model_detail = stt_service.model_status()
+    path = stt_service.model_path()
+    return STTDiagnosticsResponse(
+        enabled=input_enabled(),
+        available=available,
+        reason=reason,
+        runtime_ready=runtime_ready,
+        runtime_detail=runtime_detail,
+        model_ready=model_ready,
+        model_detail=model_detail,
+        # A path, never file contents. It is shown so someone can see
+        # *where* JARVIS is looking, which is the difference between "no
+        # model" and "a model somewhere else".
+        model_path=str(path) if path is not None else "",
+    )
+
+
+@router.post(
+    "/voice/input-enabled",
+    response_model=STTDiagnosticsResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_voice_input_enabled(req: SetSTTEnabledRequest) -> STTDiagnosticsResponse:
+    """Turn push-to-talk on or off.
+
+    The control the old status message already promised ("Turn it on from
+    the Voice page") and which did not exist. Turning it off hides the
+    feature; it is not the thing that stops the microphone being opened —
+    that is the button press and the OS permission prompt, both unchanged.
+    """
+    from app.core.preferences import store
+
+    store("stt_enabled", "true" if req.enabled else "false")
+    logger.info("Voice input %s.", "enabled" if req.enabled else "disabled")
+    return voice_diagnostics()
 
 
 @router.post(

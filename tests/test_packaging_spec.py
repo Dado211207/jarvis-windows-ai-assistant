@@ -63,6 +63,51 @@ def test_spec_includes_required_hidden_imports():
         assert expected in content
 
 
+def _collected_packages() -> set:
+    """Every package the spec puts through collect_all().
+
+    Resolves module-level tuple constants, because the spec names its
+    required and optional sets separately — a walk that only understood a
+    literal loop iterator would silently find nothing and let every
+    assertion below pass vacuously (see the guard test right after this).
+    """
+    tree = ast.parse(_read(SPEC_PATH))
+
+    constants = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Tuple, ast.List)):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    constants[target.id] = [
+                        e.value for e in node.value.elts if isinstance(e, ast.Constant)
+                    ]
+
+    def _resolve(expr):
+        if isinstance(expr, (ast.Tuple, ast.List)):
+            return [e.value for e in expr.elts if isinstance(e, ast.Constant)]
+        if isinstance(expr, ast.Name):
+            return constants.get(expr.id, [])
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            return _resolve(expr.left) + _resolve(expr.right)
+        return []
+
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "collect_all":
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant):
+                found.add(arg.value)
+        if isinstance(node, ast.For):
+            found.update(_resolve(node.iter))
+    return found
+
+
+def test_the_spec_walk_actually_finds_packages():
+    """Guards every assertion below against passing vacuously if the
+    spec's structure changes in a way this parser does not understand."""
+    assert len(_collected_packages()) >= 6
+
+
 def test_spec_collects_all_for_packages_that_need_full_collection():
     """Regression guard for a real failure caught on windows-latest CI:
     a real frozen JARVIS.exe launched, stayed running, and never
@@ -74,22 +119,41 @@ def test_spec_collects_all_for_packages_that_need_full_collection():
     --collect-all pyttsx3` for exactly this reason; this spec had only
     ever carried the narrower pyttsx3 driver hidden-import, which was
     not enough on its own."""
-    tree = ast.parse(_read(SPEC_PATH))
-    collected_packages = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "collect_all":
-            arg = node.args[0]
-            if isinstance(arg, ast.Constant):
-                collected_packages.add(arg.value)
-    if not collected_packages:
-        # Loop form (`for _pkg in (...): collect_all(_pkg)`) — find the
-        # iterated tuple instead of a literal argument at each call site.
-        for node in ast.walk(tree):
-            if isinstance(node, ast.For) and isinstance(node.iter, (ast.Tuple, ast.List)):
-                if any(isinstance(e, ast.Constant) and e.value == "anthropic" for e in node.iter.elts):
-                    collected_packages.update(e.value for e in node.iter.elts if isinstance(e, ast.Constant))
+    collected = _collected_packages()
     for expected in ("pydantic_settings", "anthropic", "pyttsx3", "webview", "pythonnet", "clr_loader"):
-        assert expected in collected_packages, f"{expected} must go through collect_all(), not just hiddenimports"
+        assert expected in collected, f"{expected} must go through collect_all(), not just hiddenimports"
+
+
+def test_the_speech_engine_is_bundled():
+    """The reported defect: the installed app said "Speech runtime — Not
+    ready" permanently, because faster-whisper was deliberately excluded
+    from the installer. No action available to a user could fix that.
+
+    The engine is code and ships with the app. The model is data and is
+    still downloaded on request, with its licence, size and checksum
+    shown first — see test_the_model_is_still_not_bundled below."""
+    collected = _collected_packages()
+    assert "faster_whisper" in collected
+    assert "ctranslate2" in collected, "faster-whisper's compiled backend carries its own DLLs"
+
+
+def test_a_missing_required_package_fails_the_build_loudly():
+    """A JARVIS.exe missing its speech engine is broken in a way that
+    only shows up at runtime, on a user's machine. The spec must refuse
+    to produce one rather than warn into a build log."""
+    source = _read(SPEC_PATH)
+    assert "_REQUIRED_PACKAGES" in source
+    assert "raise SystemExit" in source
+
+
+def test_the_model_is_still_not_bundled():
+    """Bundling a speech model would add hundreds of megabytes to the
+    installer for something most users never turn on, and CLAUDE.md
+    requires its licence, size and checksum to be shown before it is
+    fetched."""
+    source = _read(SPEC_PATH)
+    assert "faster-whisper-tiny" not in source
+    assert "model.bin" not in source
 
 
 def test_spec_bundles_templates_and_static():

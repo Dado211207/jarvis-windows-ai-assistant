@@ -1079,6 +1079,235 @@ async function refreshVoiceInputStatus() {
   }
 }
 
+
+// ── Voice diagnostics ───────────────────────────────────────────────────────
+// Reported the packaged app said "Speech runtime — Not ready" and push-to-talk
+// did nothing, with no way to find out why. The answers live in two places and
+// neither can see the other's: the server knows about the engine and the model
+// on disk, the browser knows about microphone permission, devices and level.
+// This panel shows both, separately, so a failure names itself.
+//
+// Nothing here records, uploads or stores audio. The level meter reads the
+// live stream and discards each sample as it goes; the stream is stopped when
+// the test ends.
+
+const DIAG_TEST_DURATION_MS = 5000;
+let diagLevelStream = null;
+let diagLevelRaf = null;
+let diagAudioContext = null;
+
+function _setDiag(id, text, tone) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = `status-row-value${tone ? " " + tone : ""}`;
+}
+
+async function refreshVoiceDiagnostics() {
+  try {
+    const r = await API.get("/voice/diagnostics");
+    _setDiag("diag-runtime", r.runtime_ready ? "Installed" : "Not installed",
+             r.runtime_ready ? "text-ok" : "text-err");
+    const runtimeEl = $("diag-runtime");
+    if (runtimeEl) runtimeEl.title = r.runtime_detail || "";
+
+    _setDiag("diag-model", r.model_ready ? "Installed" : "Not installed",
+             r.model_ready ? "text-ok" : "text-muted");
+    const modelEl = $("diag-model");
+    if (modelEl) modelEl.title = r.model_detail || "";
+
+    const pathEl = $("diag-model-path");
+    if (pathEl) {
+      pathEl.textContent = r.model_path || "No model installed";
+      pathEl.className = "status-row-value font-mono";
+    }
+
+    const toggle = $("voice-input-toggle");
+    if (toggle) toggle.checked = r.enabled;
+  } catch (e) {
+    _setDiag("diag-runtime", "Unknown");
+    _setDiag("diag-model", "Unknown");
+  }
+
+  await refreshMicrophonePermission();
+  await refreshInputDevices();
+}
+
+async function refreshMicrophonePermission() {
+  const el = $("diag-mic-permission");
+  if (!el) return;
+  if (!navigator.permissions || !navigator.permissions.query) {
+    // Not every engine implements the Permissions API for microphone.
+    // Saying "unknown until you test" is honest; guessing "granted" is not.
+    _setDiag("diag-mic-permission", "Unknown until tested", "text-muted");
+    return;
+  }
+  try {
+    const status = await navigator.permissions.query({ name: "microphone" });
+    const label = { granted: "Granted", denied: "Denied", prompt: "Not asked yet" }[status.state] || status.state;
+    _setDiag("diag-mic-permission", label,
+             status.state === "granted" ? "text-ok" : (status.state === "denied" ? "text-err" : "text-muted"));
+  } catch (e) {
+    _setDiag("diag-mic-permission", "Unknown until tested", "text-muted");
+  }
+}
+
+async function refreshInputDevices() {
+  const summary = $("diag-mic-device");
+  const select = $("diag-device-select");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    _setDiag("diag-mic-device", "Not supported by this browser", "text-err");
+    return;
+  }
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter(d => d.kind === "audioinput");
+    if (!inputs.length) {
+      _setDiag("diag-mic-device", "No microphone detected", "text-err");
+      return;
+    }
+    // Labels are empty until permission has been granted at least once —
+    // that is a browser privacy rule, not a fault, so say so rather than
+    // showing a list of blanks.
+    const named = inputs.filter(d => d.label);
+    _setDiag(
+      "diag-mic-device",
+      named.length ? named[0].label : `${inputs.length} detected (names hidden until permission is granted)`,
+      "text-ok",
+    );
+
+    if (select) {
+      const chosen = select.value;
+      while (select.options.length > 1) select.remove(1);
+      inputs.forEach((device, index) => {
+        const option = document.createElement("option");
+        option.value = device.deviceId;
+        option.textContent = device.label || `Microphone ${index + 1}`;
+        select.appendChild(option);
+      });
+      if (chosen) select.value = chosen;
+    }
+  } catch (e) {
+    _setDiag("diag-mic-device", "Could not list devices", "text-err");
+  }
+}
+
+function stopMicrophoneTest() {
+  if (diagLevelRaf) { cancelAnimationFrame(diagLevelRaf); diagLevelRaf = null; }
+  if (diagLevelStream) {
+    diagLevelStream.getTracks().forEach(track => track.stop());
+    diagLevelStream = null;
+  }
+  if (diagAudioContext) {
+    try { diagAudioContext.close(); } catch (e) { /* already closed */ }
+    diagAudioContext = null;
+  }
+  const bar = $("diag-level-bar");
+  if (bar) bar.style.width = "0%";
+}
+
+async function testMicrophone() {
+  const message = $("diag-test-message");
+  const button = $("diag-test-mic");
+  const select = $("diag-device-select");
+
+  stopMicrophoneTest();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.AudioContext) {
+    if (message) message.textContent = "This browser cannot open a microphone.";
+    _setDiag("diag-last-result", "Not supported", "text-err");
+    return;
+  }
+
+  if (button) button.disabled = true;
+  if (message) message.textContent = "Asking for microphone permission…";
+
+  const deviceId = select && select.value ? select.value : null;
+  const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
+
+  try {
+    diagLevelStream = await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (e) {
+    if (button) button.disabled = false;
+    // Name the actual cause: a denied prompt and an absent device need
+    // different things from the user.
+    const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
+    const missing = e && (e.name === "NotFoundError" || e.name === "OverconstrainedError");
+    const text = denied
+      ? "Microphone permission was denied. Allow it for JARVIS in Windows Settings › Privacy › Microphone, then test again."
+      : (missing ? "No microphone was found on this computer." : "The microphone could not be opened.");
+    if (message) message.textContent = text;
+    _setDiag("diag-last-result", denied ? "Permission denied" : "Failed", "text-err");
+    refreshMicrophonePermission();
+    return;
+  }
+
+  // Device labels only become readable after permission is granted.
+  refreshMicrophonePermission();
+  refreshInputDevices();
+
+  diagAudioContext = new AudioContext();
+  const source = diagAudioContext.createMediaStreamSource(diagLevelStream);
+  const analyser = diagAudioContext.createAnalyser();
+  analyser.fftSize = 512;
+  source.connect(analyser);
+
+  const samples = new Uint8Array(analyser.frequencyBinCount);
+  const bar = $("diag-level-bar");
+  const startedAt = Date.now();
+  let peak = 0;
+
+  if (message) message.textContent = "Listening for a few seconds — say something.";
+
+  function tick() {
+    if (!diagAudioContext) return;
+    analyser.getByteTimeDomainData(samples);
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const centred = (samples[i] - 128) / 128;
+      sum += centred * centred;
+    }
+    const level = Math.min(1, Math.sqrt(sum / samples.length) * 3);
+    peak = Math.max(peak, level);
+    if (bar) bar.style.width = Math.round(level * 100) + "%";
+
+    if (Date.now() - startedAt >= DIAG_TEST_DURATION_MS) {
+      stopMicrophoneTest();
+      if (button) button.disabled = false;
+      const heard = peak > 0.02;
+      if (message) {
+        message.textContent = heard
+          ? "Microphone is working — sound was detected."
+          : "The microphone opened but no sound was detected. Check it isn't muted or set to the wrong device.";
+      }
+      _setDiag("diag-last-result", heard ? "Microphone working" : "Opened, but silent",
+               heard ? "text-ok" : "text-err");
+      return;
+    }
+    diagLevelRaf = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+async function setVoiceInputEnabled(enabled) {
+  const message = $("voice-input-message");
+  try {
+    const r = await API.post("/voice/input-enabled", { enabled });
+    const toggle = $("voice-input-toggle");
+    if (toggle) toggle.checked = r.enabled;  // trust the server, not the click
+    if (message) {
+      message.textContent = r.enabled ? r.reason : "Push-to-talk is switched off.";
+      message.className = `text-xs mt-2 ${r.available ? "text-ok" : "text-muted"}`;
+    }
+    refreshVoiceInputStatus();
+    refreshVoiceDiagnostics();
+  } catch (e) {
+    if (message) {
+      message.textContent = "Could not change the setting.";
+      message.className = "text-xs mt-2 text-err";
+    }
+  }
+}
+
 // ── Guided speech-model download ────────────────────────────────────────────
 
 const MODEL_ACTIVE_STATES = ["checking", "downloading", "verifying", "installing"];
@@ -1148,10 +1377,11 @@ function _renderModelInstallState(state) {
   }
 
   if (state.status === "complete" || state.status === "error") {
-    // The panel above this one reports whether push-to-talk is usable.
-    // A finished install has to update it, or it keeps saying the model
-    // is missing.
+    // The panels above report whether push-to-talk is usable. A finished
+    // install has to update them, or they keep saying the model is
+    // missing.
     refreshVoiceInputStatus();
+    refreshVoiceDiagnostics();
   }
 }
 
@@ -1947,8 +2177,19 @@ function initVoice() {
   if (modelCancelBtn) modelCancelBtn.addEventListener("click", cancelModelInstall);
   if (modelRetryBtn) modelRetryBtn.addEventListener("click", startModelInstall);
 
+  const inputToggle = $("voice-input-toggle");
+  if (inputToggle) inputToggle.addEventListener("change", () => setVoiceInputEnabled(inputToggle.checked));
+
+  const testMic = $("diag-test-mic");
+  const refreshDiag = $("diag-refresh");
+  if (testMic) testMic.addEventListener("click", testMicrophone);
+  if (refreshDiag) refreshDiag.addEventListener("click", refreshVoiceDiagnostics);
+  // An open microphone must not survive navigating away from the page.
+  window.addEventListener("pagehide", stopMicrophoneTest);
+
   refreshVoiceStatus();
   refreshVoiceInputStatus();
+  refreshVoiceDiagnostics();
   refreshModelPreview();
   pollModelInstallStatus();  // covers an install already running from a previous page load
 }

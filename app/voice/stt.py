@@ -13,16 +13,27 @@ Two adapters behind one interface:
   - FakeSTTAdapter: deterministic, no real audio processing. Every
     automated test in this repository uses this — none exercise real
     model inference, since no real model is available in CI.
-  - FasterWhisperAdapter: optional, real local transcription via the
-    faster-whisper package (deliberately NOT in requirements.txt — see
-    requirements-voice.txt). Disabled by default
-    (JARVIS_STT_ENABLED=false) and, even when enabled, never silently
-    downloads a model: it requires either a local JARVIS_STT_MODEL_PATH
-    or an explicit JARVIS_STT_ALLOW_DOWNLOAD=true opt-in.
+  - FasterWhisperAdapter: real local transcription via the
+    faster-whisper package. It **ships with the Windows installer** (see
+    requirements-windows.txt and packaging/jarvis.spec); it previously
+    did not, which meant the packaged app reported "Speech runtime — Not
+    ready" permanently and no user action could change that. It still
+    never silently downloads a model: it requires either a local
+    JARVIS_STT_MODEL_PATH, a model installed from the Voice page, or an
+    explicit JARVIS_STT_ALLOW_DOWNLOAD=true opt-in.
 
 stt_service resolves to whichever adapter is actually usable at call
 time and reports an honest "not installed" / "not configured" reason
 when neither is. Text input remains fully functional regardless.
+
+Four states, deliberately distinguishable, because a single "Not ready"
+line is what made the reported failure impossible to act on:
+
+    input_enabled()   the feature is offered at all (a user switch)
+    runtime_status()  the speech engine is present and loadable
+    model_status()    a model is on disk
+    model_path()      *where* it is, so "no model" and "a model JARVIS
+                      is not looking at" are different answers
 """
 
 import concurrent.futures
@@ -39,6 +50,32 @@ MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB — generous for a short push-to-tal
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
 
+def input_enabled() -> bool:
+    """Whether push-to-talk is offered at all.
+
+    A saved preference wins over the environment variable, which supplies
+    the starting default — preferences.py's documented precedence rule.
+    This exists because the packaged app previously had *no* way to turn
+    voice input on: the setting was environment-only, defaulted off, and
+    the status message told users to "turn it on from the Voice page",
+    where no such control existed.
+
+    What this flag is, and is not: it decides whether the feature is
+    offered, not whether the microphone is open. Nothing in this codebase
+    can capture audio without a button being pressed in the UI and the
+    OS/WebView2 microphone permission being granted — those are the real
+    gates, and they are unchanged. There is still no wake word and no
+    continuous listening.
+    """
+    from app.config import settings
+    from app.core.preferences import get_bool
+
+    saved = get_bool("stt_enabled")
+    if saved is not None:
+        return saved
+    return bool(settings.jarvis_stt_enabled)
+
+
 @dataclass
 class STTResult:
     success: bool
@@ -48,7 +85,9 @@ class STTResult:
 
 class STTAdapter(Protocol):
     def is_available(self) -> Tuple[bool, str]: ...
+    def runtime_status(self) -> Tuple[bool, str]: ...
     def model_status(self) -> Tuple[bool, str]: ...
+    def model_path(self) -> Optional[Path]: ...
     def transcribe(self, audio_path: Path, timeout_seconds: float) -> STTResult: ...
 
 
@@ -68,6 +107,12 @@ class FakeSTTAdapter:
     def model_status(self) -> Tuple[bool, str]:
         return self._available, ("fake model ready — test only" if self._available else "fake adapter forced unavailable")
 
+    def runtime_status(self) -> Tuple[bool, str]:
+        return self._available, ("fake runtime ready — test only" if self._available else "fake adapter forced unavailable")
+
+    def model_path(self) -> Optional[Path]:
+        return Path("/fake/model/path") if self._available else None
+
     def transcribe(self, audio_path: Path, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> STTResult:
         self.calls.append((audio_path, timeout_seconds))
         return STTResult(success=True, text=self._transcript, message="Transcribed (fake adapter — test only).")
@@ -81,10 +126,17 @@ class FasterWhisperAdapter:
         self._model_lock = threading.Lock()
 
     def is_available(self) -> Tuple[bool, str]:
-        from app.config import settings
+        return self.runtime_status()
 
-        if not settings.jarvis_stt_enabled:
-            return False, "Voice input is turned off. Turn it on from the Voice page to use push-to-talk."
+    def runtime_status(self) -> Tuple[bool, str]:
+        """Whether the speech engine itself is present, ignoring the
+        on/off switch.
+
+        Separate from is_available() so the Voice diagnostics panel can
+        say "the runtime is installed, you have simply switched voice
+        input off" — which is a different problem from a broken install,
+        and the two were previously indistinguishable.
+        """
         try:
             import faster_whisper  # noqa: F401
         except ImportError:
@@ -97,7 +149,17 @@ class FasterWhisperAdapter:
                 "The local speech engine isn't available in this installation. "
                 "Reinstalling JARVIS should restore it."
             )
-        return True, "faster-whisper is available."
+        except Exception as exc:  # noqa: BLE001 — a broken native dependency
+            # ctranslate2 is a compiled extension; on a machine missing a
+            # VC++ runtime it raises OSError, not ImportError, and an
+            # ImportError-only check reported the engine as present right
+            # up until the first transcription failed.
+            logger.warning("The speech engine failed to load: %s", type(exc).__name__)
+            return False, (
+                "The local speech engine is installed but could not be loaded on this "
+                "machine. Reinstalling JARVIS usually fixes this."
+            )
+        return True, "Speech engine ready."
 
     def _guided_install_dir(self) -> Path:
         """Where app/voice/model_installer.py's "Install local speech
@@ -107,6 +169,20 @@ class FasterWhisperAdapter:
         first-run requirement."""
         from app.voice.model_installer import default_install_dir
         return default_install_dir()
+
+    def model_path(self) -> Optional[Path]:
+        """Where the model actually is, or None. Reported by the Voice
+        diagnostics panel: "no model" and "a model in a folder JARVIS
+        isn't looking at" are different problems, and a status line that
+        only says "Not ready" cannot tell them apart."""
+        from app.config import settings
+
+        configured = settings.jarvis_stt_model_path
+        if configured:
+            path = Path(configured)
+            return path if path.exists() else None
+        guided_dir = self._guided_install_dir()
+        return guided_dir if guided_dir.exists() else None
 
     def model_status(self) -> Tuple[bool, str]:
         """Whether a usable model is ready *right now* — never loads the
@@ -126,7 +202,7 @@ class FasterWhisperAdapter:
             return True, f"Local model ready at {guided_dir}"
         if settings.jarvis_stt_allow_download:
             return False, "No local model yet — will download on first use (JARVIS_STT_ALLOW_DOWNLOAD=true)."
-        return False, "No local speech model installed yet."
+        return False, "No speech model installed yet — install one from the Voice page."
 
     def _get_model(self):
         if self._model is not None:
@@ -203,10 +279,25 @@ class STTService:
         return self._override if self._override is not None else self._real
 
     def is_available(self) -> Tuple[bool, str]:
+        """Usable right now — which the on/off switch is part of.
+
+        Checked here rather than inside an adapter: whether the feature is
+        offered is policy about the product, not a property of any
+        particular speech engine, and putting it in one adapter meant the
+        switch was silently ignored by every other one.
+        """
+        if not input_enabled():
+            return False, "Voice input is turned off. Turn it on from the Voice page to use push-to-talk."
         return self._adapter().is_available()
+
+    def runtime_status(self) -> Tuple[bool, str]:
+        return self._adapter().runtime_status()
 
     def model_status(self) -> Tuple[bool, str]:
         return self._adapter().model_status()
+
+    def model_path(self) -> Optional[Path]:
+        return self._adapter().model_path()
 
     def transcribe(self, audio_path: Path, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> STTResult:
         available, reason = self.is_available()

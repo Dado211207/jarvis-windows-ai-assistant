@@ -53,7 +53,15 @@ PREFERENCES_FILENAME = "preferences.json"
 # `close_action` decides whether closing the window quits JARVIS or
 # leaves it in the tray. It was previously an environment-only setting
 # with a control on the setup screen that was wired to nothing at all.
-STORABLE_KEYS = ("ai_provider", "ollama_model", "speak_replies", "preferred_name", "close_action")
+#
+# `stt_enabled` decides whether push-to-talk is offered. It was
+# environment-only too, which meant the packaged app had no way to turn
+# voice input on at all — while telling users to "turn it on from the
+# Voice page".
+STORABLE_KEYS = (
+    "ai_provider", "ollama_model", "speak_replies", "preferred_name",
+    "close_action", "stt_enabled",
+)
 
 # What a name is allowed to be. Deliberately generous about content and
 # strict about length: this is a display string, not an identifier, and

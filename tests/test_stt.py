@@ -103,19 +103,41 @@ def test_service_model_status_delegates_to_the_active_adapter():
 
 # --- FasterWhisperAdapter: contract tested via mocking, never real inference ---
 
-def test_faster_whisper_adapter_unavailable_when_disabled_by_config():
-    adapter = FasterWhisperAdapter()
-    with patch("app.config.settings") as mock_settings:
-        mock_settings.jarvis_stt_enabled = False
-        available, reason = adapter.is_available()
+def test_a_switched_off_feature_says_so_actionably():
+    """The on/off switch is checked by the service, not by an adapter:
+    whether the feature is offered is policy about the product, not a
+    property of a particular speech engine. Living in one adapter meant
+    every other adapter silently ignored it.
+
+    Asserts the reason is *actionable for a packaged-app user*, not that
+    it contains one specific word: this message reaches the Voice page,
+    where "set an env var" was never a step anyone using the installed
+    .exe could take (see tests/test_no_developer_instructions_in_ui.py).
+    """
+    from app.core.preferences import store
+    from app.voice.stt import stt_service
+
+    store("stt_enabled", "false")
+    available, reason = stt_service.is_available()
+
     assert available is False
-    # Asserts the reason is *actionable for a packaged-app user*, not
-    # that it contains one specific word: this message reaches the Voice
-    # page, where "set an env var" was never a step anyone using the
-    # installed .exe could take (see
-    # tests/test_no_developer_instructions_in_ui.py).
     assert "turned off" in reason.lower()
     assert "voice page" in reason.lower()
+
+
+def test_the_adapter_reports_only_on_the_engine_it_owns():
+    """Its answer must not depend on the user's on/off choice — that is
+    the separation the diagnostics panel relies on to say "the engine is
+    fine, you have simply switched voice input off"."""
+    from app.core.preferences import store
+
+    adapter = FasterWhisperAdapter()
+    store("stt_enabled", "false")
+    off = adapter.is_available()
+    store("stt_enabled", "true")
+    on = adapter.is_available()
+
+    assert off == on
 
 
 def test_faster_whisper_adapter_unavailable_when_package_missing():

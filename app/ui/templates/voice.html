@@ -53,6 +53,11 @@
         </div>
       </div>
       <p id="stt-detail" class="text-xs text-muted mt-3"></p>
+      <div class="status-row mt-3">
+        <span class="status-row-label"><label for="voice-input-toggle">Offer push-to-talk</label></span>
+        <span class="status-row-value"><input type="checkbox" id="voice-input-toggle" class="toggle-input"></span>
+      </div>
+      <p id="voice-input-message" class="text-xs mt-2" aria-live="polite"></p>
       <p class="text-xs text-muted mt-2">
         Recording starts and stops only when you press the microphone button on the
         <a href="/ui/chat">Chat</a> page. What you say is filled into the message box for you
@@ -60,6 +65,68 @@
       </p>
     </div>
 
+  </div>
+
+  {#
+    Voice diagnostics. Split by what can actually know each answer: the
+    server reports the engine and the model, the browser reports the
+    microphone, because a server process cannot observe a microphone and
+    a page cannot see the filesystem. A single "Not ready" line covering
+    all of it is what made the reported failure impossible to act on.
+  #}
+  <div class="card mb-4" id="voice-diagnostics-card">
+    <h2 class="card-title">Voice diagnostics</h2>
+    <div class="mt-3">
+      <div class="status-row">
+        <span class="status-row-label">Microphone permission</span>
+        <span id="diag-mic-permission" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Input device</span>
+        <span id="diag-mic-device" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Speech runtime</span>
+        <span id="diag-runtime" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Installed model</span>
+        <span id="diag-model" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Model location</span>
+        <span id="diag-model-path" class="status-row-value font-mono">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Last check</span>
+        <span id="diag-last-result" class="status-row-value">Not run yet</span>
+      </div>
+    </div>
+
+    <div class="mt-3">
+      <label class="text-xs text-muted" for="diag-device-select">Microphone to use</label>
+      <select id="diag-device-select" class="input mt-2" aria-label="Microphone to use">
+        <option value="">System default</option>
+      </select>
+    </div>
+
+    <div class="btn-row mt-3">
+      <button id="diag-test-mic" class="btn btn-primary" type="button">Test microphone</button>
+      <button id="diag-refresh" class="btn btn-ghost" type="button">Refresh</button>
+    </div>
+
+    <div class="mt-3">
+      <div class="progress-bar" role="img" aria-label="Microphone input level">
+        <div id="diag-level-bar" class="progress-fill" style="width:0%"></div>
+      </div>
+      <p id="diag-test-message" class="text-xs text-muted mt-2" aria-live="polite"></p>
+    </div>
+
+    <p class="text-xs text-muted mt-3">
+      Test microphone measures the input level for a few seconds and shows it as a bar.
+      Nothing is recorded, uploaded, transcribed or saved &mdash; the level is computed in
+      this page and discarded as it goes.
+    </p>
   </div>
 
   {#

@@ -47,10 +47,20 @@ class Settings(BaseSettings):
     jarvis_tts_volume: float = 1.0
     jarvis_tts_voice: str = ""
 
-    # STT / push-to-talk voice input settings (v0.2). Disabled by default,
-    # matching TTS's own opt-in pattern. No wake word, no always-listening
-    # — see app/voice/stt.py.
-    jarvis_stt_enabled: bool = False
+    # STT / push-to-talk voice input settings (v0.2). No wake word, no
+    # always-listening — see app/voice/stt.py.
+    #
+    # Offered by default, unlike TTS, and the difference is deliberate.
+    # Spoken *output* changes what a machine does on its own (it starts
+    # making noise), so it stays opt-in. Voice *input* cannot capture
+    # anything until someone holds a button in the UI and the OS grants
+    # microphone permission — two explicit gates that this flag is not
+    # one of. Shipping it off produced the reported defect: push-to-talk
+    # did not work after setup and there was no way to turn it on,
+    # because the setting was environment-only. A saved preference now
+    # overrides this (see app/voice/stt.py::input_enabled) and the Voice
+    # page can switch it off.
+    jarvis_stt_enabled: bool = True
     jarvis_stt_model_size: str = "tiny"  # CPU-safe default if downloading is allowed
     jarvis_stt_model_path: str = ""  # a local model dir/path — never triggers a download
     jarvis_stt_allow_download: bool = False  # must be explicit; faster-whisper otherwise refuses to fetch a model

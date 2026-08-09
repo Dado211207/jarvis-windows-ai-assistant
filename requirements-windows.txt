@@ -28,9 +28,18 @@
 # See docs/THIRD_PARTY_NOTICES.md for the full license/maintenance
 # reasoning, including why the tray is pywin32 and not pystray.
 #
+#   - faster-whisper + ctranslate2: the local speech engine behind
+#     push-to-talk. Previously in requirements-voice.txt only and
+#     deliberately excluded from the installer, which meant the packaged
+#     app reported "Speech runtime — Not ready" permanently and no user
+#     action could change it. The *engine* now ships; the *model* is
+#     still downloaded on request, with its licence, size and checksum
+#     shown first (app/voice/model_installer.py).
+#
 #   pip install -r requirements.txt -r requirements-windows.txt
 #
 pywin32==312
 keyring==25.7.0
 pywebview==6.2.1
 pythonnet==3.1.0
+faster-whisper==1.2.0

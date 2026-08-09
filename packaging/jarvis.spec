@@ -51,10 +51,15 @@ hidden_imports = [
 # without a real windows-latest CI run to confirm it either way.
 
 # Deliberately NOT bundled: .env.example (the packaged app must never
-# need it — see app/ui/templates/setup.html and the onboarding flow),
-# and faster-whisper (optional, requirements-voice.txt only; the base
-# installer doesn't carry real STT inference — see the guided
-# model-download flow instead, app/voice/model_installer.py).
+# need it — see app/ui/templates/setup.html and the onboarding flow).
+#
+# faster-whisper IS bundled now. It was not, and the consequence was that
+# the installed app could never transcribe anything: the Voice page
+# offered push-to-talk, the setup screen reported "Speech runtime — Not
+# ready", and no action available to a user could change either. The
+# engine is code and ships with the app; the model is data and is still
+# downloaded on request with its licence, size and checksum shown first
+# (app/voice/model_installer.py).
 datas = [
     (str(repo_root / "app" / "ui" / "templates"), "app/ui/templates"),
     (str(repo_root / "app" / "ui" / "static"), "app/ui/static"),
@@ -78,8 +83,33 @@ binaries = []
 # outright. collect_all is additive and can only include more than the
 # default analysis would, so applying it here is a safe, proven step
 # regardless of exactly which submodule was missing.
-for _pkg in ("pydantic_settings", "anthropic", "pyttsx3", "webview", "pythonnet", "clr_loader"):
-    _pkg_datas, _pkg_binaries, _pkg_hiddenimports = collect_all(_pkg)
+#
+# faster_whisper/ctranslate2/tokenizers/onnxruntime/av are here for the
+# same empirical reason: ctranslate2 is a compiled extension with its own
+# bundled DLLs, and tokenizers/onnxruntime carry data files PyInstaller's
+# static analysis does not follow.
+_REQUIRED_PACKAGES = (
+    "pydantic_settings", "anthropic", "pyttsx3", "webview", "pythonnet", "clr_loader",
+    "faster_whisper", "ctranslate2",
+)
+# Transitive dependencies of faster-whisper whose exact set varies by
+# version. Collected when present, skipped when not — a build must not
+# fail because a package the current faster-whisper does not happen to
+# depend on is absent, and it must not silently miss one that is.
+_OPTIONAL_PACKAGES = ("tokenizers", "onnxruntime", "av", "huggingface_hub")
+
+for _pkg in _REQUIRED_PACKAGES + _OPTIONAL_PACKAGES:
+    try:
+        _pkg_datas, _pkg_binaries, _pkg_hiddenimports = collect_all(_pkg)
+    except Exception as _exc:  # noqa: BLE001
+        if _pkg in _REQUIRED_PACKAGES:
+            raise SystemExit(
+                f"packaging/jarvis.spec: required package {_pkg!r} could not be collected "
+                f"({_exc}). The installer must not be built without it — a JARVIS.exe "
+                "missing one of these is broken in a way that only shows up at runtime."
+            )
+        print(f"packaging/jarvis.spec: optional package {_pkg!r} not present; skipping.")
+        continue
     datas += _pkg_datas
     binaries += _pkg_binaries
     hidden_imports += _pkg_hiddenimports
