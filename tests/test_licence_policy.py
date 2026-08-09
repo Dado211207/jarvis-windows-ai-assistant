@@ -274,3 +274,26 @@ def test_no_forbidden_package_directory_ships_in_the_packaged_tree():
     ]
 
     assert offenders == [], f"forbidden packages in the packaged app: {offenders}"
+
+
+def test_the_licence_text_is_protected_from_line_ending_translation():
+    """The failure that produced this test.
+
+    The licence hash is pinned, and a Windows checkout rewrote the file's
+    LF endings to CRLF — changing its bytes and failing the check on
+    Windows CI while passing everywhere else. The check was correct; the
+    checkout was the problem, and a "verbatim" licence that git rewrites
+    on the way to disk is not verbatim.
+
+    Asserted against .gitattributes rather than against the working copy,
+    because the working copy on *this* machine is not where the damage
+    happens.
+    """
+    attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+
+    assert "docs/licences/** -text" in attributes, (
+        "reproduced licence texts must be exempt from line-ending translation"
+    )
+    assert "app/voice/kokoro/data/** -text" in attributes, (
+        "hash-pinned data must be exempt from line-ending translation"
+    )
