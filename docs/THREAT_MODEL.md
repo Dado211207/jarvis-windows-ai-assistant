@@ -56,6 +56,14 @@ as a multi-tenant service.
 | Per-session mutation token | `app/api/session.py` | State-changing REST endpoints and the WS handshake require a server-generated session token: a `SameSite=Strict`, non-HttpOnly cookie plus an `X-JARVIS-Session-Token` header the client must echo back, compared with `secrets.compare_digest`. An earlier version of this document named the absence of this token as an open gap — without it, a non-browser local process bypassing CORS entirely could call a mutation endpoint with only a forgeable Origin header. That gap is closed as of this defense. Never logged (verified via `caplog` in `tests/test_session_integration.py`). |
 | Privacy mode | `app/core/privacy.py` | While on: new conversation turns are not persisted, `add_memory` rejects writes, `take_screenshot` refuses before ever calling `PIL.ImageGrab`. In-memory only, same reset-on-restart model as `pending_actions.py` — **this is not encryption and makes no such claim**; see "No encrypted storage" below, which still applies regardless of privacy mode's state. Verified in `tests/test_privacy.py` (19 tests) including direct proof the stored-memory path never reaches the Anthropic request payload. |
 | Push-to-talk audio is never persisted | `app/api/routes.py` (`/voice/transcribe`), `app/voice/stt.py` | Uploaded audio is written to a temp file for the duration of transcription only and deleted in a `finally` block — success or failure — before the response is returned. No raw audio is written to the repo, the database, or a log line (logs record only the transcript's character count). Verified in `tests/test_voice_stt_endpoint.py`, including the failure path. |
+| One provider boundary, no raw SDK errors | `app/core/ai/` | Providers are constructed with a `ProviderConfig` and never read global settings; they never raise a raw SDK exception past their own boundary, only a `ProviderError` carrying an `ErrorCategory`. The category — not the exception text — chooses the sentence the user reads, so a rate limit, an expired key, an unreachable local server and a timeout stay four distinguishable problems. Verified in `tests/test_ai_providers.py`, `tests/test_chat_pipeline.py`. |
+| Streaming chat is not a second dispatch path | `app/api/chat.py` | `POST /chat/stream` asks `router.find_route()` first and executes a matched command through the ordinary policy-gated path. No tool is reachable through it that `POST /command` could not reach, and an approval-required command returns its pending action rather than streaming. Verified in `tests/test_chat_pipeline.py`. |
+| Stop-generation is enforced at the boundary too | `app/api/chat.py`, `app/core/ai/base.py` | Providers check the cancellation token between chunks, *and* the streaming endpoint re-checks before yielding. "Nothing further appears on screen" therefore does not depend on every present and future provider implementing its half correctly — proven by a browser test driving a deliberately uncooperative provider. |
+| Conversation history is privacy-gated | `app/core/conversation.py` | The last few turns are replayed so a follow-up question makes sense, bounded at `MAX_HISTORY_TURNS`. While privacy mode is on, stored turns are neither read nor written — reading them back out and sending them to a cloud provider would drive straight through privacy mode's own guarantee. Fails closed if the privacy module cannot be consulted. |
+| Local AI is loopback-only, and never downloads | `app/core/providers.py`, `app/core/ai/ollama_provider.py` | Ollama is contacted at `127.0.0.1:11434` only; there is deliberately no setting for a remote host. A model the running instance does not report is refused by name rather than silently substituted, and `/api/pull` is never called from anywhere — enforced by a test that walks the AST of every module under `app/`. |
+| Preferences are an allowlist, never a credential store | `app/core/preferences.py` | Only `STORABLE_KEYS` may be written to the JSON preferences file; anything else is refused rather than stored, so a browser-reachable settings write cannot become a general "set any config value" mechanism. API keys stay in the OS credential store. |
+| Speech output is gated server-side | `app/api/routes.py` (`/voice/speak`), `app/voice/tts.py` | One flag (`tts_service.output_enabled`) decides whether JARVIS speaks, and the check lives on the server — a page left open before speech was switched off elsewhere cannot make it talk. Approval prompts are never read aloud. |
+| Standing security invariants are tested, not reviewed | `tests/test_security_invariants.py` | Asserted against the assembled app and the source tree rather than a hand-maintained checklist: every mutating endpoint requires the session token (19 of 19 at time of writing), nothing binds `0.0.0.0`, no `shell=True`, no `eval`/`exec`/`__import__`, no pickle deserialisation, no credential literal, no `\|safe` in a template, every approval-required tool refuses `registry.execute()`, and no tool whose name matches this project's permanently-excluded capabilities is registered. |
 
 ## Explicit non-goals (do not assume these exist)
 
@@ -129,7 +137,35 @@ see the clipboard row in the defenses table above.
 
 **Someone else with access to the same Windows account reads
 `data/jarvis.db` directly.** Not defended against — see "No encrypted
-storage" above.
+storage" above. The Settings page states this rather than omitting it,
+and shows what the file actually holds (counts only, never content) so
+"your data stays local" is checkable rather than merely claimed.
+
+**A local process tries to make JARVIS speak, or reads a stale page's
+permission to do so.** The speech gate is server-side and reads one
+flag. Switching speech off anywhere — the Voice page, a `speak off`
+command, the CLI — takes effect for every open page immediately, because
+none of them hold their own copy of the decision.
+
+**A user asks the AI something while a previous answer is still
+streaming, or navigates away mid-generation.** Generations are tracked
+in an in-memory registry and cancelled cooperatively; the entry is
+removed whether the stream finished, was stopped, or failed, so a
+long-running process cannot accumulate abandoned generations. Stopping
+is honest about its limit: it closes the upstream connection at the next
+chunk boundary rather than claiming to abort an in-flight HTTP request.
+
+**Someone asks JARVIS to forget everything, by accident or by a misheard
+command.** `clear_memory` is approval-required and its preview names
+what is *not* affected. Nothing is deleted before confirmation, and
+cancelling deletes nothing — both verified against a real database.
+
+**A user wants to know whether JARVIS phones home.** It does not. The
+only outbound request the application makes is a chat message to the
+provider the user configured; there is no telemetry, no analytics, no
+crash reporting, and no update check — the "Check for updates" button
+opens a page in the browser and says so. A test walks the AST of every
+module to assert no update endpoint is contacted.
 
 ## Reporting a concern
 

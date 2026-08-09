@@ -38,6 +38,7 @@ see the packaging report.
 """
 
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -176,7 +177,7 @@ def _show_restart_failure() -> None:
         gui._format_error_message(
             "The JARVIS runtime did not come back up after a restart.\n"
             "Use Quit and start JARVIS again.",
-            __import__("uuid").uuid4().hex,
+            uuid.uuid4().hex,
         ),
     )
 
