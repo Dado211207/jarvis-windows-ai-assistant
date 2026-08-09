@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics{% endblock %}
+{% block topbar_title %}About &amp; Diagnostics{% endblock %}
+{% block content %}
+<div id="diagnostics-root">
+
+  <div class="page-header">
+    <h1 class="page-title">About &amp; Diagnostics</h1>
+    <p class="page-subtitle">
+      A summary of this installation. Safe to copy and share — it never contains API keys,
+      passwords or session secrets.
+    </p>
+  </div>
+
+  <div class="card mb-4">
+    <div class="btn-row">
+      <button id="diagnostics-copy" class="btn btn-primary" type="button">Copy report</button>
+      <button id="diagnostics-refresh" class="btn btn-ghost" type="button">Refresh</button>
+    </div>
+    <p id="diagnostics-copy-message" class="text-xs mt-2" aria-live="polite"></p>
+  </div>
+
+  <div id="diagnostics-sections" aria-live="polite">
+    <div class="card"><p class="text-xs text-muted">Collecting diagnostics…</p></div>
+  </div>
+
+</div>
+{% endblock %}

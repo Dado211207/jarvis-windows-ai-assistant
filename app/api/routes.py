@@ -518,6 +518,44 @@ def set_startup(req: SetStartupRequest) -> StartupStatusResponse:
     return _startup_status()
 
 
+# ---------------------------------------------------------------------------
+# Diagnostics (About page). Built from an explicit allowlist and passed
+# through the same redactor used for child-process output — see
+# app/core/diagnostics.py for why an allowlist rather than a denylist.
+# ---------------------------------------------------------------------------
+
+class DiagnosticItemResponse(BaseModel):
+    label: str
+    value: str
+
+
+class DiagnosticSectionResponse(BaseModel):
+    title: str
+    items: List[DiagnosticItemResponse]
+
+
+class DiagnosticsResponse(BaseModel):
+    sections: List[DiagnosticSectionResponse]
+    text: str
+
+
+@router.get("/diagnostics", response_model=DiagnosticsResponse)
+def diagnostics() -> DiagnosticsResponse:
+    from app.core.diagnostics import build_report, render_report_text
+
+    sections = build_report()
+    return DiagnosticsResponse(
+        sections=[
+            DiagnosticSectionResponse(
+                title=section.title,
+                items=[DiagnosticItemResponse(**item) for item in section.items],
+            )
+            for section in sections
+        ],
+        text=render_report_text(sections),
+    )
+
+
 class OnboardingCompleteResponse(BaseModel):
     success: bool
 

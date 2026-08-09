@@ -46,7 +46,8 @@ VIEWPORTS = {
     "desktop_1920": {"width": 1920, "height": 1080},
 }
 
-PAGES = ["/ui/", "/ui/chat", "/ui/actions", "/ui/logs", "/ui/memory", "/ui/voice", "/ui/help", "/ui/setup"]
+PAGES = ["/ui/", "/ui/chat", "/ui/actions", "/ui/logs", "/ui/memory", "/ui/voice", "/ui/help",
+         "/ui/setup", "/ui/settings", "/ui/diagnostics"]
 
 
 # ---------------------------------------------------------------------------

@@ -901,6 +901,243 @@ async function cancelModelInstall() {
   }
 }
 
+// ── Settings page ───────────────────────────────────────────────────────────
+
+async function refreshSettingsProviders() {
+  const host = $("settings-provider-list");
+  if (!host) return;
+  host.textContent = "";
+  try {
+    const data = await API.get("/providers");
+    (data.providers || []).forEach(provider => {
+      const row = document.createElement("div");
+      row.className = "status-row";
+      const label = document.createElement("span");
+      label.className = "status-row-label";
+      label.textContent = provider.display_name;
+      const value = document.createElement("span");
+      value.className = `status-row-value ${provider.available ? "text-ok" : "text-muted"}`;
+      value.textContent = provider.available ? "Available" : "Not detected";
+      row.appendChild(label);
+      row.appendChild(value);
+      host.appendChild(row);
+
+      const detail = document.createElement("p");
+      detail.className = "text-xs text-muted mt-2";
+      detail.textContent = provider.detail;
+      host.appendChild(detail);
+    });
+  } catch (e) {
+    const p = document.createElement("p");
+    p.className = "text-xs text-err";
+    p.textContent = "Could not reach the server.";
+    host.appendChild(p);
+  }
+}
+
+async function refreshSettingsKeyStatus() {
+  const el = $("settings-key-status");
+  if (!el) return;
+  try {
+    const r = await API.get("/settings/api-key-status");
+    el.textContent = r.configured ? "Configured" : "Not configured";
+    el.className = `status-row-value ${r.configured ? "text-ok" : "text-muted"}`;
+  } catch (e) {
+    el.textContent = "Unknown";
+    el.className = "status-row-value";
+  }
+}
+
+async function refreshSettingsStartup() {
+  const toggle = $("settings-startup-toggle");
+  const detail = $("settings-startup-detail");
+  if (!toggle) return;
+  try {
+    const r = await API.get("/settings/startup");
+    toggle.checked = r.enabled;
+    toggle.disabled = !r.supported;
+    if (detail) detail.textContent = r.detail;
+  } catch (e) {
+    if (detail) detail.textContent = "Could not read the current setting.";
+  }
+}
+
+async function refreshSettingsPrivacy() {
+  const el = $("settings-privacy-status");
+  if (!el) return;
+  try {
+    const r = await API.get("/privacy/status");
+    el.textContent = r.active ? "On" : "Off";
+    el.className = `status-row-value ${r.active ? "text-ok" : "text-muted"}`;
+  } catch (e) {
+    el.textContent = "Unknown";
+  }
+}
+
+async function refreshSettingsPaths() {
+  const host = $("settings-paths");
+  if (!host) return;
+  try {
+    const data = await API.get("/diagnostics");
+    const locations = (data.sections || []).find(s => s.title === "Locations");
+    host.textContent = "";
+    if (!locations) return;
+    locations.items.forEach(item => {
+      const row = document.createElement("div");
+      row.className = "status-row";
+      const label = document.createElement("span");
+      label.className = "status-row-label";
+      label.textContent = item.label;
+      const value = document.createElement("span");
+      value.className = "status-row-value font-mono text-xs";
+      value.textContent = item.value;
+      row.appendChild(label);
+      row.appendChild(value);
+      host.appendChild(row);
+    });
+  } catch (e) {
+    host.textContent = "";
+    const p = document.createElement("p");
+    p.className = "text-xs text-err";
+    p.textContent = "Could not load locations.";
+    host.appendChild(p);
+  }
+}
+
+function _setSettingsKeyMessage(text, ok) {
+  const el = $("settings-key-message");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
+}
+
+function initSettings() {
+  refreshSettingsProviders();
+  refreshSettingsKeyStatus();
+  refreshSettingsStartup();
+  refreshSettingsPrivacy();
+  refreshSettingsPaths();
+
+  const saveBtn = $("settings-key-save");
+  const removeBtn = $("settings-key-remove");
+  const input = $("settings-key-input");
+  const startup = $("settings-startup-toggle");
+
+  if (saveBtn) saveBtn.addEventListener("click", async () => {
+    const value = input ? input.value.trim() : "";
+    if (!value) { _setSettingsKeyMessage("Enter a key first.", false); return; }
+    saveBtn.disabled = true;
+    try {
+      const r = await API.post("/settings/api-key", { api_key: value });
+      _setSettingsKeyMessage(r.message, r.success);
+      if (r.success && input) input.value = "";
+      refreshSettingsKeyStatus();
+      refreshSettingsProviders();
+    } catch (e) {
+      _setSettingsKeyMessage("Could not reach the server.", false);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  if (removeBtn) removeBtn.addEventListener("click", async () => {
+    removeBtn.disabled = true;
+    try {
+      const r = await API.post("/settings/api-key/remove", {});
+      _setSettingsKeyMessage(r.message, r.success);
+      refreshSettingsKeyStatus();
+      refreshSettingsProviders();
+    } catch (e) {
+      _setSettingsKeyMessage("Could not reach the server.", false);
+    } finally {
+      removeBtn.disabled = false;
+    }
+  });
+
+  if (startup) startup.addEventListener("change", async () => {
+    const detail = $("settings-startup-detail");
+    try {
+      const r = await API.post("/settings/startup", { enabled: startup.checked });
+      startup.checked = r.enabled;  // trust the server, not the click
+      if (detail) detail.textContent = r.detail;
+    } catch (e) {
+      if (detail) detail.textContent = "Could not change the setting.";
+      refreshSettingsStartup();
+    }
+  });
+}
+
+// ── Diagnostics page ────────────────────────────────────────────────────────
+
+let diagnosticsReportText = "";
+
+async function refreshDiagnostics() {
+  const host = $("diagnostics-sections");
+  if (!host) return;
+  try {
+    const data = await API.get("/diagnostics");
+    diagnosticsReportText = data.text || "";
+    host.textContent = "";
+    (data.sections || []).forEach(section => {
+      const card = document.createElement("div");
+      card.className = "card mb-4";
+
+      const title = document.createElement("div");
+      title.className = "card-title";
+      title.textContent = section.title;
+      card.appendChild(title);
+
+      const body = document.createElement("div");
+      body.className = "mt-3";
+      section.items.forEach(item => {
+        const row = document.createElement("div");
+        row.className = "status-row";
+        const label = document.createElement("span");
+        label.className = "status-row-label";
+        label.textContent = item.label;
+        const value = document.createElement("span");
+        value.className = "status-row-value font-mono text-xs";
+        value.textContent = item.value;
+        row.appendChild(label);
+        row.appendChild(value);
+        body.appendChild(row);
+      });
+      card.appendChild(body);
+      host.appendChild(card);
+    });
+  } catch (e) {
+    host.textContent = "";
+    const card = document.createElement("div");
+    card.className = "card";
+    const p = document.createElement("p");
+    p.className = "text-xs text-err";
+    p.textContent = "Could not collect diagnostics. Is JARVIS still running?";
+    card.appendChild(p);
+    host.appendChild(card);
+  }
+}
+
+function initDiagnostics() {
+  refreshDiagnostics();
+
+  const copyBtn = $("diagnostics-copy");
+  const refreshBtn = $("diagnostics-refresh");
+  const message = $("diagnostics-copy-message");
+
+  if (refreshBtn) refreshBtn.addEventListener("click", refreshDiagnostics);
+
+  if (copyBtn) copyBtn.addEventListener("click", async () => {
+    if (!diagnosticsReportText) { return; }
+    try {
+      await navigator.clipboard.writeText(diagnosticsReportText);
+      if (message) { message.textContent = "Report copied to the clipboard."; message.className = "text-xs mt-2 text-ok"; }
+    } catch (e) {
+      // Clipboard access can be denied; say so rather than silently failing.
+      if (message) { message.textContent = "Could not copy automatically — select the text above instead."; message.className = "text-xs mt-2 text-err"; }
+    }
+  });
+}
+
 // ── First-run wizard ────────────────────────────────────────────────────────
 // Steps live in the DOM at once and are shown/hidden with the `hidden`
 // attribute, which also removes a hidden step from the accessibility tree —
@@ -1438,6 +1675,10 @@ document.addEventListener("DOMContentLoaded", () => {
     initMemory();
   } else if (path === "/ui/voice") {
     initVoice();
+  } else if (path === "/ui/settings") {
+    initSettings();
+  } else if (path === "/ui/diagnostics") {
+    initDiagnostics();
   } else if (path === "/ui/setup") {
     initSetup();
   }
