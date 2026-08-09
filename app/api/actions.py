@@ -66,9 +66,84 @@ def _to_preview(action: PendingAction) -> ActionPreview:
 
 # --- routes ---
 
+class ActionHistoryEntry(BaseModel):
+    """One row of the persisted audit trail, shaped for display.
+
+    `input_summary` is the redacted form written at propose() time (see
+    app/core/redaction.py) — this endpoint does not re-redact, because
+    the raw values never reached the database in the first place.
+    """
+    id: str
+    tool_name: str
+    status: str
+    risk: Optional[str] = None
+    policy_action: Optional[str] = None
+    policy_reason: Optional[str] = None
+    input_summary: Dict[str, Any] = {}
+    created_at: str
+    updated_at: str
+    approved_by: Optional[str] = None
+    approval_source: Optional[str] = None
+    result_summary: Optional[str] = None
+    error_category: Optional[str] = None
+    duration_ms: Optional[float] = None
+
+
+class ActionHistoryResponse(BaseModel):
+    entries: List[ActionHistoryEntry]
+    # Every record held, not the number returned, so the page can say
+    # "showing 50 of 214" instead of implying the list is all there is.
+    total: int
+
+
 @router.get("/pending", response_model=List[ActionPreview])
 def list_pending_actions() -> List[ActionPreview]:
     return [_to_preview(a) for a in pending_store.list_pending()]
+
+
+# Declared before /{action_id} so "history" is read as this route and not
+# as an action ID — FastAPI matches in declaration order.
+@router.get("/history", response_model=ActionHistoryResponse)
+def action_history(limit: int = 50, status: Optional[str] = None) -> ActionHistoryResponse:
+    """Everything JARVIS has been asked to do on this machine.
+
+    Read-only and unauthenticated for the same reason /logs is: it
+    mutates nothing, it is reachable only from loopback, and a user
+    checking what happened should not need a token to look. It contains
+    no credential — inputs were redacted before they were stored.
+    """
+    from app.core.action_lifecycle import count, list_recent
+
+    limit = max(1, min(int(limit or 50), 200))
+    records = list_recent(limit=limit)
+    total = count()
+
+    wanted = (status or "").strip().lower()
+    if wanted:
+        records = [r for r in records if r.status.value == wanted]
+
+    return ActionHistoryResponse(
+        entries=[
+            ActionHistoryEntry(
+                id=record.id,
+                tool_name=record.tool_name,
+                status=record.status.value,
+                risk=record.risk,
+                policy_action=record.policy_action,
+                policy_reason=record.policy_reason,
+                input_summary=record.input_summary or {},
+                created_at=record.created_at.isoformat(),
+                updated_at=record.updated_at.isoformat(),
+                approved_by=record.approved_by,
+                approval_source=record.approval_source,
+                result_summary=record.result_summary,
+                error_category=record.error_category,
+                duration_ms=record.duration_ms,
+            )
+            for record in records
+        ],
+        total=total,
+    )
 
 
 @router.get("/{action_id}", response_model=ActionPreview)

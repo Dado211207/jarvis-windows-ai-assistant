@@ -2027,10 +2027,148 @@ async function loadActions() {
   }
 }
 
+// ── Action history ──────────────────────────────────────────────────────────
+// The persisted audit trail, which has been written since v0.2 and until
+// now had nowhere to be read. Inputs arrive already redacted (see
+// app/core/redaction.py) — nothing here re-masks them, because the raw
+// values never reached the database.
+
+const HISTORY_STATUS_BADGE = {
+  succeeded:        "badge-ok",
+  failed:           "badge-err",
+  blocked:          "badge-err",
+  cancelled:        "badge-muted",
+  expired:          "badge-muted",
+  pending_approval: "badge-warn",
+  approved:         "badge-info",
+  executing:        "badge-info",
+  proposed:         "badge-muted",
+};
+
+const HISTORY_STATUS_LABEL = {
+  succeeded:        "Succeeded",
+  failed:           "Failed",
+  blocked:          "Blocked",
+  cancelled:        "Cancelled",
+  expired:          "Expired",
+  pending_approval: "Waiting for approval",
+  approved:         "Approved",
+  executing:        "Running",
+  proposed:         "Proposed",
+};
+
+function _historyRow(cells) {
+  const row = document.createElement("tr");
+  cells.forEach(build => row.appendChild(build()));
+  return row;
+}
+
+function _cell(text, className) {
+  const td = document.createElement("td");
+  if (className) td.className = className;
+  td.textContent = text;
+  return td;
+}
+
+function _historyMessage(text) {
+  const row = document.createElement("tr");
+  const cell = document.createElement("td");
+  cell.colSpan = 5;
+  cell.className = "empty";
+  cell.textContent = text;
+  row.appendChild(cell);
+  return row;
+}
+
+function _formatWhen(iso) {
+  if (!iso) return "—";
+  const when = new Date(iso);
+  return isNaN(when.getTime()) ? iso : when.toLocaleString();
+}
+
+function _historyDetail(entry) {
+  // Prefer what happened; fall back to why it was refused, then to the
+  // redacted input. An empty cell would leave the user guessing.
+  if (entry.result_summary) return entry.result_summary;
+  if (entry.status === "blocked" && entry.policy_reason) return entry.policy_reason;
+  const summary = entry.input_summary || {};
+  const keys = Object.keys(summary);
+  if (keys.length) return keys.map(k => `${k}: ${summary[k]}`).join(", ");
+  return "—";
+}
+
+async function loadActionHistory() {
+  const tbody = $("history-tbody");
+  if (!tbody) return;
+
+  const filter = $("history-filter");
+  const status = filter ? filter.value : "";
+
+  tbody.textContent = "";
+  tbody.appendChild(_historyMessage("Loading…"));
+
+  let data;
+  try {
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+    data = await API.get(`/actions/history${query}`);
+  } catch (e) {
+    tbody.textContent = "";
+    tbody.appendChild(_historyMessage("Could not load the action history."));
+    return;
+  }
+
+  const entries = data.entries || [];
+  tbody.textContent = "";
+
+  const count = $("history-count");
+  if (count) {
+    if (!data.total) {
+      count.textContent = "Nothing has been recorded yet.";
+    } else if (status) {
+      count.textContent = `${entries.length} of ${data.total} recorded action(s) match this filter.`;
+    } else if (entries.length < data.total) {
+      count.textContent = `Showing the ${entries.length} most recent of ${data.total} recorded actions.`;
+    } else {
+      count.textContent = `${data.total} recorded action(s) on this computer.`;
+    }
+  }
+
+  if (!entries.length) {
+    tbody.appendChild(_historyMessage(
+      status ? "No recorded actions match this filter." : "No actions have been recorded yet."
+    ));
+    return;
+  }
+
+  entries.forEach(entry => {
+    const row = _historyRow([
+      () => _cell(_formatWhen(entry.created_at)),
+      () => _cell(entry.tool_name || "—", "font-mono text-xs"),
+      () => _cell(entry.risk || "—", "text-xs"),
+      () => {
+        const td = document.createElement("td");
+        const badge = document.createElement("span");
+        badge.className = "badge " + (HISTORY_STATUS_BADGE[entry.status] || "badge-muted");
+        badge.textContent = HISTORY_STATUS_LABEL[entry.status] || entry.status;
+        td.appendChild(badge);
+        return td;
+      },
+      () => _cell(_historyDetail(entry), "text-xs"),
+    ]);
+    tbody.appendChild(row);
+  });
+}
+
 function initActions() {
   const btn = $("actions-refresh");
   if (btn) btn.addEventListener("click", loadActions);
   loadActions();
+
+  const historyRefresh = $("history-refresh");
+  const historyFilter = $("history-filter");
+  if (historyRefresh) historyRefresh.addEventListener("click", loadActionHistory);
+  if (historyFilter) historyFilter.addEventListener("change", loadActionHistory);
+  loadActionHistory();
 }
 
 // ── Live event stream (WebSocket) ───────────────────────────────────────────
@@ -2134,6 +2272,9 @@ function handleStreamEvent(evt) {
   // (voice, another tab, chat) changes approval state or finishes running.
   if (evt.type === "action_approval_changed" || evt.type === "action_result") {
     if ($("actions-list")) loadActions();
+    // The history is the record of what just happened, so a stale one is
+    // wrong in exactly the moment someone is watching it.
+    if ($("history-tbody")) loadActionHistory();
   }
 }
 

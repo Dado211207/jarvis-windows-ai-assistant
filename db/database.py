@@ -240,6 +240,13 @@ class Database:
             return None
         return self.get_action_lifecycle_record(action_id)
 
+    def count_action_lifecycle_records(self) -> int:
+        """How many audit records exist in total, so a capped list can say
+        "showing 50 of 214" instead of implying it showed everything."""
+        conn = self._get_conn()
+        row = conn.execute("SELECT COUNT(*) AS n FROM action_lifecycle").fetchone()
+        return int(row["n"]) if row else 0
+
     def list_recent_action_lifecycle_records(self, limit: int = 50) -> List[ActionLifecycleRecord]:
         conn = self._get_conn()
         rows = conn.execute(

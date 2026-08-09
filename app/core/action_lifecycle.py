@@ -140,6 +140,13 @@ def get(action_id: str) -> Optional[ActionLifecycleRecord]:
     return get_db().get_action_lifecycle_record(action_id)
 
 
+def count() -> int:
+    """Total audit records held, regardless of any display limit."""
+    from db.database import get_db
+
+    return get_db().count_action_lifecycle_records()
+
+
 def list_recent(limit: int = 50) -> List[ActionLifecycleRecord]:
     from db.database import get_db
 

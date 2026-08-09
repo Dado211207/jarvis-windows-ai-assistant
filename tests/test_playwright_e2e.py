@@ -535,6 +535,64 @@ def test_the_voice_page_toggle_reflects_the_server_state(page, live_server):
 
 
 # ---------------------------------------------------------------------------
+# 12d. Action history, through the real UI
+# ---------------------------------------------------------------------------
+
+def test_a_confirmed_action_appears_in_the_history_without_a_reload(page, live_server):
+    """The history is the record of what just happened, so a stale one is
+    wrong exactly when someone is watching it."""
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+    page.fill("#chat-input", "status")
+    page.click("#chat-send")
+    page.wait_for_function(
+        "document.getElementById('chat-messages').textContent.includes('JARVIS')", timeout=5000,
+    )
+
+    page.goto(url("/ui/actions"), wait_until="networkidle")
+    page.wait_for_function(
+        "document.getElementById('history-tbody').textContent.includes('status')", timeout=5000,
+    )
+
+    # A new action, executed from this page's own websocket-connected
+    # session, must land in the table without a manual refresh.
+    page.evaluate("""() => {
+        const token = document.cookie.match(/(?:^|;\\s*)jarvis_session=([^;]+)/);
+        return fetch('/command', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(token ? {'X-JARVIS-Session-Token': decodeURIComponent(token[1])} : {}),
+            },
+            body: JSON.stringify({command: 'disk space'}),
+        });
+    }""")
+    page.wait_for_function(
+        "document.getElementById('history-tbody').textContent.includes('disk_space')", timeout=8000,
+    )
+
+
+def test_filtering_the_history_narrows_it(page, live_server):
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+    page.fill("#chat-input", "status")
+    page.click("#chat-send")
+    page.wait_for_function(
+        "document.getElementById('chat-messages').textContent.includes('JARVIS')", timeout=5000,
+    )
+
+    page.goto(url("/ui/actions"), wait_until="networkidle")
+    page.wait_for_function(
+        "document.getElementById('history-tbody').textContent.includes('status')", timeout=5000,
+    )
+
+    page.select_option("#history-filter", "cancelled")
+    page.wait_for_function(
+        "!document.getElementById('history-tbody').textContent.includes('Loading')", timeout=5000,
+    )
+    rows = page.inner_text("#history-tbody")
+    assert "Succeeded" not in rows
+
+
+# ---------------------------------------------------------------------------
 # 13. Privacy-mode indicator
 # ---------------------------------------------------------------------------
 

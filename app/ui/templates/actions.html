@@ -27,5 +27,54 @@
     </div>
   </div>
 
+  <div class="page-header" style="margin-top:2rem;">
+    <div class="flex items-center justify-between" style="flex-wrap:wrap;gap:0.5rem;">
+      <div>
+        <h2 class="page-title">History</h2>
+        <p class="page-subtitle" id="history-count" aria-live="polite">
+          Everything JARVIS has been asked to do on this computer.
+        </p>
+      </div>
+      <div class="btn-row">
+        <label class="text-xs text-muted" for="history-filter">Show</label>
+        <select id="history-filter" class="input" aria-label="Filter history by outcome">
+          <option value="">Everything</option>
+          <option value="succeeded">Succeeded</option>
+          <option value="failed">Failed</option>
+          <option value="cancelled">Cancelled</option>
+          <option value="blocked">Blocked</option>
+          <option value="expired">Expired</option>
+          <option value="pending_approval">Waiting for approval</option>
+        </select>
+        <button id="history-refresh" class="btn btn-ghost btn-sm" type="button">Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:0.25rem 0;">
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">When</th>
+            <th scope="col">Action</th>
+            <th scope="col">Risk</th>
+            <th scope="col">Outcome</th>
+            <th scope="col">Detail</th>
+          </tr>
+        </thead>
+        <tbody id="history-tbody">
+          <tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="text-xs text-muted mt-2">
+    Recorded on this computer only, and never sent anywhere. Inputs are stored with
+    sensitive values already masked &mdash; clipboard contents and API keys never reach this table.
+    Clearing your chat does not clear this history.
+  </p>
+
 </div>
 {% endblock %}
