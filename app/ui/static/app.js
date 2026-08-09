@@ -1770,8 +1770,63 @@ async function refreshDiagnostics() {
   }
 }
 
+async function refreshAbout() {
+  const version = $("about-version");
+  const build = $("about-build");
+  if (!version && !build) return;
+  try {
+    const r = await API.get("/about");
+    if (version) { version.textContent = r.version; version.className = "status-row-value font-mono"; }
+    if (build) {
+      build.textContent = r.packaged ? `${r.build} (installed)` : `${r.build} (running from source)`;
+      build.className = "status-row-value";
+    }
+  } catch (e) {
+    if (version) { version.textContent = "Unknown"; version.className = "status-row-value"; }
+    if (build) { build.textContent = "Unknown"; build.className = "status-row-value"; }
+  }
+}
+
+// Opens the releases page through the existing safe URL opener, so it
+// goes to the system browser (correct inside the native desktop window)
+// and through the same scheme validation as any other link JARVIS opens.
+async function checkForUpdates() {
+  const message = $("about-update-message");
+  const setMessage = (text, ok) => {
+    if (!message) return;
+    message.textContent = text;
+    message.className = `text-xs mt-2 ${ok ? "text-muted" : "text-err"}`;
+  };
+
+  try {
+    const about = await API.get("/about");
+    await API.post("/command", { command: `open website ${about.releases_url}` });
+    setMessage(`Opened the releases page. You have ${about.version}.`, true);
+  } catch (e) {
+    setMessage("Could not open the releases page: " + e.message, false);
+  }
+}
+
+async function refreshNotices() {
+  const target = $("about-notices");
+  if (!target) return;
+  try {
+    const r = await API.get("/about/notices");
+    target.textContent = r.available
+      ? r.text
+      : "The notices file could not be found in this installation.";
+  } catch (e) {
+    target.textContent = "The notices could not be loaded.";
+  }
+}
+
 function initDiagnostics() {
   refreshDiagnostics();
+  refreshAbout();
+  refreshNotices();
+
+  const updateBtn = $("about-check-updates");
+  if (updateBtn) updateBtn.addEventListener("click", checkForUpdates);
 
   const copyBtn = $("diagnostics-copy");
   const refreshBtn = $("diagnostics-refresh");

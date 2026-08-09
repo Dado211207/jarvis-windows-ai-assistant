@@ -496,6 +496,23 @@ a:hover { color: var(--accent-hover); }
 .input::placeholder { color: var(--text-subtle); }
 
 /* ── Table ─────────────────────────────────────────────────────────── */
+/* Licence text: long, pre-formatted, and not worth pushing the page
+   sideways for — it scrolls inside its own box. */
+.notices-text {
+  max-height: 22rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Cascadia Code", "Fira Mono", "Consolas", monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+  margin: 0;
+}
+
 .table-wrap { overflow-x: auto; }
 .table {
   width: 100%;

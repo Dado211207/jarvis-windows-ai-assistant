@@ -124,6 +124,11 @@ VersionInfoProductTextVersion={#MyAppVersion}
 CloseApplications=yes
 CloseApplicationsFilter={#MyAppExeName}
 RestartApplications=no
+; Two copies of Setup running at once would race on the same {app}
+; directory. A double-click on the downloaded installer while the first
+; one is still extracting is the ordinary way that happens; the second
+; is told to wait rather than corrupting the first one's output.
+SetupMutex=JARVIS-Setup-{#MyAppId}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

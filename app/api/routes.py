@@ -738,6 +738,91 @@ class DiagnosticsResponse(BaseModel):
     text: str
 
 
+# ---------------------------------------------------------------------------
+# About: version and the bundled open-source notices.
+#
+# There is deliberately no automatic update check. JARVIS makes no
+# network request of its own accord — the only outbound traffic in the
+# whole application is a chat message to a provider the user configured.
+# A background version poll would break that, and it could not work
+# anyway: this project is private, so an unauthenticated GitHub API call
+# would simply 404. "Check for updates" therefore opens the releases page
+# in the user's browser and lets them compare versions themselves, which
+# is honest about what it does rather than implying a check happened.
+# ---------------------------------------------------------------------------
+
+class AboutResponse(BaseModel):
+    version: str
+    build: str
+    packaged: bool
+    releases_url: str
+
+
+class NoticesResponse(BaseModel):
+    available: bool
+    text: str
+
+
+PROJECT_RELEASES_URL = "https://github.com/Dado211207/jarvis-windows-ai-assistant/releases"
+
+
+@router.get("/about", response_model=AboutResponse)
+def about() -> AboutResponse:
+    import sys
+
+    return AboutResponse(
+        version=__version__,
+        build=__phase__,
+        packaged=bool(getattr(sys, "frozen", False)),
+        releases_url=PROJECT_RELEASES_URL,
+    )
+
+
+def _notices_path():
+    """Where THIRD_PARTY_NOTICES.md lives in each mode.
+
+    PyInstaller unpacks bundled data next to the executable's temporary
+    root (sys._MEIPASS); in a source checkout the file is in docs/. Both
+    are checked rather than assuming one, so the About page is not blank
+    in whichever mode the developer happens not to be testing.
+    """
+    import sys
+    from pathlib import Path
+
+    candidates = []
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        candidates.append(Path(sys._MEIPASS) / "THIRD_PARTY_NOTICES.md")
+        candidates.append(Path(sys.executable).parent / "THIRD_PARTY_NOTICES.md")
+    candidates.append(Path(__file__).resolve().parent.parent.parent / "docs" / "THIRD_PARTY_NOTICES.md")
+
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+@router.get("/about/notices", response_model=NoticesResponse)
+def about_notices() -> NoticesResponse:
+    """The bundled third-party notices, as plain text.
+
+    Served rather than linked because the packaged app has no file
+    manager and no browser pointed at its install directory — a licence
+    file that ships with the product and cannot be read from it is not
+    really shipped.
+    """
+    path = _notices_path()
+    if path is None:
+        return NoticesResponse(available=False, text="")
+    try:
+        return NoticesResponse(available=True, text=path.read_text(encoding="utf-8"))
+    except OSError:
+        logger.warning("Third-party notices could not be read.", exc_info=True)
+        return NoticesResponse(available=False, text="")
+
+
 @router.get("/diagnostics", response_model=DiagnosticsResponse)
 def diagnostics() -> DiagnosticsResponse:
     from app.core.diagnostics import build_report, render_report_text
