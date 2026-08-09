@@ -703,6 +703,53 @@ def test_approval_card_buttons_are_keyboard_reachable(page):
     )
 
 
+def test_the_first_tab_press_offers_a_way_past_the_sidebar(page):
+    """Eleven nav links stand between the top of every page and its
+    content. Without a skip link, reaching the chat box by keyboard costs
+    eleven tab presses on every page — something axe does not report and
+    a mouse user never notices."""
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+
+    page.keyboard.press("Tab")
+    focused = page.evaluate("document.activeElement.className")
+    assert "skip-link" in focused, "the skip link is not the first focusable element"
+
+    # Hidden until it has focus: it must not sit visibly on the page.
+    assert page.evaluate(
+        "getComputedStyle(document.querySelector('.skip-link')).position"
+    ) == "absolute"
+
+
+def test_the_skip_link_actually_moves_focus_into_the_content(page):
+    """Scrolling without moving focus is the common broken version: the
+    next Tab press goes straight back into the nav."""
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+
+    page.keyboard.press("Tab")
+    page.keyboard.press("Enter")
+
+    assert page.evaluate("document.activeElement.id") == "main-content"
+
+
+@pytest.mark.parametrize("path", ["/ui/", "/ui/chat", "/ui/settings", "/ui/voice", "/ui/actions"])
+def test_headings_describe_the_page_structure(page, path):
+    """Card titles are real headings, so a screen-reader user can jump
+    between sections instead of arrowing through everything. Checked as
+    "no level is skipped", which is the rule that actually matters."""
+    page.goto(url(path), wait_until="networkidle")
+
+    levels = page.evaluate(
+        "Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))"
+        ".filter(h => h.offsetParent !== null)"
+        ".map(h => Number(h.tagName[1]))"
+    )
+
+    assert levels, f"{path} has no headings at all"
+    assert levels[0] == 1, f"{path} does not start at h1"
+    for previous, current in zip(levels, levels[1:]):
+        assert current <= previous + 1, f"{path} jumps from h{previous} to h{current}"
+
+
 # ---------------------------------------------------------------------------
 # 18. Live-region status announcements
 # ---------------------------------------------------------------------------

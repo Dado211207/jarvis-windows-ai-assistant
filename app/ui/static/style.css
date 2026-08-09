@@ -338,13 +338,42 @@ a:hover { color: var(--accent-hover); }
 }
 .card:hover { border-color: var(--border-bright); }
 
+/* Card titles are <h2> elements so screen-reader users can navigate a
+   page by its sections; the styling below is what makes them read as
+   small labels rather than headings visually. The margin reset matters
+   because a bare h2 would otherwise push every card open. */
 .card-title {
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--text-muted);
+  margin: 0;
+  line-height: 1.4;
 }
+
+/* Off-screen until focused. Not display:none — that would remove it from
+   the tab order entirely, which is the opposite of the point. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 1000;
+  padding: 0.6rem 1rem;
+  background: var(--accent);
+  color: #04121a;
+  font-weight: 600;
+  border-radius: 0 0 var(--radius-sm) 0;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+/* The skip target itself must not draw a focus ring around the whole
+   page when it receives focus programmatically. */
+.main:focus { outline: none; }
 
 .card-glass {
   background: linear-gradient(135deg, rgba(0, 212, 255, 0.04) 0%, var(--surface) 100%);

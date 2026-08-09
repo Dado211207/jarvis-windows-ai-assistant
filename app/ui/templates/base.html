@@ -8,6 +8,12 @@
 </head>
 <body>
 
+{# Eleven sidebar links stand between the top of every page and its
+   content. Without this, reaching the chat box by keyboard means eleven
+   tab presses, on every page, every time. Hidden until focused, so it
+   costs sighted mouse users nothing. #}
+<a href="#main-content" class="skip-link">Skip to main content</a>
+
 <aside class="sidebar">
   <div class="sidebar-brand">
     <div class="sidebar-logo">J</div>
@@ -96,7 +102,10 @@
     </div>
   </header>
 
-  <main class="main">
+  {# tabindex="-1" so the skip link can actually move focus here; without
+     it the browser scrolls but leaves focus in the sidebar, and the next
+     Tab press goes back to the nav. #}
+  <main class="main" id="main-content" tabindex="-1">
     {% block content %}{% endblock %}
   </main>
 
