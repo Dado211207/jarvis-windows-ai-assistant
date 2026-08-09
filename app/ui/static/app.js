@@ -901,7 +901,178 @@ async function cancelModelInstall() {
   }
 }
 
+// ── First-run wizard ────────────────────────────────────────────────────────
+// Steps live in the DOM at once and are shown/hidden with the `hidden`
+// attribute, which also removes a hidden step from the accessibility tree —
+// so keyboard focus can never land on a control belonging to a step that
+// isn't on screen.
+
+const WIZARD_LAST_STEP = 5;
+let wizardStep = 0;
+
+function wizardPanels() {
+  return Array.from(document.querySelectorAll(".wizard-panel"));
+}
+
+function renderWizardStep() {
+  const panels = wizardPanels();
+  if (!panels.length) return;
+
+  panels.forEach(panel => {
+    panel.hidden = Number(panel.dataset.step) !== wizardStep;
+  });
+
+  document.querySelectorAll(".wizard-step-item").forEach(item => {
+    const index = Number(item.dataset.stepLabel);
+    item.classList.toggle("active", index === wizardStep);
+    item.classList.toggle("done", index < wizardStep);
+    if (index === wizardStep) {
+      item.setAttribute("aria-current", "step");
+    } else {
+      item.removeAttribute("aria-current");
+    }
+  });
+
+  const progress = $("wizard-progress-text");
+  if (progress) progress.textContent = `Step ${wizardStep + 1} of ${WIZARD_LAST_STEP + 1}`;
+
+  const back = $("wizard-back");
+  const next = $("wizard-next");
+  const finish = $("setup-continue");
+  const skip = $("wizard-skip");
+  const onLastStep = wizardStep === WIZARD_LAST_STEP;
+
+  if (back) back.disabled = wizardStep === 0;
+  if (next) next.hidden = onLastStep;
+  if (finish) finish.hidden = !onLastStep;
+  // Once the user has reached the end there is nothing left to skip.
+  if (skip) skip.hidden = onLastStep;
+}
+
+function goToWizardStep(step) {
+  wizardStep = Math.min(Math.max(step, 0), WIZARD_LAST_STEP);
+  renderWizardStep();
+
+  // Refresh the data a step actually shows, when it is shown — cheaper
+  // than polling everything continuously, and it means a key saved on
+  // step 2 is reflected by the summary on step 5.
+  if (wizardStep === 2) refreshWizardProviders();
+  if (wizardStep === 3) refreshSetupReadiness();
+  if (wizardStep === 4) refreshWizardStartup();
+  if (wizardStep === 5) refreshSetupReadiness();
+
+  const panel = document.querySelector(`.wizard-panel[data-step="${wizardStep}"]`);
+  const heading = panel ? panel.querySelector(".card-title, .page-title") : null;
+  if (heading) {
+    // Move focus to the new step's heading so screen-reader and keyboard
+    // users are told where they are instead of being left on a button
+    // that just changed meaning.
+    heading.setAttribute("tabindex", "-1");
+    heading.focus();
+  }
+}
+
+async function refreshWizardProviders() {
+  const host = $("wizard-provider-list");
+  if (!host) return;
+  host.textContent = "";
+
+  let data;
+  try {
+    data = await API.get("/providers");
+  } catch (e) {
+    const p = document.createElement("p");
+    p.className = "text-xs text-err";
+    p.textContent = "Could not check providers. JARVIS still works without one.";
+    host.appendChild(p);
+    return;
+  }
+
+  (data.providers || []).forEach(provider => {
+    const row = document.createElement("div");
+    row.className = "status-row";
+
+    const label = document.createElement("span");
+    label.className = "status-row-label";
+    label.textContent = provider.display_name;
+
+    const value = document.createElement("span");
+    value.className = `status-row-value ${provider.available ? "text-ok" : "text-muted"}`;
+    value.textContent = provider.available ? "Available" : "Not detected";
+
+    row.appendChild(label);
+    row.appendChild(value);
+    host.appendChild(row);
+
+    const detail = document.createElement("p");
+    detail.className = "text-xs text-muted mt-2";
+    detail.textContent = provider.detail;
+    host.appendChild(detail);
+
+    if (provider.models && provider.models.length) {
+      const models = document.createElement("p");
+      models.className = "text-xs text-muted";
+      models.textContent = `Models: ${provider.models.join(", ")}`;
+      host.appendChild(models);
+    }
+  });
+}
+
+async function refreshWizardStartup() {
+  const toggle = $("wizard-startup-toggle");
+  const detail = $("wizard-startup-detail");
+  if (!toggle) return;
+  try {
+    const r = await API.get("/settings/startup");
+    toggle.checked = r.enabled;
+    toggle.disabled = !r.supported;
+    if (detail) detail.textContent = r.detail;
+  } catch (e) {
+    if (detail) detail.textContent = "Could not read the current setting.";
+  }
+}
+
+async function setWizardStartup(enabled) {
+  const toggle = $("wizard-startup-toggle");
+  const detail = $("wizard-startup-detail");
+  try {
+    const r = await API.post("/settings/startup", { enabled });
+    // Trust the server's reported state, not the click: if the shortcut
+    // could not be created the checkbox must fall back rather than show
+    // a setting that isn't real.
+    if (toggle) toggle.checked = r.enabled;
+    if (detail) detail.textContent = r.detail;
+  } catch (e) {
+    if (detail) detail.textContent = "Could not change the setting.";
+    refreshWizardStartup();
+  }
+}
+
+function initWizardControls() {
+  const back = $("wizard-back");
+  const next = $("wizard-next");
+  const skip = $("wizard-skip");
+  const startup = $("wizard-startup-toggle");
+
+  if (back) back.addEventListener("click", () => goToWizardStep(wizardStep - 1));
+  if (next) next.addEventListener("click", () => goToWizardStep(wizardStep + 1));
+  if (skip) skip.addEventListener("click", finishSetup);
+  if (startup) startup.addEventListener("change", () => setWizardStartup(startup.checked));
+
+  goToWizardStep(0);
+}
+
+async function finishSetup() {
+  try {
+    await API.post("/onboarding/complete", {});
+  } catch (e) {
+    // Non-fatal — the dashboard is reachable either way.
+  }
+  window.location.href = "/ui/";
+}
+
 function initSetup() {
+  initWizardControls();
   refreshSetupReadiness();
   refreshSetupKeyStatus();
   refreshModelPreview();

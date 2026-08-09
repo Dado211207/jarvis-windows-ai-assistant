@@ -75,19 +75,31 @@ def test_startup_status_is_readable(client):
     assert set(body) == {"supported", "enabled", "detail"}
 
 
-def test_startup_reports_unsupported_off_windows(client):
-    """This suite runs on Linux; the endpoint must say so plainly rather
-    than pretend the feature exists."""
+def test_startup_support_matches_the_actual_platform(client):
+    """Asserts agreement with the platform actually running the test
+    rather than assuming one. An earlier version of this test hardcoded
+    "this suite runs on Linux" and failed for real on the windows-latest
+    job — where supported is correctly True. The product was right and
+    the test was wrong; asserting the relationship instead of a constant
+    is what makes this meaningful on both runners."""
+    import sys
+
     body = client.get("/settings/startup").json()
-    assert body["supported"] is False
-    assert body["enabled"] is False
-    assert "only available on Windows" in body["detail"]
+
+    assert body["supported"] is (sys.platform == "win32")
+    if body["supported"]:
+        assert "only available on Windows" not in body["detail"]
+    else:
+        assert "only available on Windows" in body["detail"]
 
 
 def test_enabling_startup_reports_the_real_resulting_state(client):
-    """The response must reflect what actually happened on disk. Off
-    Windows nothing can be created, so enabled must stay False rather
-    than echoing the request back as success."""
+    """The response must reflect what actually happened on disk, not the
+    request. Neither runner can produce a working shortcut here — Linux
+    has no Startup folder, and the Windows job runs an unfrozen test
+    process, which enable() deliberately refuses because a shortcut to a
+    bare interpreter would not start JARVIS. So enabled must come back
+    False on both rather than echoing the request as success."""
     response = client.post("/settings/startup", json={"enabled": True}, headers=_token(client))
 
     assert response.status_code == 200
