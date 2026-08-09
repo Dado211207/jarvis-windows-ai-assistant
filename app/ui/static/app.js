@@ -1079,81 +1079,6 @@ async function refreshVoiceInputStatus() {
   }
 }
 
-// ── Setup / first-run onboarding ─────────────────────────────────────────────
-
-const SETUP_READINESS_FIELDS = [
-  "core", "text_chat", "ai_provider", "mode",
-  "stt_runtime", "speech_model", "tts", "database", "windows_automation",
-];
-
-async function checkMicrophonePresence() {
-  const el = $("ready-microphone");
-  if (!el) return;
-  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-    el.textContent = "Not supported by this browser";
-    el.className = "status-row-value text-err";
-    return;
-  }
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const hasMic = devices.some(d => d.kind === "audioinput");
-    el.textContent = hasMic ? "Device detected" : "No microphone detected";
-    el.className = `status-row-value ${hasMic ? "text-ok" : "text-err"}`;
-  } catch (e) {
-    el.textContent = "Could not check (browser permissions)";
-    el.className = "status-row-value text-err";
-  }
-}
-
-async function refreshSetupReadiness() {
-  SETUP_READINESS_FIELDS.forEach(key => {
-    const el = $("ready-" + key);
-    if (el) { el.textContent = "…"; el.className = "status-row-value loading"; }
-  });
-
-  try {
-    const r = await API.get("/onboarding/readiness");
-    SETUP_READINESS_FIELDS.forEach(key => {
-      const el = $("ready-" + key);
-      const item = r[key];
-      if (!el || !item) return;
-      el.textContent = item.ready ? "Ready" : "Not ready";
-      el.className = `status-row-value ${item.ready ? "text-ok" : "text-err"}`;
-      el.title = item.detail;
-    });
-
-    const speechModelEl = $("setup-speech-model-status");
-    if (speechModelEl && r.speech_model) {
-      speechModelEl.textContent = r.speech_model.detail;
-      speechModelEl.className = `status-row-value ${r.speech_model.ready ? "text-ok" : "text-err"}`;
-    }
-  } catch (e) {
-    console.error("readiness check error", e);
-  }
-
-  checkMicrophonePresence();
-}
-
-async function refreshSetupKeyStatus() {
-  const el = $("setup-key-status");
-  if (!el) return;
-  try {
-    const r = await API.get("/settings/api-key-status");
-    el.textContent = r.configured ? "Configured" : "Not configured";
-    el.className = `status-row-value ${r.configured ? "text-ok" : "text-err"}`;
-  } catch (e) {
-    el.textContent = "Unknown";
-    el.className = "status-row-value";
-  }
-}
-
-function _setSetupKeyMessage(text, ok) {
-  const el = $("setup-key-message");
-  if (!el) return;
-  el.textContent = text;
-  el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
-}
-
 // ── Guided speech-model download ────────────────────────────────────────────
 
 const MODEL_ACTIVE_STATES = ["checking", "downloading", "verifying", "installing"];
@@ -1223,7 +1148,10 @@ function _renderModelInstallState(state) {
   }
 
   if (state.status === "complete" || state.status === "error") {
-    refreshSetupReadiness();
+    // The panel above this one reports whether push-to-talk is usable.
+    // A finished install has to update it, or it keeps saying the model
+    // is missing.
+    refreshVoiceInputStatus();
   }
 }
 
@@ -1661,6 +1589,8 @@ function initSettings() {
   refreshSettingsProviders();
   refreshSettingsKeyStatus();
   refreshSettingsStartup();
+  refreshSettingsCloseAction();
+  loadPreferredNameInto("settings-name-input");
   refreshSettingsPrivacy();
   refreshSettingsPaths();
   refreshStoredData();
@@ -1676,21 +1606,12 @@ function initSettings() {
 
   if (providerSave) providerSave.addEventListener("click", saveProviderSelection);
 
+  // The same verified save the first-run screen uses, so a key rejected
+  // during setup and a key rejected in Settings say the same thing.
   if (saveBtn) saveBtn.addEventListener("click", async () => {
-    const value = input ? input.value.trim() : "";
-    if (!value) { _setSettingsKeyMessage("Enter a key first.", false); return; }
-    saveBtn.disabled = true;
-    try {
-      const r = await API.post("/settings/api-key", { api_key: value });
-      _setSettingsKeyMessage(r.message, r.success);
-      if (r.success && input) input.value = "";
-      refreshSettingsKeyStatus();
-      refreshSettingsProviders();
-    } catch (e) {
-      _setSettingsKeyMessage("Could not reach the server.", false);
-    } finally {
-      saveBtn.disabled = false;
-    }
+    await saveApiKeyFrom("settings-key-input", "settings-key-save", _setSettingsKeyMessage);
+    refreshSettingsKeyStatus();
+    refreshSettingsProviders();
   });
 
   if (removeBtn) removeBtn.addEventListener("click", async () => {
@@ -1718,6 +1639,42 @@ function initSettings() {
       refreshSettingsStartup();
     }
   });
+
+  const nameSave = $("settings-name-save");
+  if (nameSave) nameSave.addEventListener("click", async () => {
+    const message = $("settings-name-message");
+    const ok = await savePreferredName("settings-name-input");
+    if (message) {
+      message.textContent = ok ? "Saved." : "Could not save that right now.";
+      message.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
+    }
+  });
+
+  const closeAction = $("settings-close-action");
+  if (closeAction) closeAction.addEventListener("change", async () => {
+    const detail = $("settings-close-action-detail");
+    try {
+      const r = await API.post("/settings/close-action", { close_action: closeAction.value });
+      closeAction.value = r.close_action;  // trust the server, not the click
+      if (detail) detail.textContent = r.detail;
+    } catch (e) {
+      if (detail) detail.textContent = "Could not change the setting.";
+      refreshSettingsCloseAction();
+    }
+  });
+}
+
+async function refreshSettingsCloseAction() {
+  const select = $("settings-close-action");
+  const detail = $("settings-close-action-detail");
+  if (!select) return;
+  try {
+    const r = await API.get("/settings/close-action");
+    select.value = r.close_action;
+    if (detail) detail.textContent = r.detail;
+  } catch (e) {
+    if (detail) detail.textContent = "Could not read the current setting.";
+  }
 }
 
 // ── Diagnostics page ────────────────────────────────────────────────────────
@@ -1846,165 +1803,88 @@ function initDiagnostics() {
   });
 }
 
-// ── First-run wizard ────────────────────────────────────────────────────────
-// Steps live in the DOM at once and are shown/hidden with the `hidden`
-// attribute, which also removes a hidden step from the accessibility tree —
-// so keyboard focus can never land on a control belonging to a step that
-// isn't on screen.
+// ── First run ───────────────────────────────────────────────────────────────
+// Two questions and a button.
+//
+// This replaced a six-step wizard (welcome, privacy, provider discovery,
+// speech-model install, preferences, readiness summary). Real hardware
+// testing found it exposed setup work a normal user should never see, and
+// most of it duplicated Settings — which is where all of it now lives.
+// Nothing here blocks getting started: both fields are optional and "Skip
+// for now" is a first-class choice, not a warning.
 
-const WIZARD_LAST_STEP = 5;
-let wizardStep = 0;
-
-function wizardPanels() {
-  return Array.from(document.querySelectorAll(".wizard-panel"));
+function _setSetupKeyMessage(text, ok) {
+  const el = $("setup-key-message");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
 }
 
-function renderWizardStep() {
-  const panels = wizardPanels();
-  if (!panels.length) return;
-
-  panels.forEach(panel => {
-    panel.hidden = Number(panel.dataset.step) !== wizardStep;
-  });
-
-  document.querySelectorAll(".wizard-step-item").forEach(item => {
-    const index = Number(item.dataset.stepLabel);
-    item.classList.toggle("active", index === wizardStep);
-    item.classList.toggle("done", index < wizardStep);
-    if (index === wizardStep) {
-      item.setAttribute("aria-current", "step");
-    } else {
-      item.removeAttribute("aria-current");
-    }
-  });
-
-  const progress = $("wizard-progress-text");
-  if (progress) progress.textContent = `Step ${wizardStep + 1} of ${WIZARD_LAST_STEP + 1}`;
-
-  const back = $("wizard-back");
-  const next = $("wizard-next");
-  const finish = $("setup-continue");
-  const skip = $("wizard-skip");
-  const onLastStep = wizardStep === WIZARD_LAST_STEP;
-
-  if (back) back.disabled = wizardStep === 0;
-  if (next) next.hidden = onLastStep;
-  if (finish) finish.hidden = !onLastStep;
-  // Once the user has reached the end there is nothing left to skip.
-  if (skip) skip.hidden = onLastStep;
-}
-
-function goToWizardStep(step) {
-  wizardStep = Math.min(Math.max(step, 0), WIZARD_LAST_STEP);
-  renderWizardStep();
-
-  // Refresh the data a step actually shows, when it is shown — cheaper
-  // than polling everything continuously, and it means a key saved on
-  // step 2 is reflected by the summary on step 5.
-  if (wizardStep === 2) refreshWizardProviders();
-  if (wizardStep === 3) refreshSetupReadiness();
-  if (wizardStep === 4) refreshWizardStartup();
-  if (wizardStep === 5) refreshSetupReadiness();
-
-  const panel = document.querySelector(`.wizard-panel[data-step="${wizardStep}"]`);
-  const heading = panel ? panel.querySelector(".card-title, .page-title") : null;
-  if (heading) {
-    // Move focus to the new step's heading so screen-reader and keyboard
-    // users are told where they are instead of being left on a button
-    // that just changed meaning.
-    heading.setAttribute("tabindex", "-1");
-    heading.focus();
-  }
-}
-
-async function refreshWizardProviders() {
-  const host = $("wizard-provider-list");
-  if (!host) return;
-  host.textContent = "";
-
-  let data;
+async function refreshSetupKeyStatus() {
+  const el = $("setup-key-status");
+  if (!el) return;
   try {
-    data = await API.get("/providers");
+    const r = await API.get("/settings/api-key-status");
+    el.textContent = r.configured ? "Configured" : "Not configured yet";
+    el.className = `status-row-value ${r.configured ? "text-ok" : "text-muted"}`;
   } catch (e) {
-    const p = document.createElement("p");
-    p.className = "text-xs text-err";
-    p.textContent = "Could not check providers. JARVIS still works without one.";
-    host.appendChild(p);
-    return;
+    el.textContent = "Unknown";
+    el.className = "status-row-value";
   }
-
-  (data.providers || []).forEach(provider => {
-    const row = document.createElement("div");
-    row.className = "status-row";
-
-    const label = document.createElement("span");
-    label.className = "status-row-label";
-    label.textContent = provider.display_name;
-
-    const value = document.createElement("span");
-    value.className = `status-row-value ${provider.available ? "text-ok" : "text-muted"}`;
-    value.textContent = provider.available ? "Available" : "Not detected";
-
-    row.appendChild(label);
-    row.appendChild(value);
-    host.appendChild(row);
-
-    const detail = document.createElement("p");
-    detail.className = "text-xs text-muted mt-2";
-    detail.textContent = provider.detail;
-    host.appendChild(detail);
-
-    if (provider.models && provider.models.length) {
-      const models = document.createElement("p");
-      models.className = "text-xs text-muted";
-      models.textContent = `Models: ${provider.models.join(", ")}`;
-      host.appendChild(models);
-    }
-  });
 }
 
-async function refreshWizardStartup() {
-  const toggle = $("wizard-startup-toggle");
-  const detail = $("wizard-startup-detail");
-  if (!toggle) return;
+async function loadPreferredNameInto(inputId) {
+  const input = $(inputId);
+  if (!input) return;
   try {
-    const r = await API.get("/settings/startup");
-    toggle.checked = r.enabled;
-    toggle.disabled = !r.supported;
-    if (detail) detail.textContent = r.detail;
+    const r = await API.get("/settings/preferred-name");
+    input.value = r.name || "";
   } catch (e) {
-    if (detail) detail.textContent = "Could not read the current setting.";
+    // A name we could not read is not worth interrupting anyone over.
   }
 }
 
-async function setWizardStartup(enabled) {
-  const toggle = $("wizard-startup-toggle");
-  const detail = $("wizard-startup-detail");
+async function savePreferredName(inputId) {
+  const input = $(inputId);
+  if (!input) return true;
   try {
-    const r = await API.post("/settings/startup", { enabled });
-    // Trust the server's reported state, not the click: if the shortcut
-    // could not be created the checkbox must fall back rather than show
-    // a setting that isn't real.
-    if (toggle) toggle.checked = r.enabled;
-    if (detail) detail.textContent = r.detail;
+    const r = await API.post("/settings/preferred-name", { name: input.value.trim() });
+    // Show what was actually stored — the server sanitises it, and a
+    // field that keeps showing something different would be a lie.
+    input.value = r.name || "";
+    return true;
   } catch (e) {
-    if (detail) detail.textContent = "Could not change the setting.";
-    refreshWizardStartup();
+    return false;
   }
 }
 
-function initWizardControls() {
-  const back = $("wizard-back");
-  const next = $("wizard-next");
-  const skip = $("wizard-skip");
-  const startup = $("wizard-startup-toggle");
+// Saving the key is deliberately a real round trip that verifies it, so
+// this can take a couple of seconds. The button says so rather than
+// looking frozen.
+async function saveApiKeyFrom(inputId, buttonId, setMessage) {
+  const input = $(inputId);
+  const button = $(buttonId);
+  const value = input ? input.value.trim() : "";
+  if (!value) {
+    setMessage("Enter a key first.", false);
+    return false;
+  }
 
-  if (back) back.addEventListener("click", () => goToWizardStep(wizardStep - 1));
-  if (next) next.addEventListener("click", () => goToWizardStep(wizardStep + 1));
-  if (skip) skip.addEventListener("click", finishSetup);
-  if (startup) startup.addEventListener("change", () => setWizardStartup(startup.checked));
-
-  goToWizardStep(0);
+  const originalLabel = button ? button.textContent : "";
+  if (button) { button.disabled = true; button.textContent = "Checking…"; }
+  try {
+    const r = await API.post("/settings/api-key", { api_key: value });
+    setMessage(r.message, r.success);
+    // Cleared only when it was actually stored: leaving a rejected key in
+    // the box is what lets someone fix a typo instead of retyping it.
+    if (r.stored && input) input.value = "";
+    return r.success;
+  } catch (e) {
+    setMessage("Could not reach JARVIS's local service.", false);
+    return false;
+  } finally {
+    if (button) { button.disabled = false; button.textContent = originalLabel; }
+  }
 }
 
 async function finishSetup() {
@@ -2017,65 +1897,34 @@ async function finishSetup() {
 }
 
 function initSetup() {
-  initWizardControls();
-  refreshSetupReadiness();
   refreshSetupKeyStatus();
-  refreshModelPreview();
-  pollModelInstallStatus();  // covers an install already running from a previous page load
+  loadPreferredNameInto("setup-name-input");
 
-  const saveBtn = $("setup-key-save");
-  const removeBtn = $("setup-key-remove");
-  const input = $("setup-key-input");
   const continueBtn = $("setup-continue");
-  const modelStartBtn = $("model-install-start");
-  const modelCancelBtn = $("model-install-cancel");
-  const modelRetryBtn = $("model-install-retry");
+  const skipBtn = $("setup-skip");
+  const keyInput = $("setup-key-input");
 
-  if (modelStartBtn) modelStartBtn.addEventListener("click", startModelInstall);
-  if (modelCancelBtn) modelCancelBtn.addEventListener("click", cancelModelInstall);
-  if (modelRetryBtn) modelRetryBtn.addEventListener("click", startModelInstall);
-
-  if (saveBtn) saveBtn.addEventListener("click", async () => {
-    const value = input ? input.value.trim() : "";
-    if (!value) {
-      _setSetupKeyMessage("Enter a key first.", false);
-      return;
-    }
-    saveBtn.disabled = true;
-    try {
-      const r = await API.post("/settings/api-key", { api_key: value });
-      _setSetupKeyMessage(r.message, r.success);
-      if (r.success && input) input.value = "";
-      refreshSetupKeyStatus();
-      refreshSetupReadiness();
-    } catch (e) {
-      _setSetupKeyMessage("Could not reach the server.", false);
-    } finally {
-      saveBtn.disabled = false;
-    }
-  });
-
-  if (removeBtn) removeBtn.addEventListener("click", async () => {
-    removeBtn.disabled = true;
-    try {
-      const r = await API.post("/settings/api-key/remove", {});
-      _setSetupKeyMessage(r.message, r.success);
-      refreshSetupKeyStatus();
-      refreshSetupReadiness();
-    } catch (e) {
-      _setSetupKeyMessage("Could not reach the server.", false);
-    } finally {
-      removeBtn.disabled = false;
-    }
-  });
+  if (skipBtn) skipBtn.addEventListener("click", finishSetup);
 
   if (continueBtn) continueBtn.addEventListener("click", async () => {
-    try {
-      await API.post("/onboarding/complete", {});
-    } catch (e) {
-      // Non-fatal — the dashboard is still reachable directly either way.
+    await savePreferredName("setup-name-input");
+
+    const typedKey = keyInput ? keyInput.value.trim() : "";
+    if (typedKey) {
+      const ok = await saveApiKeyFrom("setup-key-input", "setup-continue", _setSetupKeyMessage);
+      await refreshSetupKeyStatus();
+      // A rejected key keeps the user here, where they can fix it — but
+      // only a rejection does. Being offline or rate-limited during setup
+      // still stores the key and lets them through.
+      const status = $("setup-key-status");
+      const stillUnconfigured = status && status.textContent === "Not configured yet";
+      if (!ok && stillUnconfigured) return;
     }
-    window.location.href = "/ui/";
+    finishSetup();
+  });
+
+  if (keyInput) keyInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && continueBtn) continueBtn.click();
   });
 }
 
@@ -2088,8 +1937,20 @@ function initVoice() {
   if (stop)   stop.addEventListener("click", voiceStop);
   if (toggle) toggle.addEventListener("change", () => setVoiceOutput(toggle.checked));
 
+  // The speech-model installer moved here from the first-run wizard —
+  // Voice is where someone comes when they want voice, and it is entirely
+  // optional.
+  const modelStartBtn = $("model-install-start");
+  const modelCancelBtn = $("model-install-cancel");
+  const modelRetryBtn = $("model-install-retry");
+  if (modelStartBtn) modelStartBtn.addEventListener("click", startModelInstall);
+  if (modelCancelBtn) modelCancelBtn.addEventListener("click", cancelModelInstall);
+  if (modelRetryBtn) modelRetryBtn.addEventListener("click", startModelInstall);
+
   refreshVoiceStatus();
   refreshVoiceInputStatus();
+  refreshModelPreview();
+  pollModelInstallStatus();  // covers an install already running from a previous page load
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────

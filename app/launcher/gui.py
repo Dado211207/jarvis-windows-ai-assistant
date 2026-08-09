@@ -58,6 +58,20 @@ def dashboard_url() -> str:
     return f"http://{settings.jarvis_host}:{settings.jarvis_port}{path}"
 
 
+def close_action() -> str:
+    """What the window's X button does: "tray" or "quit".
+
+    A saved preference wins over the environment variable, which supplies
+    the starting default — the precedence rule preferences.py already
+    documents. Before this, the only way to change it was an environment
+    variable a packaged-app user does not have, behind a control on the
+    setup screen that was wired to nothing.
+    """
+    from app.core.preferences import get as get_preference
+
+    return get_preference("close_action") or settings.jarvis_close_action
+
+
 def _format_error_message(reason: str, correlation_id: str) -> str:
     from app.core.app_paths import logs_dir
     return (
@@ -150,7 +164,7 @@ class LauncherSupervisor:
         matching repair — a distinction the old boolean threw away.
         """
         self._window = window_process.WindowProcess(
-            url=dashboard_url(), close_action=settings.jarvis_close_action,
+            url=dashboard_url(), close_action=close_action(),
         )
         result = self._window.start_detailed()
         if not result.ok:

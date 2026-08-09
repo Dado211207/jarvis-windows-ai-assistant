@@ -44,7 +44,21 @@ logger = get_logger("core.preferences")
 PREFERENCES_FILENAME = "preferences.json"
 
 # The complete set of keys this file may hold. Anything else is refused.
-STORABLE_KEYS = ("ai_provider", "ollama_model", "speak_replies")
+#
+# `preferred_name` is what JARVIS calls the user. It is the only thing
+# first-run asks for besides an API key, so it has to survive a restart
+# without a .env file or an environment variable — the same reason
+# `ai_provider` is here.
+#
+# `close_action` decides whether closing the window quits JARVIS or
+# leaves it in the tray. It was previously an environment-only setting
+# with a control on the setup screen that was wired to nothing at all.
+STORABLE_KEYS = ("ai_provider", "ollama_model", "speak_replies", "preferred_name", "close_action")
+
+# What a name is allowed to be. Deliberately generous about content and
+# strict about length: this is a display string, not an identifier, and
+# it ends up in a system prompt.
+MAX_PREFERRED_NAME_LENGTH = 40
 
 _TRUE_VALUES = ("true", "1", "yes", "on")
 _FALSE_VALUES = ("false", "0", "no", "off")

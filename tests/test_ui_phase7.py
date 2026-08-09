@@ -211,22 +211,14 @@ def test_help_has_planned_section(api_client):
 
 # ── Setup / first-run onboarding page ───────────────────────────────────────────
 
-def test_setup_readiness_ids_present(api_client):
+def test_setup_asks_only_for_a_name_and_a_key(api_client):
+    """First run is two fields. The readiness table, provider discovery
+    and speech-model installer that used to be here moved to the pages
+    that own them — see tests/test_first_run.py."""
     r = api_client.get("/ui/setup")
     html = r.text
-    for field in (
-        "core", "text_chat", "ai_provider", "mode", "microphone",
-        "stt_runtime", "speech_model", "tts", "database", "windows_automation",
-    ):
-        assert f'id="ready-{field}"' in html
-
-
-def test_setup_api_key_controls_present(api_client):
-    r = api_client.get("/ui/setup")
-    html = r.text
+    assert 'id="setup-name-input"' in html
     assert 'id="setup-key-input"' in html
-    assert 'id="setup-key-save"' in html
-    assert 'id="setup-key-remove"' in html
     assert 'id="setup-key-status"' in html
 
 
@@ -235,8 +227,8 @@ def test_setup_continue_button_present(api_client):
     assert 'id="setup-continue"' in r.text
 
 
-def test_setup_model_install_controls_present(api_client):
-    r = api_client.get("/ui/setup")
+def test_model_install_controls_present_on_the_voice_page(api_client):
+    r = api_client.get("/ui/voice")
     html = r.text
     for expected_id in (
         "model-info-name", "model-info-source", "model-info-license",
@@ -245,6 +237,16 @@ def test_setup_model_install_controls_present(api_client):
         "model-install-progress-bar",
     ):
         assert f'id="{expected_id}"' in html
+
+
+def test_key_and_name_controls_present_on_settings(api_client):
+    r = api_client.get("/ui/settings")
+    html = r.text
+    assert 'id="settings-key-input"' in html
+    assert 'id="settings-key-save"' in html
+    assert 'id="settings-key-remove"' in html
+    assert 'id="settings-name-input"' in html
+    assert 'id="settings-close-action"' in html
 
 
 def test_setup_does_not_send_user_to_env_file(api_client):

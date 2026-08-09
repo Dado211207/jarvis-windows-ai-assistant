@@ -898,56 +898,28 @@ code, .mono {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation: none !important; }
 }
 
-/* ── First-run wizard ────────────────────────────────────────────────── */
+/* ── First run ───────────────────────────────────────────────────────── */
 /* Colours come from the existing :root tokens only — no new literals, so
-   the wizard follows the same theme as every other page. */
+   this page follows the same theme as every other one.
 
-.wizard-steps {
-  margin-bottom: var(--space-4);
+   The six-step wizard this replaced had its own step-list chrome. Two
+   fields do not need a progress indicator, and a progress indicator on
+   two fields makes them look like the start of something longer. */
+
+.setup-simple {
+  max-width: 640px;
 }
 
-.wizard-step-list {
+.form-field {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: var(--space-2);
-  list-style: none;
-  margin: 0;
-  padding: 0;
 }
 
-.wizard-step-item {
-  font-size: 0.78rem;
-  letter-spacing: 0.02em;
-  padding: 0.3rem 0.7rem;
-  border-radius: var(--radius-pill, 999px);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  background: var(--surface-2);
-}
-
-.wizard-step-item.done {
-  color: var(--ok);
-  border-color: var(--ok);
-}
-
-.wizard-step-item.active {
-  color: var(--text);
-  border-color: var(--accent);
-  background: var(--surface-3, var(--surface-2));
+.form-label {
+  font-size: 0.875rem;
   font-weight: 600;
-}
-
-/* The heading of each step receives focus on navigation; it must show a
-   visible ring like any other focus target, not a silent one. */
-.wizard-panel .card-title:focus-visible,
-.wizard-panel .page-title:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-  border-radius: var(--radius-sm, 4px);
-}
-
-.wizard-controls .btn-row {
-  flex-wrap: wrap;
+  color: var(--text);
 }
 
 .toggle-input {

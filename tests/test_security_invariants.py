@@ -413,3 +413,29 @@ def test_tool_inputs_are_redacted_before_they_are_persisted():
     assert "sk-must-not-be-stored" not in str(record.input_summary)
     assert "secret" not in str(record.input_summary)
     assert record.input_summary["plain"] == "fine"
+
+
+# ---------------------------------------------------------------------------
+# The test suite's own isolation
+# ---------------------------------------------------------------------------
+
+def test_no_test_module_shadows_the_preferences_isolation_fixture():
+    """conftest.py's autouse `isolated_preferences` is what stops a test
+    run editing the developer's real settings file.
+
+    A module-level fixture of the same name silently replaces it — with
+    no error, no warning, and tests that still pass while writing to the
+    real config directory. That happened once; this is why it cannot
+    happen quietly again.
+    """
+    offenders = []
+    for path in sorted((REPO_ROOT / "tests").glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "isolated_preferences":
+                offenders.append(path.name)
+
+    assert offenders == [], (
+        f"{offenders} redefine conftest's isolated_preferences fixture, which "
+        "disables it for that whole module"
+    )

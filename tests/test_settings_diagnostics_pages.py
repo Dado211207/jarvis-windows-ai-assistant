@@ -151,7 +151,7 @@ def test_diagnostics_page_states_the_report_is_safe_to_share(client):
 def test_settings_and_diagnostics_js_never_use_inner_html():
     js = APP_JS.read_text(encoding="utf-8")
     start = js.index("// ── Settings page")
-    end = js.index("// ── First-run wizard")
+    end = js.index("// ── First run ─")
     assert "innerHTML" not in js[start:end]
 
 

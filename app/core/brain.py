@@ -22,7 +22,7 @@ from typing import Iterator, Optional, Tuple
 from app.config import settings
 from app.core.errors import ErrorCategory, SafeError, to_safe_error
 from app.core.models import BrainResponse, CommandResponse
-from app.core.system_prompt import SYSTEM_PROMPT
+from app.core.system_prompt import build_system_prompt
 from app.core.tool_registry import registry
 from app.logging_config import get_logger
 
@@ -114,6 +114,16 @@ class Brain:
         )
 
     @staticmethod
+    def _system_prompt() -> str:
+        """The immutable system prompt, plus the name the user asked to
+        be called. Read per request rather than cached, so changing it in
+        Settings takes effect on the next message instead of the next
+        restart."""
+        from app.core.preferences import get as get_preference
+
+        return build_system_prompt(get_preference("preferred_name") or "")
+
+    @staticmethod
     def _ollama_model() -> str:
         from app.core.preferences import get as get_preference
 
@@ -156,7 +166,7 @@ class Brain:
             return self._unavailable(availability, provider)
 
         try:
-            reply = provider.generate(build_request_messages(command), SYSTEM_PROMPT)
+            reply = provider.generate(build_request_messages(command), self._system_prompt())
         except ProviderError as exc:
             return self._provider_failed(exc, provider)
         except GenerationCancelled:
@@ -184,7 +194,7 @@ class Brain:
         from app.core.conversation import build_request_messages
 
         provider = self.provider()
-        yield from provider.stream(build_request_messages(command), SYSTEM_PROMPT, cancel=cancel)
+        yield from provider.stream(build_request_messages(command), self._system_prompt(), cancel=cancel)
 
     # --- failure reporting ---
 

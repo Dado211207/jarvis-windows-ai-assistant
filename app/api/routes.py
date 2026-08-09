@@ -447,6 +447,14 @@ class SetApiKeyRequest(BaseModel):
 class ApiKeyActionResponse(BaseModel):
     success: bool
     message: str
+    # Which kind of failure, when there was one, so the page can say
+    # something true instead of one generic sentence. None on success.
+    category: Optional[str] = None
+    # Whether the key ended up in the credential store. Distinct from
+    # `success`: a key that is valid but could not be checked (offline,
+    # rate-limited) is still stored, so the user does not have to type it
+    # again later.
+    stored: bool = False
 
 
 @router.get("/settings/api-key-status", response_model=ApiKeyStatusResponse)
@@ -461,11 +469,49 @@ def api_key_status() -> ApiKeyStatusResponse:
     dependencies=[Depends(require_session_token)],
 )
 def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
+    """Try the key, then store it.
+
+    A key saved without being tried is a key whose first failure happens
+    later, mid-conversation, with no visible connection to the setup
+    screen where it was typed. So it is tried once here, and the four
+    outcomes the user might hit — rejected, unfunded, rate-limited,
+    unreachable — are reported as four different things.
+
+    Only an outright rejection stops the key being stored: being offline
+    during setup says nothing about the key, and making someone re-enter
+    it afterwards would be punishing them for their network.
+    """
+    from app.core.ai.key_check import verify_anthropic_key
     from app.core.credentials import set_stored_api_key
-    if set_stored_api_key(req.api_key.strip()):
-        logger.info("Anthropic API key stored via the OS credential store.")
-        return ApiKeyActionResponse(success=True, message="API key saved.")
-    return ApiKeyActionResponse(success=False, message="Could not save the key to the OS credential store.")
+
+    key = req.api_key.strip()
+    verification = verify_anthropic_key(key)
+
+    if not verification.ok and not verification.worth_storing:
+        return ApiKeyActionResponse(
+            success=False,
+            message=verification.message,
+            category=verification.category.value if verification.category else None,
+            stored=False,
+        )
+
+    if not set_stored_api_key(key):
+        return ApiKeyActionResponse(
+            success=False,
+            message="Could not save the key to the Windows credential store.",
+            category="credential_store",
+            stored=False,
+        )
+
+    logger.info("Anthropic API key stored via the OS credential store.")
+    if verification.ok:
+        return ApiKeyActionResponse(success=True, message="API key saved and verified.", stored=True)
+    return ApiKeyActionResponse(
+        success=False,
+        message=f"Key saved, but it could not be checked right now. {verification.message}",
+        category=verification.category.value if verification.category else None,
+        stored=True,
+    )
 
 
 @router.post(
@@ -479,6 +525,102 @@ def remove_api_key() -> ApiKeyActionResponse:
         logger.info("Anthropic API key removed from the OS credential store.")
         return ApiKeyActionResponse(success=True, message="API key removed.")
     return ApiKeyActionResponse(success=False, message="Could not remove the key from the OS credential store.")
+
+
+# ---------------------------------------------------------------------------
+# What JARVIS calls you, and what closing the window does.
+#
+# These are the two settings first-run actually needs (well, one of them
+# — the other is here because its control existed on the setup screen and
+# was wired to nothing at all). Both are ordinary preferences, never
+# credentials, so they live in the preferences allowlist rather than the
+# credential store.
+# ---------------------------------------------------------------------------
+
+class PreferredNameResponse(BaseModel):
+    name: str
+
+
+class SetPreferredNameRequest(BaseModel):
+    name: str = ""
+
+
+class CloseActionResponse(BaseModel):
+    close_action: str
+    detail: str
+
+
+class SetCloseActionRequest(BaseModel):
+    close_action: str
+
+
+@router.get("/settings/preferred-name", response_model=PreferredNameResponse)
+def preferred_name() -> PreferredNameResponse:
+    from app.core.preferences import get as get_preference
+    return PreferredNameResponse(name=get_preference("preferred_name") or "")
+
+
+@router.post(
+    "/settings/preferred-name",
+    response_model=PreferredNameResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_preferred_name(req: SetPreferredNameRequest) -> PreferredNameResponse:
+    """Store what JARVIS should call the user. Blank clears it.
+
+    Sanitised here rather than only where it is used: this value ends up
+    inside a system prompt, so control characters and quotes are stripped
+    at the boundary that persists it, and again at the boundary that
+    builds the prompt (app/core/system_prompt.py). Neither trusts the
+    other to have done it.
+    """
+    from app.core.preferences import MAX_PREFERRED_NAME_LENGTH, store
+    from app.core.system_prompt import _sanitise_name
+
+    cleaned = _sanitise_name(req.name)[:MAX_PREFERRED_NAME_LENGTH]
+    store("preferred_name", cleaned)
+    return PreferredNameResponse(name=cleaned)
+
+
+def _close_action_response(value: str) -> CloseActionResponse:
+    return CloseActionResponse(
+        close_action=value,
+        detail=(
+            "Closing the window keeps JARVIS running in the tray."
+            if value == "tray" else
+            "Closing the window quits JARVIS completely."
+        ),
+    )
+
+
+@router.get("/settings/close-action", response_model=CloseActionResponse)
+def close_action() -> CloseActionResponse:
+    from app.launcher.gui import close_action as effective_close_action
+    from app.launcher.webview_window import resolve_close_action
+
+    return _close_action_response(resolve_close_action(effective_close_action()))
+
+
+@router.post(
+    "/settings/close-action",
+    response_model=CloseActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_close_action(req: SetCloseActionRequest) -> CloseActionResponse:
+    from app.core.preferences import store
+    from app.launcher.webview_window import VALID_CLOSE_ACTIONS
+
+    requested = (req.close_action or "").strip().lower()
+    if requested not in VALID_CLOSE_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"close_action must be one of: {', '.join(VALID_CLOSE_ACTIONS)}.",
+        )
+    store("close_action", requested)
+    # Takes effect the next time a window is created — say so rather than
+    # implying the running window's behaviour just changed.
+    logger.info("Window close action set to %s.", requested)
+    return _close_action_response(requested)
 
 
 # ---------------------------------------------------------------------------

@@ -1,214 +1,70 @@
 {% extends "base.html" %}
-{% block title %}Setup{% endblock %}
-{% block topbar_title %}Setup{% endblock %}
+{% block title %}Welcome{% endblock %}
+{% block topbar_title %}Welcome{% endblock %}
 {% block content %}
 {#
-  First-run wizard. Every element ID the pre-existing setup logic in
-  app.js already drives (ready-*, setup-key-*, model-*, setup-continue)
-  is preserved deliberately — this wraps that working behaviour in steps
-  rather than reimplementing it.
+  First run asks two questions and nothing else.
 
-  Every step is present in the DOM at all times and shown/hidden by the
-  wizard, so a screen reader user tabbing through never lands on a
-  control belonging to a step that isn't visible: hidden steps use the
-  `hidden` attribute, which removes them from the accessibility tree.
+  The previous version was a six-step wizard covering privacy notes,
+  provider discovery, speech-model installation, startup and close
+  behaviour. Real hardware testing found it exposed setup work a normal
+  user should never see, and most of it duplicated Settings. Everything
+  optional moved to where it belongs — Settings for preferences and the
+  key, Voice for the speech model — and none of it blocks getting
+  started.
 #}
-<div id="setup-root" class="wizard">
+<div id="setup-root" class="setup-simple">
 
-  <nav class="wizard-steps" aria-label="Setup progress">
-    <ol id="wizard-step-list" class="wizard-step-list">
-      <li class="wizard-step-item" data-step-label="0">Welcome</li>
-      <li class="wizard-step-item" data-step-label="1">Privacy</li>
-      <li class="wizard-step-item" data-step-label="2">AI provider</li>
-      <li class="wizard-step-item" data-step-label="3">Voice</li>
-      <li class="wizard-step-item" data-step-label="4">Preferences</li>
-      <li class="wizard-step-item" data-step-label="5">Ready</li>
-    </ol>
-    <p class="text-xs text-muted mt-2" id="wizard-progress-text" aria-live="polite"></p>
-  </nav>
-
-  <!-- Step 0 — Welcome ------------------------------------------------->
-  <section class="wizard-panel" data-step="0" aria-labelledby="wizard-h-welcome">
-    <div class="card">
-      <div class="page-header">
-        <h1 class="page-title" id="wizard-h-welcome">Welcome to JARVIS</h1>
-        <p class="page-subtitle">
-          JARVIS is a local assistant for Windows. It runs on your machine, answers questions,
-          and can perform a small set of carefully limited Windows actions.
-        </p>
-      </div>
-      <ul class="checklist mt-3">
-        <li>Ask questions and run commands by typing, or by holding the microphone button.</li>
-        <li>Anything that touches your machine in a meaningful way asks for approval first.</li>
-        <li>Every action is recorded in a local history you can review at any time.</li>
-      </ul>
-      <p class="text-xs text-muted mt-3">
-        This takes about a minute. You can skip any optional step and come back later from Setup
-        in the sidebar.
+  <div class="card">
+    <div class="page-header">
+      <h1 class="page-title" id="setup-heading">Welcome to JARVIS</h1>
+      <p class="page-subtitle">
+        Two quick things and you're ready. Both can be changed later in Settings.
       </p>
     </div>
-  </section>
 
-  <!-- Step 1 — Privacy ------------------------------------------------->
-  <section class="wizard-panel" data-step="1" hidden aria-labelledby="wizard-h-privacy">
-    <div class="card">
-      <h2 class="card-title" id="wizard-h-privacy">Your data stays on this machine</h2>
-      <ul class="checklist mt-3">
-        <li>The JARVIS server listens on 127.0.0.1 only. It is not reachable from your network.</li>
-        <li>Conversations, memories and action history are stored in a local SQLite file.</li>
-        <li>Nothing is uploaded anywhere unless you configure a cloud AI provider in the next step.</li>
-        <li>Privacy mode stops new conversations and memories being saved at all.</li>
-      </ul>
-      <p class="text-xs text-muted mt-3">
-        Honest limitation: the local database is a plain file, not an encrypted vault. Anyone with
-        access to your Windows account can read it. JARVIS does not claim otherwise.
+    <div class="form-field mt-4">
+      <label class="form-label" for="setup-name-input">What should JARVIS call you?</label>
+      <input id="setup-name-input" class="input" type="text" maxlength="40"
+             autocomplete="off" placeholder="Your name"
+             aria-describedby="setup-name-hint">
+      <p class="text-xs text-muted mt-2" id="setup-name-hint">
+        Optional. Leave it blank and JARVIS won't use a name.
       </p>
     </div>
-  </section>
 
-  <!-- Step 2 — AI provider --------------------------------------------->
-  <section class="wizard-panel" data-step="2" hidden aria-labelledby="wizard-h-provider">
-    <div class="card">
-      <h2 class="card-title" id="wizard-h-provider">Choose an AI provider</h2>
-      <p class="text-xs text-muted mt-2">
-        Optional. Deterministic commands — system status, opening allowlisted apps, memory,
-        screenshots — always work without any provider.
-      </p>
-      <div id="wizard-provider-list" class="mt-3" aria-live="polite">
-        <p class="text-xs text-muted">Checking what's available on this machine…</p>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <h2 class="card-title">Anthropic API key</h2>
-      <p class="text-xs text-muted mt-2">
-        Stored in the Windows credential store, never in a file, and never shown again once saved.
+    <div class="form-field mt-4">
+      <label class="form-label" for="setup-key-input">Anthropic API key</label>
+      <input id="setup-key-input" class="input" type="password" autocomplete="off"
+             placeholder="Paste your key here" aria-describedby="setup-key-hint">
+      <p class="text-xs text-muted mt-2" id="setup-key-hint">
+        Stored in the Windows credential store, never in a file, and never shown again.
+        JARVIS checks it works before saving it.
       </p>
       <div class="status-row mt-3">
         <span class="status-row-label">Status</span>
         <span id="setup-key-status" class="status-row-value loading">&#8230;</span>
       </div>
-      <div class="btn-row mt-3">
-        <input id="setup-key-input" class="input" type="password" placeholder="Paste your Anthropic API key" autocomplete="off" aria-label="Anthropic API key">
-        <button id="setup-key-save" class="btn btn-primary" type="button">Save</button>
-        <button id="setup-key-remove" class="btn btn-danger" type="button">Remove</button>
-      </div>
       <p id="setup-key-message" class="text-xs mt-2" aria-live="polite"></p>
     </div>
-  </section>
 
-  <!-- Step 3 — Voice ---------------------------------------------------->
-  <section class="wizard-panel" data-step="3" hidden aria-labelledby="wizard-h-voice">
-    <div class="card">
-      <h2 class="card-title" id="wizard-h-voice">Voice input</h2>
-      <p class="text-xs text-muted mt-2">
-        Optional, and push-to-talk only — JARVIS never listens continuously and has no wake word.
-      </p>
-      <div class="status-row mt-3">
-        <span class="status-row-label">Microphone</span>
-        <span id="ready-microphone" class="status-row-value loading">&#8230;</span>
-      </div>
-      <div class="status-row">
-        <span class="status-row-label">Speech model</span>
-        <span id="setup-speech-model-status" class="status-row-value loading">&#8230;</span>
-      </div>
-    </div>
-
-    <div class="card mt-3" id="setup-model-card">
-      <h2 class="card-title">Install local speech model</h2>
-      <p class="text-xs text-muted mt-2">
-        Nothing downloads automatically. Review the details below first.
-      </p>
-      <div id="setup-model-preview" class="mt-3">
-        <div class="status-row"><span class="status-row-label">Model</span><span id="model-info-name" class="status-row-value">&#8230;</span></div>
-        <div class="status-row"><span class="status-row-label">Source</span><span id="model-info-source" class="status-row-value font-mono"></span></div>
-        <div class="status-row"><span class="status-row-label">License</span><span id="model-info-license" class="status-row-value"></span></div>
-        <div class="status-row"><span class="status-row-label">Download size</span><span id="model-info-size" class="status-row-value"></span></div>
-        <div class="status-row"><span class="status-row-label">Destination</span><span id="model-info-destination" class="status-row-value font-mono"></span></div>
-        <div class="status-row"><span class="status-row-label">Integrity check</span><span id="model-info-checksum" class="status-row-value"></span></div>
-      </div>
-      <p id="model-info-language-note" class="text-xs text-muted mt-2"></p>
-      <p id="model-info-error" class="text-xs text-err mt-2"></p>
-
-      <div class="btn-row mt-3">
-        <button id="model-install-start" class="btn btn-primary" type="button">Install</button>
-        <button id="model-install-cancel" class="btn btn-ghost" type="button" hidden>Cancel</button>
-        <button id="model-install-retry" class="btn btn-ghost" type="button" hidden>Retry</button>
-      </div>
-
-      <div class="mt-3" id="model-install-progress-wrap" hidden>
-        <div class="progress-bar"><div id="model-install-progress-bar" class="progress-fill" style="width:0%"></div></div>
-        <p id="model-install-progress-text" class="text-xs text-muted mt-2" aria-live="polite"></p>
-      </div>
-    </div>
-  </section>
-
-  <!-- Step 4 — Preferences ---------------------------------------------->
-  <section class="wizard-panel" data-step="4" hidden aria-labelledby="wizard-h-prefs">
-    <div class="card">
-      <h2 class="card-title" id="wizard-h-prefs">Preferences</h2>
-
-      <div class="status-row mt-3">
-        <span class="status-row-label">
-          <label for="wizard-startup-toggle">Start JARVIS when I sign in</label>
-        </span>
-        <span class="status-row-value">
-          <input type="checkbox" id="wizard-startup-toggle" class="toggle-input">
-        </span>
-      </div>
-      <p id="wizard-startup-detail" class="text-xs text-muted mt-2" aria-live="polite"></p>
-
-      <div class="status-row mt-3">
-        <span class="status-row-label">
-          <label for="wizard-close-action">Closing the window</label>
-        </span>
-        <span class="status-row-value">
-          <select id="wizard-close-action" class="input">
-            <option value="tray">Keeps JARVIS running in the tray</option>
-            <option value="quit">Quits JARVIS completely</option>
-          </select>
-        </span>
-      </div>
-      <p class="text-xs text-muted mt-2">
-        You can change either of these later from Settings.
-      </p>
-    </div>
-  </section>
-
-  <!-- Step 5 — Final check ---------------------------------------------->
-  <section class="wizard-panel" data-step="5" hidden aria-labelledby="wizard-h-ready">
-    <div class="card">
-      <h2 class="card-title" id="wizard-h-ready">What's ready</h2>
-      <p class="text-xs text-muted mt-2">
-        Anything marked "Not ready" is optional — JARVIS still starts and works without it.
-      </p>
-      <div class="mt-3" id="setup-readiness-list">
-        <div class="status-row"><span class="status-row-label">Core application</span><span id="ready-core" class="status-row-value loading">&#8230;</span></div>
-        <div class="status-row"><span class="status-row-label">Text chat</span><span id="ready-text_chat" class="status-row-value loading">&#8230;</span></div>
-        <div class="status-row"><span class="status-row-label">AI provider</span><span id="ready-ai_provider" class="status-row-value loading">&#8230;</span></div>
-        <div class="status-row"><span class="status-row-label">Current mode</span><span id="ready-mode" class="status-row-value loading">&#8230;</span></div>
-        <div class="status-row"><span class="status-row-label">Speech runtime</span><span id="ready-stt_runtime" class="status-row-value loading">&#8230;</span></div>
-        <div class="status-row"><span class="status-row-label">Speech model</span><span id="ready-speech_model" class="status-row-value loading">&#8230;</span></div>
-        <div class="status-row"><span class="status-row-label">Text-to-speech</span><span id="ready-tts" class="status-row-value loading">&#8230;</span></div>
-        <div class="status-row"><span class="status-row-label">Database</span><span id="ready-database" class="status-row-value loading">&#8230;</span></div>
-        <div class="status-row"><span class="status-row-label">Windows actions</span><span id="ready-windows_automation" class="status-row-value loading">&#8230;</span></div>
-      </div>
-      <p class="text-xs text-muted mt-3" id="setup-readiness-detail"></p>
-    </div>
-  </section>
-
-  <!-- Wizard controls ---------------------------------------------------->
-  <div class="card mt-4 wizard-controls">
-    <div class="btn-row">
-      <button id="wizard-back" class="btn btn-ghost" type="button">Back</button>
-      <button id="wizard-next" class="btn btn-primary" type="button">Next</button>
-      <button id="setup-continue" class="btn btn-primary" type="button" hidden>Finish setup</button>
-      <button id="wizard-skip" class="btn btn-ghost" type="button">Skip setup</button>
+    <div class="btn-row mt-4">
+      <button id="setup-continue" class="btn btn-primary" type="button">Start using JARVIS</button>
+      <button id="setup-skip" class="btn btn-ghost" type="button">Skip for now</button>
     </div>
     <p class="text-xs text-muted mt-2">
-      Skipping is safe — nothing here is required to start using JARVIS, and Setup stays in the
-      sidebar.
+      Without a key, JARVIS still runs commands, opens allowlisted apps, takes notes and
+      reports system status &mdash; it just can't answer open questions.
     </p>
+  </div>
+
+  <div class="card mt-3">
+    <h2 class="card-title">Everything else is optional</h2>
+    <ul class="checklist mt-3">
+      <li>Voice input and spoken replies are set up on the <a href="/ui/voice">Voice</a> page.</li>
+      <li>A local AI provider, startup behaviour and privacy mode live in <a href="/ui/settings">Settings</a>.</li>
+      <li>Nothing leaves this machine unless you configure a cloud provider above.</li>
+    </ul>
   </div>
 
 </div>
