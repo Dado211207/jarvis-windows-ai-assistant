@@ -1,4 +1,18 @@
-"""Local text-to-speech service backed by pyttsx3 (offline, no cloud API needed)."""
+"""Local text-to-speech service backed by pyttsx3 (offline, no cloud API needed).
+
+One flag decides whether JARVIS speaks: `output_enabled`. It used to be
+two, which is why the desktop app never talked. "Enable Speech" on the
+Voice page set an in-memory `session_enabled` that only the CLI read,
+while /voice/speak gated on `settings.jarvis_tts_enabled` — an
+environment setting a packaged-app user cannot change. Every part
+worked; nothing joined up, and the result was a button that appeared to
+do something and did not.
+
+Now: `output_enabled` reads a saved preference, falling back to the
+configured default when nothing has been chosen. It is still off unless
+someone opts in (CLAUDE.md's Phase 3 rule) — persisting an explicit
+opt-in is not the same as defaulting to on.
+"""
 
 import threading
 from dataclasses import dataclass
@@ -23,7 +37,6 @@ class TextToSpeechService:
     def __init__(self) -> None:
         self._engine = None
         self._init_lock = threading.Lock()
-        self._session_enabled: bool = False
 
     # --- availability ---
 
@@ -35,15 +48,36 @@ class TextToSpeechService:
         except Exception:
             return False
 
-    # --- session state (CLI only; API uses settings.jarvis_tts_enabled) ---
+    # --- output state: the single flag every surface reads ---
 
     @property
-    def session_enabled(self) -> bool:
-        return self._session_enabled
+    def output_enabled(self) -> bool:
+        """Whether JARVIS speaks its replies. A choice saved in the app
+        wins; otherwise the configured default (off) applies. Never
+        raises — an unreadable preferences file means "not enabled",
+        which is the safer reading for something that makes noise."""
+        from app.core.preferences import get_bool
 
-    @session_enabled.setter
-    def session_enabled(self, value: bool) -> None:
-        self._session_enabled = value
+        saved = get_bool("speak_replies")
+        if saved is not None:
+            return saved
+        try:
+            from app.config import settings
+            return bool(settings.jarvis_tts_enabled)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def set_output_enabled(self, enabled: bool) -> bool:
+        """Persist the choice and return the state actually in effect.
+
+        Reading it back rather than echoing the request matters: if the
+        preferences file could not be written, the setting did not
+        change, and a UI told otherwise would show a toggle that flips
+        back on the next page load with no explanation."""
+        from app.core.preferences import store
+
+        store("speak_replies", "true" if enabled else "false")
+        return self.output_enabled
 
     # --- engine lifecycle ---
 
@@ -112,31 +146,46 @@ tts_service = TextToSpeechService()
 # ---------------------------------------------------------------------------
 
 def _tts_enable() -> dict:
-    tts_service.session_enabled = True
+    enabled = tts_service.set_output_enabled(True)
+    if not enabled:
+        return {
+            "success": False,
+            "message": "Voice output could not be turned on — the setting could not be saved.",
+            "data": {"enabled": False},
+        }
     if not tts_service.is_available():
+        # Honest: the setting really did change, and it really will not
+        # produce sound on this machine.
         return {
             "success": True,
             "message": (
-                "Voice output enabled for this session, but pyttsx3 is not installed. "
-                "Run: pip install pyttsx3"
+                "Voice output is on, but no speech engine is available on this "
+                "system, so nothing will be spoken."
             ),
-            "data": None,
+            "data": {"enabled": True},
         }
-    return {"success": True, "message": "Voice output enabled for this session.", "data": None}
+    return {"success": True, "message": "Voice output is on. JARVIS will speak its replies.", "data": {"enabled": True}}
 
 
 def _tts_disable() -> dict:
-    tts_service.session_enabled = False
-    return {"success": True, "message": "Voice output disabled for this session.", "data": None}
+    enabled = tts_service.set_output_enabled(False)
+    return {
+        "success": not enabled,
+        "message": (
+            "Voice output is off."
+            if not enabled
+            else "Voice output could not be turned off — the setting could not be saved."
+        ),
+        "data": {"enabled": enabled},
+    }
 
 
 def _tts_status() -> dict:
     from app.config import settings
     available = tts_service.is_available()
     lines = [
-        "TTS (Text-to-Speech) status:",
-        f"  Config enabled   : {settings.jarvis_tts_enabled}",
-        f"  Session enabled  : {tts_service.session_enabled}",
+        "Voice output status:",
+        f"  Speaks replies   : {tts_service.output_enabled}",
         f"  Engine available : {available}",
         f"  Engine           : {settings.jarvis_tts_engine}",
         f"  Rate             : {settings.jarvis_tts_rate} wpm",
@@ -149,7 +198,7 @@ def _tts_test() -> dict:
     if not tts_service.is_available():
         return {
             "success": False,
-            "message": "TTS test failed: pyttsx3 is not available. Run: pip install pyttsx3",
+            "message": "Voice output is not available on this system, so nothing can be spoken.",
             "data": None,
         }
     result = tts_service.speak(TTS_TEST_PHRASE)
@@ -172,7 +221,7 @@ def register_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="tts_enable",
-            description="Enable voice output for the current session ('speak on').",
+            description="Turn on spoken replies ('speak on'). The choice is remembered.",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.VOICE,
         ),
@@ -181,7 +230,7 @@ def register_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="tts_disable",
-            description="Disable voice output for the current session ('speak off').",
+            description="Turn off spoken replies ('speak off'). The choice is remembered.",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.VOICE,
         ),
@@ -190,7 +239,7 @@ def register_tools(registry) -> None:
     registry.register(
         ToolDefinition(
             name="tts_status",
-            description="Show TTS engine status and whether voice output is enabled.",
+            description="Show whether JARVIS speaks its replies, and the speech engine status.",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.VOICE,
         ),

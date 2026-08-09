@@ -15,14 +15,14 @@
 
   <div class="grid grid-2 mb-4">
     <div class="card">
-      <div class="card-title">TTS Status</div>
+      <div class="card-title">Voice output</div>
       <div class="mt-3">
         <div class="status-row">
           <span class="status-row-label">Available on this system</span>
           <span id="tts-avail" class="status-row-value loading">&#8230;</span>
         </div>
         <div class="status-row">
-          <span class="status-row-label">Session enabled</span>
+          <span class="status-row-label">Speaks replies</span>
           <span id="tts-enabled-val" class="status-row-value loading">&#8230;</span>
         </div>
         <div class="status-row">
@@ -30,12 +30,39 @@
           <span id="tts-engine-val" class="status-row-value font-mono loading">&#8230;</span>
         </div>
       </div>
-      <p class="text-xs text-muted mt-3">
-        Voice output is off until you turn it on, and the setting applies to the current
-        session only &mdash; it returns to off when JARVIS restarts.
+      <div class="status-row mt-3">
+        <span class="status-row-label"><label for="voice-output-toggle">Speak replies out loud</label></span>
+        <span class="status-row-value"><input type="checkbox" id="voice-output-toggle" class="toggle-input"></span>
+      </div>
+      <p id="voice-output-message" class="text-xs mt-2" aria-live="polite"></p>
+      <p class="text-xs text-muted mt-2">
+        Off until you turn it on. Your choice is remembered the next time JARVIS starts.
       </p>
     </div>
 
+    <div class="card">
+      <div class="card-title">Voice input (push to talk)</div>
+      <div class="mt-3">
+        <div class="status-row">
+          <span class="status-row-label">Speech recognition</span>
+          <span id="stt-avail" class="status-row-value loading">&#8230;</span>
+        </div>
+        <div class="status-row">
+          <span class="status-row-label">Speech model</span>
+          <span id="stt-model" class="status-row-value loading">&#8230;</span>
+        </div>
+      </div>
+      <p id="stt-detail" class="text-xs text-muted mt-3"></p>
+      <p class="text-xs text-muted mt-2">
+        Recording starts and stops only when you press the microphone button on the
+        <a href="/ui/chat">Chat</a> page. What you say is filled into the message box for you
+        to check &mdash; nothing is sent until you press Send.
+      </p>
+    </div>
+
+  </div>
+
+  <div class="grid grid-2 mb-4">
     <div class="card">
       <div class="card-title">Capabilities</div>
       <ul class="checklist mt-3">
@@ -52,24 +79,22 @@
   <div class="card mb-4">
     <div class="card-title">Controls</div>
     <div class="btn-row mt-3">
-      <button id="btn-speak-on"   class="btn btn-primary" type="button">Enable Speech</button>
-      <button id="btn-speak-off"  class="btn btn-ghost"   type="button">Disable Speech</button>
       <button id="btn-speak-test" class="btn btn-ghost"   type="button">Test Speech</button>
       <button id="btn-speak-stop" class="btn btn-danger"  type="button">Stop Speaking</button>
     </div>
     <p class="text-xs text-muted mt-3">
-      Enable/Disable sends <code>speak on</code> / <code>speak off</code> through the JARVIS command router.
-      Test speaks a short phrase aloud. Stop interrupts current speech immediately.
+      Test speaks a short phrase aloud, whether or not spoken replies are turned on.
+      Stop interrupts speech that is playing right now.
     </p>
   </div>
 
   <div class="info-box">
-    JARVIS Phase 3 implements text-to-speech output only using the local pyttsx3 engine (Windows SAPI5 / Linux espeak);
-    TTS failures never crash the app &mdash; audio errors are logged and the app continues normally.
-    Separately, v0.2 adds push-to-talk voice input on the <a href="/ui/chat">Chat</a> page (also local — no cloud STT).
-    Push-to-talk needs a local speech model — install one (with license, size, and checksum
+    Speech is produced on this computer by the local engine (Windows SAPI, or espeak elsewhere) &mdash;
+    nothing is sent to a speech service. Audio errors never interrupt JARVIS; they are recorded and
+    the app carries on silently.
+    Push-to-talk needs a local speech model &mdash; install one (with its license, size, and checksum
     shown first) from the <a href="/ui/setup">Setup</a> page.
-    Wake-word detection and always-listening behavior remain planned for a later phase and are not present in this build.
+    Wake-word detection and always-listening behaviour are not part of this build.
   </div>
 
 </div>

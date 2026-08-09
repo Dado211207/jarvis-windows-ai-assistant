@@ -243,8 +243,26 @@ function addStreamingMessage() {
       list.scrollTop = list.scrollHeight;
     },
     isEmpty() { return buffer.length === 0; },
+    text() { return buffer; },
     remove() { wrap.remove(); },
   };
+}
+
+// The server decides whether to actually speak (see /voice/speak). Asking
+// every time rather than caching a flag here means a page left open
+// after speech was switched off elsewhere can't make JARVIS talk.
+const SPOKEN_REPLY_MAX_CHARS = 1000;  // matches MAX_SPEAK_LENGTH server-side
+
+async function speakReply(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return;
+  try {
+    await API.post("/voice/speak", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
+  } catch (e) {
+    // Speech is an enhancement; a failure here must never disturb the
+    // conversation the user is reading.
+    console.warn("could not speak the reply", e);
+  }
 }
 
 let currentGenerationId = null;
@@ -313,9 +331,12 @@ async function streamChat(text) {
     } else if (evt.type === "routed") {
       const data = evt.response || {};
       if (data.requires_approval && data.pending_action_id) {
+        // Deliberately not spoken: an approval prompt is something to
+        // read and decide on, not something to hear read out.
         addApprovalCard(data.pending_action_id, data);
       } else {
         addMessage("assistant", data.message || "", data.tool_used || null);
+        speakReply(data.message || "");
       }
     } else if (evt.type === "delta") {
       if (!stream) stream = addStreamingMessage();
@@ -335,6 +356,7 @@ async function streamChat(text) {
       } else if (!sawError) {
         setChatStatus("");
       }
+      if (!sawError && stream && !stream.isEmpty()) speakReply(stream.text());
     }
   };
 
@@ -364,6 +386,7 @@ async function sendChatFallback(text) {
     } else {
       const reply = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
       addMessage("assistant", reply, data.tool_used || null);
+      speakReply(reply);
     }
   } catch (e) {
     addMessage("assistant", "Error: " + e.message, null);
@@ -891,8 +914,10 @@ async function refreshVoiceStatus() {
     }
     if (enabled) {
       const isEnabled = v.tts_enabled || v.enabled || false;
-      enabled.textContent = isEnabled ? "Enabled" : "Disabled";
+      enabled.textContent = isEnabled ? "Yes" : "No";
       enabled.className   = `status-row-value ${isEnabled ? "text-ok" : "text-muted"}`;
+      const toggle = $("voice-output-toggle");
+      if (toggle) toggle.checked = isEnabled;   // trust the server, not local state
     }
     if (engine) {
       engine.textContent = v.tts_engine || v.engine || "—";
@@ -920,6 +945,67 @@ async function voiceStop() {
     await API.post("/voice/stop", {});
   } catch (e) {
     console.error("voice stop error", e);
+  }
+}
+
+async function setVoiceOutput(enabled) {
+  const message = $("voice-output-message");
+  const toggle = $("voice-output-toggle");
+  try {
+    const r = await API.post("/voice/output", { enabled });
+    // The response carries the state actually in effect, which is not
+    // necessarily what was asked for — see /voice/output.
+    if (toggle) toggle.checked = r.tts_enabled;
+    if (message) {
+      if (r.tts_enabled && !r.tts_available) {
+        message.textContent = "Turned on, but no speech engine is available on this computer, so nothing will be spoken.";
+        message.className = "text-xs mt-2 text-warn";
+      } else {
+        message.textContent = r.tts_enabled
+          ? "JARVIS will speak its replies."
+          : "JARVIS will stay silent.";
+        message.className = "text-xs mt-2 text-muted";
+      }
+    }
+    await refreshVoiceStatus();
+  } catch (e) {
+    if (toggle) toggle.checked = !enabled;   // never show a state that isn't real
+    if (message) {
+      message.textContent = "Could not change the setting: " + e.message;
+      message.className = "text-xs mt-2 text-err";
+    }
+  }
+}
+
+// Voice input status, shown on the Voice page so this page describes the
+// whole voice experience rather than only the half that speaks.
+async function refreshVoiceInputStatus() {
+  const avail = $("stt-avail");
+  const model = $("stt-model");
+  const detail = $("stt-detail");
+  if (!avail && !model) return;
+
+  try {
+    const r = await API.get("/voice/stt-status");
+    if (avail) {
+      avail.textContent = r.available ? "Ready" : "Not ready";
+      avail.className = `status-row-value ${r.available ? "text-ok" : "text-muted"}`;
+    }
+    if (detail) detail.textContent = r.reason || "";
+  } catch (e) {
+    if (avail) { avail.textContent = "Unknown"; avail.className = "status-row-value"; }
+    if (detail) detail.textContent = "Could not check speech recognition.";
+  }
+
+  if (!model) return;
+  try {
+    const info = await API.get("/onboarding/readiness");
+    const ready = info.speech_model && info.speech_model.ready;
+    model.textContent = ready ? "Installed" : "Not installed";
+    model.className = `status-row-value ${ready ? "text-ok" : "text-muted"}`;
+  } catch (e) {
+    model.textContent = "Unknown";
+    model.className = "status-row-value";
   }
 }
 
@@ -1801,17 +1887,16 @@ function initSetup() {
 }
 
 function initVoice() {
-  const on   = $("btn-speak-on");
-  const off  = $("btn-speak-off");
-  const test = $("btn-speak-test");
-  const stop = $("btn-speak-stop");
+  const test   = $("btn-speak-test");
+  const stop   = $("btn-speak-stop");
+  const toggle = $("voice-output-toggle");
 
-  if (on)   on.addEventListener(  "click", () => voiceCommand("speak on"));
-  if (off)  off.addEventListener( "click", () => voiceCommand("speak off"));
-  if (test) test.addEventListener("click", () => voiceCommand("speak test"));
-  if (stop) stop.addEventListener("click", voiceStop);
+  if (test)   test.addEventListener("click", () => voiceCommand("speak test"));
+  if (stop)   stop.addEventListener("click", voiceStop);
+  if (toggle) toggle.addEventListener("change", () => setVoiceOutput(toggle.checked));
 
   refreshVoiceStatus();
+  refreshVoiceInputStatus();
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────

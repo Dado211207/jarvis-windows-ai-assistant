@@ -44,7 +44,10 @@ logger = get_logger("core.preferences")
 PREFERENCES_FILENAME = "preferences.json"
 
 # The complete set of keys this file may hold. Anything else is refused.
-STORABLE_KEYS = ("ai_provider", "ollama_model")
+STORABLE_KEYS = ("ai_provider", "ollama_model", "speak_replies")
+
+_TRUE_VALUES = ("true", "1", "yes", "on")
+_FALSE_VALUES = ("false", "0", "no", "off")
 
 
 def preferences_path() -> Path:
@@ -85,6 +88,25 @@ def get(key: str) -> Optional[str]:
     value = load().get(key)
     if isinstance(value, str) and value.strip():
         return value.strip()
+    return None
+
+
+def get_bool(key: str) -> Optional[bool]:
+    """A saved boolean preference, or None when nothing was saved.
+
+    None is distinct from False on purpose: the caller needs to know
+    whether to fall back to a configured default or honour an explicit
+    "off". An unrecognised value reads as None — a settings file someone
+    hand-edited to "maybe" is not a decision.
+    """
+    raw = get(key)
+    if raw is None:
+        return None
+    lowered = raw.lower()
+    if lowered in _TRUE_VALUES:
+        return True
+    if lowered in _FALSE_VALUES:
+        return False
     return None
 
 

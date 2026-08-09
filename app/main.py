@@ -50,11 +50,11 @@ def main() -> None:
         if response.data:
             _maybe_print_data(response.data)
 
-        # Auto-speak successful responses when TTS session is enabled.
+        # Auto-speak successful responses when spoken replies are on.
         # TTS control commands handle their own output — skip them here.
         if response.success and response.tool_used not in _TTS_CONTROL_TOOLS:
             from app.voice.tts import tts_service
-            if tts_service.session_enabled:
+            if tts_service.output_enabled:
                 tts_service.speak(response.message)
 
         print()

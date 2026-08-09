@@ -457,6 +457,84 @@ def test_chat_reports_the_provider_state_without_reading_as_broken(page):
 
 
 # ---------------------------------------------------------------------------
+# 12c. Spoken replies, through the real UI
+#
+# The engine is mocked in-process so nothing plays audio; what is real is
+# whether the page asks for speech at all, which is the half that was
+# broken (the desktop app never spoke).
+# ---------------------------------------------------------------------------
+
+def _speak_requests(pg):
+    seen = []
+    pg.on("request", lambda r: seen.append(r.url) if r.url.endswith("/voice/speak") else None)
+    return seen
+
+
+def test_a_reply_is_spoken_when_speech_is_switched_on(page, live_server):
+    from unittest.mock import MagicMock, patch
+    from app.voice.tts import tts_service
+
+    tts_service.set_output_enabled(True)
+    spoken = _speak_requests(page)
+    try:
+        with patch("pyttsx3.init", return_value=MagicMock()):
+            page.goto(url("/ui/chat"), wait_until="networkidle")
+            page.fill("#chat-input", "status")
+            page.click("#chat-send")
+            page.wait_for_function(
+                "document.getElementById('chat-messages').textContent.includes('JARVIS')", timeout=5000,
+            )
+            page.wait_for_timeout(500)
+    finally:
+        tts_service.set_output_enabled(False)
+
+    assert spoken, "the page never asked for the reply to be spoken"
+
+
+def test_an_approval_prompt_is_not_spoken(page, live_server):
+    from unittest.mock import MagicMock, patch
+    from app.voice.tts import tts_service
+
+    tts_service.set_output_enabled(True)
+    spoken = _speak_requests(page)
+    try:
+        with patch("pyttsx3.init", return_value=MagicMock()):
+            page.goto(url("/ui/chat"), wait_until="networkidle")
+            page.fill("#chat-input", "read clipboard")
+            page.click("#chat-send")
+            page.wait_for_selector(".msg-approval", timeout=5000)
+            page.wait_for_timeout(500)
+    finally:
+        tts_service.set_output_enabled(False)
+
+    assert spoken == [], "an approval prompt must be read, not read aloud"
+
+
+def test_the_voice_page_toggle_reflects_the_server_state(page, live_server):
+    from app.voice.tts import tts_service
+
+    tts_service.set_output_enabled(False)
+    page.goto(url("/ui/voice"), wait_until="networkidle")
+    page.wait_for_function(
+        "document.getElementById('voice-output-toggle').checked === false", timeout=5000,
+    )
+
+    try:
+        page.click("#voice-output-toggle")
+        page.wait_for_function(
+            "document.getElementById('tts-enabled-val').textContent === 'Yes'", timeout=5000,
+        )
+        assert tts_service.output_enabled is True
+
+        page.reload(wait_until="networkidle")
+        page.wait_for_function(
+            "document.getElementById('voice-output-toggle').checked === true", timeout=5000,
+        )
+    finally:
+        tts_service.set_output_enabled(False)
+
+
+# ---------------------------------------------------------------------------
 # 13. Privacy-mode indicator
 # ---------------------------------------------------------------------------
 

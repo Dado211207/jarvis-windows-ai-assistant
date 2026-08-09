@@ -132,8 +132,10 @@ def test_ui_memory_has_search(api_client):
 def test_ui_voice_has_controls(api_client):
     r = api_client.get("/ui/voice")
     html = r.text
-    assert "btn-speak-on" in html
-    assert "btn-speak-off" in html
+    # A single remembered toggle replaced the old Enable/Disable button
+    # pair, which set a flag nothing on this page ever read back.
+    assert "voice-output-toggle" in html
+    assert "btn-speak-test" in html
     assert "btn-speak-stop" in html
 
 

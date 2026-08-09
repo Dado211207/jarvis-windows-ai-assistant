@@ -188,28 +188,67 @@ def test_stop_engine_error_returns_failure():
 
 
 # ---------------------------------------------------------------------------
-# 5. Session enable / disable
+# 5. Spoken replies: one flag, remembered
+#
+# There used to be two — an in-memory session flag only the CLI read, and
+# an environment setting a packaged-app user could not change — which is
+# why the desktop app never spoke. These tests pin the single flag every
+# surface now reads.
 # ---------------------------------------------------------------------------
 
-def test_session_disabled_by_default():
+def test_speaking_is_off_by_default():
+    """CLAUDE.md's Phase 3 rule: opt-in, never on until asked for."""
+    from app.voice.tts import TextToSpeechService
+    assert TextToSpeechService().output_enabled is False
+
+
+def test_turning_speech_on_is_remembered():
     from app.voice.tts import TextToSpeechService
     svc = TextToSpeechService()
-    assert svc.session_enabled is False
+
+    assert svc.set_output_enabled(True) is True
+    # A different instance reads the same saved choice — which is what
+    # "survives a restart" actually means here.
+    assert TextToSpeechService().output_enabled is True
 
 
-def test_session_enable_sets_flag():
+def test_turning_speech_off_is_remembered():
     from app.voice.tts import TextToSpeechService
     svc = TextToSpeechService()
-    svc.session_enabled = True
-    assert svc.session_enabled is True
+    svc.set_output_enabled(True)
+
+    assert svc.set_output_enabled(False) is False
+    assert TextToSpeechService().output_enabled is False
 
 
-def test_session_disable_clears_flag():
+def test_a_saved_choice_overrides_the_configured_default(monkeypatch):
+    from app.config import settings
     from app.voice.tts import TextToSpeechService
-    svc = TextToSpeechService()
-    svc.session_enabled = True
-    svc.session_enabled = False
-    assert svc.session_enabled is False
+
+    monkeypatch.setattr(settings, "jarvis_tts_enabled", True)
+    TextToSpeechService().set_output_enabled(False)
+
+    assert TextToSpeechService().output_enabled is False
+
+
+def test_the_configured_default_applies_when_nothing_was_chosen(monkeypatch):
+    from app.config import settings
+    from app.voice.tts import TextToSpeechService
+
+    monkeypatch.setattr(settings, "jarvis_tts_enabled", True)
+
+    assert TextToSpeechService().output_enabled is True
+
+
+def test_an_unsaveable_setting_reports_the_state_actually_in_effect(monkeypatch):
+    """A toggle that claims to have changed and then flips back on the
+    next page load is worse than one that refuses honestly."""
+    from app.core import preferences
+    from app.voice.tts import TextToSpeechService
+
+    monkeypatch.setattr(preferences, "store", lambda key, value: False)
+
+    assert TextToSpeechService().set_output_enabled(True) is False
 
 
 # ---------------------------------------------------------------------------
@@ -268,36 +307,46 @@ def test_router_speak_on_case_insensitive():
 # 7. Tool handlers
 # ---------------------------------------------------------------------------
 
-def test_tts_enable_tool_sets_session_flag():
+def test_speak_on_turns_speaking_on():
     from app.voice import tts as tts_module
     from app.voice.tts import tts_service
 
-    original = tts_service.session_enabled
-    try:
-        mock_engine = _make_mock_engine()
-        with patch("pyttsx3.init", return_value=mock_engine):
-            result = tts_module._tts_enable()
-        assert result["success"] is True
-        assert tts_service.session_enabled is True
-    finally:
-        tts_service.session_enabled = original
+    with patch("pyttsx3.init", return_value=_make_mock_engine()):
+        result = tts_module._tts_enable()
 
-
-def test_tts_disable_tool_clears_session_flag():
-    from app.voice import tts as tts_module
-    from app.voice.tts import tts_service
-
-    tts_service.session_enabled = True
-    result = tts_module._tts_disable()
     assert result["success"] is True
-    assert tts_service.session_enabled is False
+    assert tts_service.output_enabled is True
+
+
+def test_speak_off_turns_speaking_off():
+    from app.voice import tts as tts_module
+    from app.voice.tts import tts_service
+
+    tts_service.set_output_enabled(True)
+    result = tts_module._tts_disable()
+
+    assert result["success"] is True
+    assert tts_service.output_enabled is False
+
+
+def test_speak_on_with_no_engine_says_nothing_will_be_spoken():
+    """The setting really did change and really will produce no sound;
+    reporting only the first half would be a half-truth."""
+    from app.voice import tts as tts_module
+    from app.voice.tts import tts_service
+
+    with patch.dict(sys.modules, {"pyttsx3": None}):
+        result = tts_module._tts_enable()
+
+    assert tts_service.output_enabled is True
+    assert "nothing will be spoken" in result["message"]
 
 
 def test_tts_status_tool_returns_status_string():
     from app.voice import tts as tts_module
     result = tts_module._tts_status()
     assert result["success"] is True
-    assert "TTS" in result["message"]
+    assert "Speaks replies" in result["message"]
     assert "Engine" in result["message"]
 
 
@@ -397,19 +446,18 @@ def test_voice_speak_text_too_long_returns_422(api_client):
 
 
 def test_voice_speak_when_enabled_and_available(api_client):
-    """With TTS enabled and engine mocked, /voice/speak returns success."""
-    from app.config import settings
-    mock_engine = _make_mock_engine()
-    original = settings.jarvis_tts_enabled
+    """With speaking turned on and the engine mocked, /voice/speak
+    returns success."""
+    from app.voice.tts import tts_service
+
+    tts_service.set_output_enabled(True)
     try:
-        settings.jarvis_tts_enabled = True
-        with patch("pyttsx3.init", return_value=mock_engine):
+        with patch("pyttsx3.init", return_value=_make_mock_engine()):
             r = api_client.post("/voice/speak", json={"text": "hello world"})
         assert r.status_code == 200
-        body = r.json()
-        assert body["success"] is True
+        assert r.json()["success"] is True
     finally:
-        settings.jarvis_tts_enabled = original
+        tts_service.set_output_enabled(False)
 
 
 def test_voice_stop_returns_200(api_client):

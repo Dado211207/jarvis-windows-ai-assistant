@@ -139,12 +139,15 @@ def test_chat_suggestions_present(api_client):
 def test_voice_ids_present(api_client):
     r = api_client.get("/ui/voice")
     html = r.text
-    assert "btn-speak-on" in html
-    assert "btn-speak-off" in html
+    assert "voice-output-toggle" in html
     assert "btn-speak-stop" in html
     assert "tts-avail" in html
     assert "tts-enabled-val" in html
     assert "tts-engine-val" in html
+    # Voice input status belongs on the Voice page too — a page that
+    # describes only the half that speaks is not the voice page.
+    assert "stt-avail" in html
+    assert "stt-model" in html
 
 
 def test_voice_page_does_not_overclaim_always_listening(api_client):

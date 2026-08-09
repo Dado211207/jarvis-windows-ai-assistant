@@ -170,20 +170,44 @@ class VoiceStatusResponse(BaseModel):
     tts_available: bool
 
 
+class SetVoiceOutputRequest(BaseModel):
+    enabled: bool
+
+
 @router.get("/voice/status", response_model=VoiceStatusResponse)
 def voice_status() -> VoiceStatusResponse:
     from app.config import settings
     return VoiceStatusResponse(
-        tts_enabled=settings.jarvis_tts_enabled,
+        tts_enabled=tts_service.output_enabled,
         tts_engine=settings.jarvis_tts_engine,
         tts_available=tts_service.is_available(),
     )
 
 
+@router.post(
+    "/voice/output",
+    response_model=VoiceStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_voice_output(req: SetVoiceOutputRequest) -> VoiceStatusResponse:
+    """Turn spoken replies on or off, remembered across restarts.
+
+    Returns the state actually in effect, not the requested one — see
+    tts_service.set_output_enabled().
+    """
+    tts_service.set_output_enabled(req.enabled)
+    return voice_status()
+
+
 @router.post("/voice/speak", dependencies=[Depends(require_session_token)])
 def voice_speak(req: SpeakRequest) -> dict:
-    from app.config import settings
-    if not settings.jarvis_tts_enabled:
+    """Speak text through the local engine, if the user turned speech on.
+
+    The gate lives here rather than in the browser so a stale page cannot
+    make JARVIS talk after speech was switched off in another tab or by
+    a `speak off` command.
+    """
+    if not tts_service.output_enabled:
         return {
             "success": False,
             "message": "Voice output is turned off. Turn it on from the Voice page.",

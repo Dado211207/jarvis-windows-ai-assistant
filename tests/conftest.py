@@ -1,6 +1,23 @@
 """Shared pytest helpers across the test suite."""
 
+import pytest
+
 SESSION_TOKEN_HEADER = "X-JARVIS-Session-Token"
+
+
+@pytest.fixture(autouse=True)
+def isolated_preferences(tmp_path, monkeypatch):
+    """Every test gets its own preferences file.
+
+    Autouse and unconditional: app/core/preferences.py is written to by
+    ordinary product code (turning on spoken replies, picking an AI
+    provider), so without this a test run would edit the developer's real
+    settings, and — worse — one test's choice would silently change what
+    the next test observes. Redirecting only the preferences module's own
+    reference leaves app_paths' own tests measuring the real thing.
+    """
+    monkeypatch.setattr("app.core.preferences.config_dir", lambda: tmp_path)
+    yield tmp_path
 
 
 def prime_session(client):
