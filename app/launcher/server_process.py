@@ -342,15 +342,19 @@ class ServerProcess:
         """
         import socket
 
-        connector = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        connector.settimeout(0.25)
+        # create_connection(), not connect_ex() on a socket with a
+        # timeout: setting a timeout puts the socket in non-blocking
+        # mode, so on Windows connect_ex() returns WSAEWOULDBLOCK
+        # immediately instead of 0 even when the connection goes on to
+        # succeed. Only a loopback connect on Linux completes fast enough
+        # to return 0 — which is exactly why this passed here and failed
+        # on the platform that matters. create_connection does the
+        # non-blocking connect and the wait properly, on both.
         try:
-            if connector.connect_ex((self.host, self.port)) == 0:
-                return False
+            with socket.create_connection((self.host, self.port), timeout=0.25):
+                return False  # something is still listening
         except OSError:
-            pass  # unresolvable/unreachable is not "someone is listening"
-        finally:
-            connector.close()
+            pass  # nothing answered, which is what we want
 
         binder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         binder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
