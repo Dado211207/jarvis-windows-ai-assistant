@@ -36,6 +36,13 @@ data/jarvis.db-shm
 data/jarvis.db-wal
 !data/.gitkeep
 
+# Per-user state written by the running app: the onboarding marker and the
+# preferences file (chosen AI provider, spoken replies). In the packaged
+# app these live under %LOCALAPPDATA%\JARVIS\config; in dev mode
+# app_paths.config_dir() puts them here. They are one machine's settings,
+# never source — see app/core/preferences.py.
+config/
+
 # Packaged-launcher runtime files (dev mode writes these to the repo root,
 # same as data/jarvis.db above — see app/launcher/instance_lock.py)
 jarvis.lock
