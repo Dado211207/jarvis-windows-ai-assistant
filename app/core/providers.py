@@ -180,7 +180,23 @@ def normalise_provider(value) -> str:
 
 
 def selected_provider() -> str:
-    """The configured provider, normalised."""
-    from app.config import settings
+    """The provider actually in effect, normalised.
 
-    return normalise_provider(settings.jarvis_ai_provider)
+    A choice saved in Settings wins over the configured default — see
+    app/core/preferences.py for why that precedence and not the other
+    one. This is the single answer to "which provider?"; nothing should
+    read settings.jarvis_ai_provider directly and reach a different one.
+    """
+    from app.config import settings
+    from app.core.preferences import get as get_preference
+
+    return normalise_provider(get_preference("ai_provider") or settings.jarvis_ai_provider)
+
+
+def selected_ollama_model() -> str:
+    """The chosen local model: the saved preference, else the configured
+    default, else "" meaning "whatever the local instance reports first"."""
+    from app.config import settings
+    from app.core.preferences import get as get_preference
+
+    return get_preference("ollama_model") or (getattr(settings, "jarvis_ollama_model", "") or "")

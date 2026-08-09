@@ -86,9 +86,15 @@ class Brain:
     # --- provider plumbing ---
 
     def provider_name(self) -> str:
+        """A choice saved in Settings wins over the configured default —
+        see app/core/preferences.py. Falling through to this module's own
+        `settings` (rather than calling selected_provider(), which reads
+        app.config directly) keeps the answer patchable when a test
+        drives the Brain through a mocked settings object."""
+        from app.core.preferences import get as get_preference
         from app.core.providers import normalise_provider
 
-        return normalise_provider(settings.jarvis_ai_provider)
+        return normalise_provider(get_preference("ai_provider") or settings.jarvis_ai_provider)
 
     def _provider_config(self):
         """The single place global settings become provider configuration.
@@ -103,8 +109,17 @@ class Brain:
             max_tokens=settings.jarvis_ai_max_tokens,
             timeout_seconds=float(settings.jarvis_ai_timeout_seconds),
             api_key=settings.effective_api_key if settings.has_anthropic_key else "",
-            ollama_model=getattr(settings, "jarvis_ollama_model", "") or "",
+            ollama_model=self._ollama_model(),
         )
+
+    @staticmethod
+    def _ollama_model() -> str:
+        from app.core.preferences import get as get_preference
+
+        configured = getattr(settings, "jarvis_ollama_model", "")
+        if not isinstance(configured, str):
+            configured = ""  # a mocked settings object in tests
+        return get_preference("ollama_model") or configured
 
     def provider(self):
         from app.core.ai import get_provider

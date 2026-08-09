@@ -450,6 +450,16 @@ class ProviderStatusResponse(BaseModel):
 class ProvidersResponse(BaseModel):
     selected: str
     providers: List[ProviderStatusResponse]
+    # The model in effect for the selected provider. Never a credential —
+    # a model name is not sensitive; the key never appears here.
+    selected_model: str = ""
+
+
+class SelectProviderRequest(BaseModel):
+    provider: str
+    # Only meaningful for a local provider; ignored otherwise. Empty
+    # means "whichever model the local instance reports first".
+    model: str = ""
 
 
 @router.get("/providers", response_model=ProvidersResponse)
@@ -459,7 +469,63 @@ def list_providers() -> ProvidersResponse:
     return ProvidersResponse(
         selected=selected_provider(),
         providers=[ProviderStatusResponse(**vars(status)) for status in detect_all()],
+        selected_model=_selected_model_for_ui(),
     )
+
+
+def _selected_model_for_ui() -> str:
+    """What the Settings page shows as the current model. For Ollama this
+    is a name the user picked (or "" for auto); for Anthropic it is the
+    configured model, which is not user-selectable here."""
+    from app.config import settings
+    from app.core.providers import PROVIDER_OLLAMA, selected_ollama_model, selected_provider
+
+    if selected_provider() == PROVIDER_OLLAMA:
+        return selected_ollama_model()
+    return settings.jarvis_ai_model or ""
+
+
+@router.post(
+    "/providers/select",
+    response_model=ProvidersResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def select_provider(req: SelectProviderRequest) -> ProvidersResponse:
+    """Choose which provider answers chat.
+
+    Refuses a provider that is not actually available right now, and an
+    Ollama model the local instance does not report — the same rule the
+    rest of this app follows: never claim a capability that was not
+    detected. The refusal names what *is* available so it is actionable.
+    """
+    from app.core.preferences import store
+    from app.core.providers import PROVIDER_OLLAMA, detect_all, is_valid_provider
+
+    requested = (req.provider or "").strip().lower()
+    if not is_valid_provider(requested):
+        raise HTTPException(status_code=400, detail="Unknown AI provider.")
+
+    statuses = {status.name: status for status in detect_all()}
+    chosen = statuses[requested]
+    if not chosen.available:
+        raise HTTPException(status_code=409, detail=chosen.detail)
+
+    model = (req.model or "").strip()
+    if requested == PROVIDER_OLLAMA and model and model not in chosen.models:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{model}' is not installed in Ollama. Installed models: "
+                f"{', '.join(chosen.models) or 'none'}."
+            ),
+        )
+
+    store("ai_provider", requested)
+    if requested == PROVIDER_OLLAMA:
+        store("ollama_model", model)
+
+    logger.info("AI provider selected: %s", requested)
+    return list_providers()
 
 
 # ---------------------------------------------------------------------------

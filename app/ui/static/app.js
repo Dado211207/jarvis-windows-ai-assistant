@@ -13,10 +13,22 @@ function getSessionCookie() {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+// When the server refuses something it explains why (FastAPI puts that in
+// `detail`). Surfacing it beats "409 Conflict", which tells a user
+// nothing they can act on. Falls back to the status line when there is
+// no explanation to show.
+async function errorFromResponse(r) {
+  try {
+    const body = await r.json();
+    if (body && typeof body.detail === "string" && body.detail) return new Error(body.detail);
+  } catch (e) { /* not JSON — fall through to the status line */ }
+  return new Error(`${r.status} ${r.statusText}`);
+}
+
 const API = {
   async get(path) {
     const r = await fetch(path);
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    if (!r.ok) throw await errorFromResponse(r);
     return r.json();
   },
   async post(path, body) {
@@ -29,7 +41,7 @@ const API = {
       },
       body: JSON.stringify(body),
     });
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    if (!r.ok) throw await errorFromResponse(r);
     return r.json();
   },
 };
@@ -1265,11 +1277,87 @@ async function refreshSettingsProviders() {
       detail.textContent = provider.detail;
       host.appendChild(detail);
     });
+    populateProviderPicker(data);
   } catch (e) {
     const p = document.createElement("p");
     p.className = "text-xs text-err";
     p.textContent = "Could not reach the server.";
     host.appendChild(p);
+  }
+}
+
+// Only providers actually detected are offerable — an unavailable one is
+// listed as unselectable rather than hidden, so a user who expected it
+// can see it was looked for and not found.
+function populateProviderPicker(data) {
+  const picker = $("settings-provider-select");
+  if (!picker) return;
+
+  picker.textContent = "";
+  (data.providers || []).forEach(provider => {
+    const option = document.createElement("option");
+    option.value = provider.name;
+    option.textContent = provider.available
+      ? provider.display_name
+      : `${provider.display_name} — not detected`;
+    option.disabled = !provider.available;
+    if (provider.name === data.selected) option.selected = true;
+    picker.appendChild(option);
+  });
+
+  picker.onchange = () => syncOllamaModelPicker(data);
+  syncOllamaModelPicker(data);
+}
+
+function syncOllamaModelPicker(data) {
+  const picker = $("settings-provider-select");
+  const models = $("settings-ollama-model");
+  const label  = $("settings-ollama-model-label");
+  if (!picker || !models || !label) return;
+
+  const chosen = (data.providers || []).find(p => p.name === picker.value);
+  const isLocal = !!chosen && chosen.kind === "local";
+  models.hidden = !isLocal;
+  label.hidden = !isLocal;
+  if (!isLocal) return;
+
+  models.textContent = "";
+  const auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "Automatic (first installed model)";
+  models.appendChild(auto);
+
+  (chosen.models || []).forEach(name => {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    if (name === data.selected_model) option.selected = true;
+    models.appendChild(option);
+  });
+}
+
+async function saveProviderSelection() {
+  const picker = $("settings-provider-select");
+  const models = $("settings-ollama-model");
+  const message = $("settings-provider-message");
+  if (!picker) return;
+
+  const setMessage = (text, ok) => {
+    if (!message) return;
+    message.textContent = text;
+    message.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
+  };
+
+  try {
+    const body = { provider: picker.value, model: models && !models.hidden ? models.value : "" };
+    const data = await API.post("/providers/select", body);
+    const active = (data.providers || []).find(p => p.name === data.selected);
+    setMessage(`Chat now uses ${active ? active.display_name : data.selected}.`, true);
+    populateProviderPicker(data);
+  } catch (e) {
+    // The server refuses a provider it could not detect, and says why —
+    // that reason is more useful than a generic failure.
+    setMessage(e.message, false);
   }
 }
 
@@ -1360,6 +1448,9 @@ function initSettings() {
   const removeBtn = $("settings-key-remove");
   const input = $("settings-key-input");
   const startup = $("settings-startup-toggle");
+  const providerSave = $("settings-provider-save");
+
+  if (providerSave) providerSave.addEventListener("click", saveProviderSelection);
 
   if (saveBtn) saveBtn.addEventListener("click", async () => {
     const value = input ? input.value.trim() : "";
