@@ -117,9 +117,31 @@ def validate_event(message: Any) -> Optional[Dict[str, Any]]:
 
 
 def generate_secret() -> bytes:
-    """multiprocessing.connection's authkey must be bytes."""
+    """A shared authkey that survives the trip through an environment
+    variable intact.
+
+    multiprocessing.connection's authkey must be bytes, and the obvious
+    `secrets.token_bytes(32)` is the wrong kind of bytes: the secret
+    reaches the child through its environment, which is *text*, so it is
+    decoded and re-encoded on the way. Arbitrary binary does not survive
+    that — measured, not assumed: 200 of 200 random 32-byte secrets came
+    back different, typically losing a third of their length to
+    `errors="ignore"` silently discarding every byte sequence that is not
+    valid UTF-8.
+
+    The consequence was not subtle and not rare. The window child failed
+    its HMAC challenge every single time, on every build, so the native
+    window never appeared and the launcher fell back to a browser — the
+    reported "the default installed application opens an external
+    browser" defect, whose real cause was here rather than in the window
+    code. It was invisible because both halves looked correct in
+    isolation and the failure surfaced three modules away.
+
+    token_urlsafe() is ASCII by construction, so the round trip is exact,
+    with the same 32 bytes of entropy behind it.
+    """
     import secrets
-    return secrets.token_bytes(32)
+    return secrets.token_urlsafe(32).encode("ascii")
 
 
 class ControlListener:
@@ -324,9 +346,21 @@ def child_context_from_env(env: Optional[dict] = None) -> Optional[dict]:
     url = env.get(IPC_URL_ENV, "")
     if address is None or not secret or not url:
         return None
+
+    # The exact inverse of what the parent wrote — see generate_secret()
+    # for why this pairing is load-bearing and what broke when the two
+    # halves disagreed. Non-ASCII means this did not come from a JARVIS
+    # parent, which is the same "no usable context" answer as a missing
+    # variable; the never-raises promise above covers it too.
+    try:
+        secret_bytes = secret.encode("ascii", errors="strict")
+    except UnicodeEncodeError:
+        logger.warning("The inherited window secret was not the expected encoding; refusing to run.")
+        return None
+
     return {
         "address": address,
-        "secret": secret.encode("utf-8"),
+        "secret": secret_bytes,
         "url": url,
         "close_action": env.get(IPC_CLOSE_ACTION_ENV, "tray"),
     }

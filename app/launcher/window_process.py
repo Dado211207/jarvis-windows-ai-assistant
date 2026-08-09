@@ -95,7 +95,15 @@ class WindowProcess:
             raise RuntimeError("environment() requires a listener; call start() instead.")
         env = dict(base_env if base_env is not None else os.environ)
         env[ipc.IPC_ADDRESS_ENV] = self._listener.address_string()
-        env[ipc.IPC_SECRET_ENV] = self._secret.decode("utf-8", errors="ignore") if isinstance(self._secret, bytes) else str(self._secret)
+        # decode("ascii"), strictly, and never errors="ignore": the
+        # previous version silently discarded every byte that was not
+        # valid UTF-8, handing the child a secret the parent had never
+        # heard of. ipc.generate_secret() produces ASCII precisely so
+        # this round trip is exact — if that ever changes, this raises
+        # here instead of failing an HMAC challenge three modules away.
+        env[ipc.IPC_SECRET_ENV] = (
+            self._secret.decode("ascii") if isinstance(self._secret, bytes) else str(self._secret)
+        )
         env[ipc.IPC_URL_ENV] = self.url
         env[ipc.IPC_CLOSE_ACTION_ENV] = self.close_action
         return env

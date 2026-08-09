@@ -357,3 +357,88 @@ def test_malformed_wire_message_is_dropped_not_acted_on(listener):
         assert listener_obj.poll_event(timeout=2) is None
     finally:
         client.close()
+
+
+# ---------------------------------------------------------------------------
+# The secret survives the environment
+# ---------------------------------------------------------------------------
+
+def test_the_secret_is_ascii_so_it_can_cross_an_environment_variable():
+    """The defect that made the installed app open a browser.
+
+    The secret reaches the child through its environment, which is text,
+    so it is decoded and re-encoded on the way. `secrets.token_bytes()`
+    does not survive that: `errors="ignore"` silently discards every byte
+    sequence that is not valid UTF-8. The window child then failed its
+    HMAC challenge on every launch of every build, the native window
+    never appeared, and the launcher fell back to a browser — three
+    modules away from the cause.
+    """
+    for _ in range(200):
+        secret = ipc.generate_secret()
+        assert secret.decode("ascii").encode("ascii") == secret
+
+
+def test_the_old_encoding_really_would_have_corrupted_it():
+    """Guards the test above against becoming a tautology: it only means
+    something if the round trip is genuinely capable of destroying a
+    secret, which is why this asserts the failure mode still exists for
+    the encoding that caused it."""
+    import secrets as _secrets
+
+    corrupted = sum(
+        1 for _ in range(200)
+        if (lambda b: b.decode("utf-8", errors="ignore").encode("utf-8") != b)(_secrets.token_bytes(32))
+    )
+    assert corrupted > 190, "random binary must be shown to be unsafe for this round trip"
+
+
+def test_the_secret_keeps_its_entropy():
+    """ASCII-safe must not mean short. token_urlsafe(32) carries the same
+    32 bytes of entropy as token_bytes(32)."""
+    secrets_seen = {ipc.generate_secret() for _ in range(100)}
+
+    assert len(secrets_seen) == 100
+    assert all(len(s) >= 32 for s in secrets_seen)
+
+
+def test_a_child_authenticates_with_the_secret_it_actually_inherits():
+    """End to end over a real socket, through a real environment dict and
+    a real HMAC challenge — the exact path the packaged app takes, and
+    the one every existing IPC test skipped by handing the client the
+    parent's in-memory bytes directly."""
+    from app.launcher.window_process import WindowProcess
+
+    window = WindowProcess(url="http://127.0.0.1:5555/ui/")
+    window._secret = ipc.generate_secret()
+    window._listener = ipc.ControlListener(window._secret)
+    try:
+        child_env = window.environment(base_env={})
+        context = ipc.child_context_from_env(child_env)
+        assert context is not None
+
+        connected = {}
+
+        def _child():
+            try:
+                connected["client"] = ipc.ControlClient(context["address"], context["secret"])
+            except Exception as exc:  # noqa: BLE001
+                connected["error"] = exc
+
+        thread = threading.Thread(target=_child, daemon=True)
+        thread.start()
+        accepted = window._listener.accept(timeout_seconds=10)
+        thread.join(timeout=10)
+
+        assert "error" not in connected, f"the inherited secret was rejected: {connected.get('error')}"
+        assert accepted is True
+        connected["client"].close()
+    finally:
+        window._listener.close()
+
+
+def test_a_non_ascii_secret_in_the_environment_is_refused_not_raised():
+    """`JARVIS.exe --window` started with a hand-set variable must exit
+    cleanly, the same as with no context at all."""
+    env = _valid_env(**{ipc.IPC_SECRET_ENV: "sécret-with-accents"})
+    assert ipc.child_context_from_env(env) is None
