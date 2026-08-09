@@ -194,6 +194,61 @@ function addMessage(role, text, toolUsed) {
   list.scrollTop = list.scrollHeight;
 }
 
+// A message bubble that grows as text streams in. Returns an appender so
+// the caller never has to touch the DOM node itself.
+function addStreamingMessage() {
+  const list = $("chat-messages");
+  if (!list) return { append: () => {}, set: () => {}, isEmpty: () => true };
+
+  const empty = $("chat-empty");
+  if (empty && chatEmpty) { empty.style.display = "none"; chatEmpty = false; }
+
+  const wrap = document.createElement("div");
+  wrap.className = "msg msg-assistant";
+
+  const roleEl = document.createElement("div");
+  roleEl.className = "msg-role";
+  roleEl.textContent = "JARVIS";
+
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+  bubble.textContent = "";
+
+  wrap.appendChild(roleEl);
+  wrap.appendChild(bubble);
+  list.appendChild(wrap);
+
+  let buffer = "";
+  return {
+    append(text) {
+      buffer += text;
+      bubble.textContent = buffer;   // textContent only, per CLAUDE.md's XSS rule
+      list.scrollTop = list.scrollHeight;
+    },
+    set(text) {
+      buffer = text;
+      bubble.textContent = buffer;
+      list.scrollTop = list.scrollHeight;
+    },
+    isEmpty() { return buffer.length === 0; },
+    remove() { wrap.remove(); },
+  };
+}
+
+let currentGenerationId = null;
+
+function setChatBusy(busy) {
+  const sendBtn = $("chat-send");
+  const stopBtn = $("chat-stop");
+  if (sendBtn) sendBtn.disabled = busy;
+  if (stopBtn) stopBtn.hidden = !busy;
+}
+
+function setChatStatus(text) {
+  const el = $("chat-status");
+  if (el) el.textContent = text || "";
+}
+
 async function sendChat() {
   const input = $("chat-input");
   if (!input) return;
@@ -202,10 +257,94 @@ async function sendChat() {
 
   input.value = "";
   addMessage("user", text, null);
+  setChatBusy(true);
+  setChatStatus("");
 
-  const sendBtn = $("chat-send");
-  if (sendBtn) sendBtn.disabled = true;
+  try {
+    await streamChat(text);
+  } catch (e) {
+    // Streaming was unavailable (an old browser, or a proxy that buffers
+    // the body away). Fall back to the plain one-shot endpoint rather
+    // than showing the user an error for something they can't act on.
+    console.warn("streaming unavailable, falling back to /command", e);
+    await sendChatFallback(text);
+  } finally {
+    currentGenerationId = null;
+    setChatBusy(false);
+    if (input) input.focus();
+  }
+}
 
+async function streamChat(text) {
+  const token = getSessionCookie();
+  const res = await fetch("/chat/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { "X-JARVIS-Session-Token": token } : {}),
+    },
+    body: JSON.stringify({ command: text }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.body || !res.body.getReader) throw new Error("streaming unsupported");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let stream = null;
+  let sawError = false;
+
+  const handle = evt => {
+    if (evt.type === "start") {
+      currentGenerationId = evt.generation_id || null;
+      if (evt.model) setChatStatus(`Answering with ${evt.model}.`);
+    } else if (evt.type === "routed") {
+      const data = evt.response || {};
+      if (data.requires_approval && data.pending_action_id) {
+        addApprovalCard(data.pending_action_id, data);
+      } else {
+        addMessage("assistant", data.message || "", data.tool_used || null);
+      }
+    } else if (evt.type === "delta") {
+      if (!stream) stream = addStreamingMessage();
+      stream.append(evt.text || "");
+    } else if (evt.type === "error") {
+      sawError = true;
+      if (!stream) stream = addStreamingMessage();
+      // A partial answer plus the reason it stopped is more useful than
+      // either alone, so the error is appended rather than replacing it.
+      stream.append((stream.isEmpty() ? "" : "\n\n") + (evt.message || "Something went wrong."));
+      const id = evt.error && evt.error.correlation_id;
+      setChatStatus(id ? `Reference: ${id}` : "");
+    } else if (evt.type === "done") {
+      if (evt.stopped) {
+        setChatStatus("Stopped.");
+        if (stream && stream.isEmpty()) stream.set("Stopped before any response arrived.");
+      } else if (!sawError) {
+        setChatStatus("");
+      }
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let split;
+    while ((split = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, split).trim();
+      buffer = buffer.slice(split + 2);
+      if (!frame.startsWith("data:")) continue;
+      try {
+        handle(JSON.parse(frame.slice(5).trim()));
+      } catch (parseError) {
+        console.warn("unparseable chat event", parseError);
+      }
+    }
+  }
+}
+
+async function sendChatFallback(text) {
   try {
     const data = await API.post("/command", { command: text });
     if (data.requires_approval && data.pending_action_id) {
@@ -216,9 +355,57 @@ async function sendChat() {
     }
   } catch (e) {
     addMessage("assistant", "Error: " + e.message, null);
-  } finally {
-    if (sendBtn) sendBtn.disabled = false;
-    if (input)   input.focus();
+  }
+}
+
+async function stopChat() {
+  setChatStatus("Stopping…");
+  try {
+    const r = await API.post("/chat/stop", { generation_id: currentGenerationId });
+    if (!r.stopped) setChatStatus(r.message || "");
+  } catch (e) {
+    setChatStatus("Could not stop the response: " + e.message);
+  }
+}
+
+async function resetConversation() {
+  const confirmed = window.confirm(
+    "Clear this chat and the stored conversation history?\n\n" +
+    "This cannot be undone. Your action history and logs are not affected."
+  );
+  if (!confirmed) return;
+
+  try {
+    const r = await API.post("/conversation/reset", {});
+    const list = $("chat-messages");
+    if (list) {
+      Array.from(list.children).forEach(node => {
+        if (node.id !== "chat-empty") node.remove();
+      });
+    }
+    const empty = $("chat-empty");
+    if (empty) { empty.style.display = ""; chatEmpty = true; }
+    setChatStatus(r.message || "Chat cleared.");
+  } catch (e) {
+    setChatStatus("Could not clear the conversation: " + e.message);
+  }
+}
+
+async function refreshChatProvider() {
+  const el = $("chat-provider");
+  if (!el) return;
+  try {
+    const r = await API.get("/providers");
+    const active = (r.providers || []).find(p => p.name === r.selected);
+    if (active && active.available) {
+      el.textContent = `AI: ${active.display_name}`;
+    } else {
+      // Never reads as broken: deterministic commands are the majority
+      // of what this box is for and they work with no provider at all.
+      el.textContent = "AI not configured — commands still work.";
+    }
+  } catch (e) {
+    el.textContent = "Could not check the AI provider.";
   }
 }
 
@@ -307,7 +494,11 @@ function addApprovalCard(actionId, data) {
 function initChat() {
   const btn   = $("chat-send");
   const input = $("chat-input");
+  const stop  = $("chat-stop");
+  const reset = $("chat-reset");
   if (btn)   btn.addEventListener("click", sendChat);
+  if (stop)  stop.addEventListener("click", stopChat);
+  if (reset) reset.addEventListener("click", resetConversation);
   if (input) input.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
@@ -323,6 +514,7 @@ function initChat() {
     });
   });
 
+  refreshChatProvider();
   initPushToTalk();
 }
 

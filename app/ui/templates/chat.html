@@ -12,6 +12,11 @@
   </div>
 
   <div class="card" style="padding: 1rem 1.1rem;">
+    <div class="chat-toolbar">
+      <span id="chat-provider" class="text-xs text-muted" aria-live="polite">Checking AI provider&hellip;</span>
+      <button id="chat-reset" class="btn btn-ghost btn-sm" type="button">New conversation</button>
+    </div>
+
     <div id="chat-messages" class="chat-messages">
       <div id="chat-empty" class="chat-empty">
         <span class="chat-empty-icon">&#9672;</span>
@@ -53,8 +58,16 @@
         hidden
       >&#10005;</button>
       <button id="chat-send" class="btn btn-primary" type="button">Send</button>
+      <button
+        id="chat-stop"
+        class="btn btn-danger"
+        type="button"
+        hidden
+        aria-label="Stop generating the current response"
+      >Stop</button>
     </div>
     <div id="ptt-status" class="text-xs text-muted mt-1" aria-live="polite"></div>
+    <div id="chat-status" class="text-xs text-muted mt-1" aria-live="polite"></div>
   </div>
 
 </div>

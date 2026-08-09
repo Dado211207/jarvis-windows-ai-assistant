@@ -347,6 +347,116 @@ def test_hanging_tool_times_out_visibly_in_chat(page, live_server):
 
 
 # ---------------------------------------------------------------------------
+# 12b. Streaming answers, Stop, and New conversation, through the real UI
+#
+# The provider is faked in-process (the live server shares this
+# interpreter) so no network call and no API key are involved. What is
+# real is everything the browser does: the streaming fetch, the
+# incremental render, the Stop round trip, and the confirm dialog.
+# ---------------------------------------------------------------------------
+
+def _fake_streaming_provider(chunks, delay=0.25):
+    from unittest.mock import MagicMock
+
+    def _stream(messages, system, cancel=None):
+        for chunk in chunks:
+            if cancel is not None and cancel.cancelled:
+                from app.core.ai.base import GenerationCancelled
+                raise GenerationCancelled()
+            yield chunk
+            time.sleep(delay)
+
+    provider = MagicMock()
+    provider.name = "anthropic"
+    provider.resolved_model.return_value = "fake-streaming-model"
+    provider.availability.return_value = MagicMock(ready=True, reason="")
+    provider.stream.side_effect = _stream
+    return provider
+
+
+def test_streamed_answer_appears_before_it_has_finished(page, live_server):
+    """The point of streaming: text is on screen while the model is still
+    producing it, not after."""
+    from unittest.mock import patch
+    from app.core.brain import brain
+
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+
+    with patch.object(brain, "provider", return_value=_fake_streaming_provider(
+        ["Streaming ", "answer ", "arriving ", "in ", "pieces."]
+    )):
+        page.fill("#chat-input", "an unrouted question for the AI")
+        page.click("#chat-send")
+        # Visible while the Stop button is still showing, i.e. mid-flight.
+        page.wait_for_function(
+            "document.getElementById('chat-messages').textContent.includes('Streaming')",
+            timeout=10000,
+        )
+        assert page.eval_on_selector("#chat-stop", "el => el.hidden") is False
+
+        page.wait_for_function(
+            "document.getElementById('chat-messages').textContent.includes('pieces.')",
+            timeout=15000,
+        )
+
+    page.wait_for_function("document.getElementById('chat-stop').hidden === true", timeout=5000)
+
+
+def test_stop_button_halts_a_streaming_answer(page, live_server):
+    from unittest.mock import patch
+    from app.core.brain import brain
+
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+
+    with patch.object(brain, "provider", return_value=_fake_streaming_provider(
+        ["one ", "two ", "three ", "four ", "five ", "six ", "seven ", "eight "], delay=0.4,
+    )):
+        page.fill("#chat-input", "another unrouted question")
+        page.click("#chat-send")
+        page.wait_for_function(
+            "document.getElementById('chat-messages').textContent.includes('one')",
+            timeout=10000,
+        )
+        page.click("#chat-stop")
+        page.wait_for_function(
+            "document.getElementById('chat-status').textContent === 'Stopped.'",
+            timeout=10000,
+        )
+        settled = page.inner_text("#chat-messages")
+
+    time.sleep(1.0)  # nothing more may arrive after the stop settled
+    assert page.inner_text("#chat-messages") == settled
+    assert "eight" not in settled
+
+
+def test_new_conversation_clears_the_transcript(page):
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+    page.fill("#chat-input", "status")
+    page.click("#chat-send")
+    page.wait_for_function(
+        "document.getElementById('chat-messages').textContent.includes('JARVIS')", timeout=5000,
+    )
+
+    page.on("dialog", lambda dialog: dialog.accept())
+    page.click("#chat-reset")
+
+    page.wait_for_function(
+        "document.querySelectorAll('#chat-messages .msg').length === 0", timeout=5000,
+    )
+    assert page.is_visible("#chat-empty")
+
+
+def test_chat_reports_the_provider_state_without_reading_as_broken(page):
+    """No key is configured in the test environment, so this is the
+    unconfigured path — it must still tell the user commands work."""
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+    page.wait_for_function(
+        "document.getElementById('chat-provider').textContent.includes('commands still work')",
+        timeout=5000,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 13. Privacy-mode indicator
 # ---------------------------------------------------------------------------
 

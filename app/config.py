@@ -27,7 +27,18 @@ class Settings(BaseSettings):
     jarvis_ai_provider: str = "anthropic"
     jarvis_ai_model: str = "claude-haiku-4-5-20251001"
     jarvis_ai_max_tokens: int = 250
+    # A per-request timeout, not a cap on how long an answer may be: it
+    # bounds waiting for the connection and for the *next* chunk of a
+    # streamed reply. A long answer that keeps producing text is not a
+    # stall and is never truncated at this value.
     jarvis_ai_timeout_seconds: int = 20
+
+    # Local Ollama model name, e.g. "llama3:latest". Empty means "use
+    # whichever model the local instance reports first", which is right
+    # for the common case of having exactly one installed. A name that
+    # isn't installed is reported as such rather than silently swapped —
+    # see app/core/ai/ollama_provider.py. JARVIS never downloads models.
+    jarvis_ollama_model: str = ""
 
     # TTS / voice output settings (Phase 3)
     jarvis_tts_enabled: bool = False

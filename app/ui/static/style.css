@@ -523,6 +523,17 @@ a:hover { color: var(--accent-hover); }
 .table tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
 
 /* ── Chat ──────────────────────────────────────────────────────────── */
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
 .chat-messages {
   min-height: 340px;
   max-height: 560px;

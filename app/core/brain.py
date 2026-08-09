@@ -1,12 +1,26 @@
-"""JARVIS Brain — orchestrates tools, routing, and Claude AI.
+"""JARVIS Brain — orchestrates tools, routing, and the AI providers.
 
 Phase 1: deterministic routing only.
-Phase 2: unknown commands fall through to the Anthropic API when a key is present;
-          local fallback message returned when no key is configured.
+Phase 2: unknown commands fall through to the AI when one is configured;
+          local fallback message returned when none is.
+Phase 5: the provider call itself moved out to app/core/ai/, so this
+          module decides *what to say* about a failure rather than
+          re-implementing *how to call* each provider. The important
+          behavioural change is that every failure no longer produces the
+          same "add an API key" sentence: the message a user sees now
+          matches the actual cause (rate limit, expired key, unreachable
+          local server, timeout), because a wrong diagnosis sends people
+          to change settings that were never the problem.
+
+The AI still only ever returns text. It cannot invoke a tool, and no
+code path from here reaches the tool registry — see CLAUDE.md's Phase 2
+rules and app/core/policy.py, which is the only risk decision-maker.
 """
 
+from typing import Iterator, Optional, Tuple
+
 from app.config import settings
-from app.core.errors import classify_anthropic_exception, to_safe_error
+from app.core.errors import ErrorCategory, SafeError, to_safe_error
 from app.core.models import BrainResponse, CommandResponse
 from app.core.system_prompt import SYSTEM_PROMPT
 from app.core.tool_registry import registry
@@ -69,65 +83,127 @@ class Brain:
         router = CommandRouter(registry, brain=self)
         return router.route(command)
 
-    def generate_response(self, command: str) -> BrainResponse:
-        """Call the Anthropic API with *command* as the user message.
+    # --- provider plumbing ---
 
-        Falls back to a local message if the key is absent or the call fails.
-        """
-        if not self.is_configured():
-            return self._local_fallback(command)
+    def provider_name(self) -> str:
+        from app.core.providers import normalise_provider
 
-        model = settings.jarvis_ai_model or "claude-haiku-4-5-20251001"
-        try:
-            import anthropic
-            client = anthropic.Anthropic(
-                api_key=settings.effective_api_key,
-                timeout=float(settings.jarvis_ai_timeout_seconds),
-            )
-            message = client.messages.create(
-                model=model,
-                max_tokens=settings.jarvis_ai_max_tokens,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": command}],
-            )
-            content = message.content[0].text if message.content else ""
-            logger.info("Claude API response received. model=%s tokens=%s", model, message.usage)
-            return BrainResponse(
-                content=content,
-                provider=settings.jarvis_ai_provider,
-                model=model,
-                used_api=True,
-            )
-        except Exception as exc:
-            category = classify_anthropic_exception(exc)
-            safe_error = to_safe_error(exc, category=category, context="Anthropic API call")
-            return BrainResponse(
-                content=self._local_fallback(command).content,
-                provider=settings.jarvis_ai_provider,
-                model=model,
-                used_api=False,
-                error=safe_error,
-            )
+        return normalise_provider(settings.jarvis_ai_provider)
 
-    # --- private helpers ---
+    def _provider_config(self):
+        """The single place global settings become provider configuration.
 
-    def _local_fallback(self, command: str) -> BrainResponse:
-        """Return a polite message when no API key is set or the call fails.
+        The key is resolved to "" whenever no key is configured, so a
+        provider's own availability check and this class's is_configured()
+        can never disagree about whether credentials exist."""
+        from app.core.ai import ProviderConfig
 
-        Deliberately points at the in-app Settings page, not a .env file:
-        the packaged desktop app stores its key in the Windows credential
-        store (app/core/credentials.py) and a user of the installed app
-        has no repository, no .env, and no terminal to edit one in."""
-        msg = (
-            f"I received your message: \"{command}\"\n"
-            "AI responses aren't set up yet. Open Settings and add an "
-            "Anthropic API key to enable them — everything else keeps "
-            "working without one."
+        return ProviderConfig(
+            model=settings.jarvis_ai_model or "",
+            max_tokens=settings.jarvis_ai_max_tokens,
+            timeout_seconds=float(settings.jarvis_ai_timeout_seconds),
+            api_key=settings.effective_api_key if settings.has_anthropic_key else "",
+            ollama_model=getattr(settings, "jarvis_ollama_model", "") or "",
         )
+
+    def provider(self):
+        from app.core.ai import get_provider
+
+        return get_provider(self.provider_name(), self._provider_config())
+
+    def provider_ready(self) -> Tuple[bool, str]:
+        """(usable right now, why not). Never raises — it is called from
+        request handlers and page renders."""
+        try:
+            availability = self.provider().availability()
+            return bool(availability.ready), availability.reason
+        except Exception:  # noqa: BLE001
+            logger.warning("Provider availability check failed.", exc_info=True)
+            return False, "The AI provider could not be checked. Local commands still work normally."
+
+    # --- generation ---
+
+    def generate_response(self, command: str) -> BrainResponse:
+        """Ask the configured provider to answer *command*.
+
+        Never raises and never returns an unhandled failure: an
+        unavailable provider, a rejected key, a rate limit or a timeout
+        all produce a BrainResponse whose text says which of those it
+        actually was.
+        """
+        from app.core.ai.base import GenerationCancelled, ProviderError
+        from app.core.conversation import build_request_messages
+
+        provider = self.provider()
+        availability = provider.availability()
+        if not availability.ready:
+            return self._unavailable(availability, provider)
+
+        try:
+            reply = provider.generate(build_request_messages(command), SYSTEM_PROMPT)
+        except ProviderError as exc:
+            return self._provider_failed(exc, provider)
+        except GenerationCancelled:
+            return BrainResponse(
+                content="Stopped.", provider=provider.name,
+                model=provider.resolved_model(), used_api=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — a provider that broke its own contract
+            return self._provider_failed(
+                ProviderError(ErrorCategory.PROVIDER_ERROR, cause=exc), provider
+            )
+
         return BrainResponse(
-            content=msg,
+            content=reply.content,
+            provider=reply.provider,
+            model=reply.model,
+            used_api=reply.used_api,
+        )
+
+    def stream_response(self, command: str, cancel=None) -> Iterator[str]:
+        """Yield answer text as it arrives. Raises ProviderError, which
+        the caller turns into a SafeError — the streaming endpoint needs
+        the classified failure mid-stream, where returning a BrainResponse
+        is no longer possible."""
+        from app.core.conversation import build_request_messages
+
+        provider = self.provider()
+        yield from provider.stream(build_request_messages(command), SYSTEM_PROMPT, cancel=cancel)
+
+    # --- failure reporting ---
+
+    def _unavailable(self, availability, provider) -> BrainResponse:
+        """No usable provider. This is not an error — it is the normal
+        state of a fresh install — so no correlation ID is minted and
+        nothing is logged as a failure. The reason comes from the
+        provider itself, which knows whether the cause is "no key yet"
+        or "Ollama isn't running"."""
+        return BrainResponse(
+            content=availability.reason,
             provider="local",
+            model=None,
             used_api=False,
+        )
+
+    def _provider_failed(self, exc, provider) -> BrainResponse:
+        """A real failure. The raw exception is logged server-side with a
+        correlation ID; the user gets the category's fixed safe message,
+        plus the provider's own credential-free detail when it wrote one
+        (e.g. which local models are actually installed)."""
+        safe_error: SafeError = to_safe_error(
+            exc.cause or exc,
+            category=exc.category,
+            context=f"{provider.name} generation",
+        )
+        message = safe_error.message
+        if getattr(exc, "detail", ""):
+            message = exc.detail
+        return BrainResponse(
+            content=message,
+            provider=provider.name,
+            model=provider.resolved_model(),
+            used_api=False,
+            error=safe_error,
         )
 
     def _register_utility_tools(self) -> None:

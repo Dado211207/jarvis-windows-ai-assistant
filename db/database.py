@@ -108,6 +108,17 @@ class Database:
             for r in rows
         ]
 
+    def clear_conversations(self) -> int:
+        """Delete every stored conversation turn. Returns rows deleted.
+
+        Scoped to this table alone — action_logs and action_lifecycle are
+        untouched, so clearing a chat never doubles as erasing the audit
+        trail (see app/core/conversation.py::reset)."""
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM conversations")
+        conn.commit()
+        return cur.rowcount
+
     # --- action logs ---
 
     def log_action(

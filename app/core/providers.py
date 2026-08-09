@@ -166,11 +166,21 @@ def is_valid_provider(name: str) -> bool:
     return name in KNOWN_PROVIDERS
 
 
+def normalise_provider(value) -> str:
+    """Map any configured value onto a known provider name. Pure and
+    total: an unrecognised value (including None or a non-string, which
+    a mocked settings object can produce) falls back to anthropic — the
+    historical default — rather than leaving the app in an unknown
+    state or raising on a config typo."""
+    try:
+        name = str(value or "").strip().lower()
+    except Exception:  # noqa: BLE001 — a __str__ that raises is still just "unrecognised"
+        return PROVIDER_ANTHROPIC
+    return name if is_valid_provider(name) else PROVIDER_ANTHROPIC
+
+
 def selected_provider() -> str:
-    """The configured provider, normalised. An unrecognised value falls
-    back to anthropic — the historical default — rather than leaving the
-    app in an unknown state."""
+    """The configured provider, normalised."""
     from app.config import settings
 
-    name = (settings.jarvis_ai_provider or "").strip().lower()
-    return name if is_valid_provider(name) else PROVIDER_ANTHROPIC
+    return normalise_provider(settings.jarvis_ai_provider)

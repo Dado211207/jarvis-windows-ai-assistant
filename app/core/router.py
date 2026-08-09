@@ -123,6 +123,27 @@ _PENDING_ACTION_META: Dict[str, Dict[str, str]] = {
 }
 
 
+def find_route(command: str) -> Optional[Tuple[Route, Dict]]:
+    """The first ROUTES entry matching *command*, with its extracted
+    kwargs, or None.
+
+    Exposed because the streaming chat endpoint must answer "will this go
+    to a tool or to the AI?" *before* it decides whether to open a stream
+    — and it has to get the same answer route() would, which means asking
+    route()'s own matcher rather than keeping a second copy of the loop.
+    Deterministic routes still take priority everywhere (CLAUDE.md's
+    Phase 2 rules); this only lets a caller see that decision early.
+    """
+    cmd = command.strip()
+    if not cmd:
+        return None
+    for route in ROUTES:
+        kwargs = route.match(cmd)
+        if kwargs is not None:
+            return route, kwargs
+    return None
+
+
 class CommandRouter:
     """Maps raw command strings to registered tools and executes them."""
 
@@ -137,11 +158,11 @@ class CommandRouter:
         if not cmd:
             return CommandResponse(success=False, message="Empty command.")
 
-        for route in ROUTES:
-            kwargs = route.match(cmd)
-            if kwargs is not None:
-                logger.debug("Matched route -> tool '%s', kwargs=%s", route.tool_name, kwargs)
-                return self._dispatch(route.tool_name, cmd, **kwargs)
+        match = find_route(cmd)
+        if match is not None:
+            route, kwargs = match
+            logger.debug("Matched route -> tool '%s', kwargs=%s", route.tool_name, kwargs)
+            return self._dispatch(route.tool_name, cmd, **kwargs)
 
         if self._brain is not None:
             return self._brain_response(cmd)
@@ -161,15 +182,12 @@ class CommandRouter:
         br = self._brain.generate_response(cmd)
         runtime.try_transition(RuntimeState.STANDBY, reason="AI response ready")
 
-        from app.core.privacy import privacy_mode
-        if not privacy_mode.active:
-            try:
-                from db.database import get_db
-                db = get_db()
-                db.add_conversation("user", cmd)
-                db.add_conversation("assistant", br.content)
-            except Exception:
-                pass
+        # Persistence (and its privacy-mode gate) lives in one place —
+        # app/core/conversation.py — because the streaming chat endpoint
+        # has to make the identical decision, and two copies of "should
+        # this be written?" eventually disagree.
+        from app.core.conversation import record_exchange
+        record_exchange(cmd, br.content)
 
         return CommandResponse(
             success=True,
