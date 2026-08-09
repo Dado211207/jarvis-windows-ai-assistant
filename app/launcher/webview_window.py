@@ -21,10 +21,15 @@ a real security downgrade for an app whose first-run screen collects an
 API key, so this module refuses to allow that trade silently: if
 edgechromium can't be initialised for any reason (WebView2 Runtime
 genuinely absent, pythonnet/.NET missing, or anything else),
-create_and_run() raises and the caller (app/launcher/gui.py) falls back
-to opening the dashboard in the user's default browser instead — the app
-keeps working, just without the native window chrome, matching this
-milestone's own explicit "open in browser" fallback requirement.
+create_and_run() raises.
+
+What the caller does with that used to be "silently open the user's
+default browser", which hid a fixable problem and made the browser look
+like the product's real interface. It now names the missing runtime and
+offers the fix — see app/launcher/runtime_check.py, which checks for it
+*before* a window is attempted, and app/launcher/gui.py's
+_report_window_failure(). A browser tab remains available, but only as
+the explicitly named "Open in Browser" tray entry.
 """
 
 import sys
@@ -168,9 +173,8 @@ def current_window():
 def show_existing() -> bool:
     """Brings the existing window to the front, un-hiding it if it was
     previously closed-to-tray. Returns False if no window exists yet (it
-    was never created, or the process is running in browser-fallback
-    mode) — the caller should fall back to another way of surfacing the
-    UI in that case, not assume this always succeeds."""
+    was never created, or it has already closed) — the caller must handle
+    that rather than assume this always succeeds."""
     with _window_lock:
         window = _window
     if window is None:
@@ -242,8 +246,8 @@ def destroy_existing() -> None:
     """Best-effort teardown of the native window from outside its own
     thread — used by the tray's Quit path so a tray-initiated quit also
     ends the window (and, via its own on_closed handler, the rest of
-    clean shutdown). Safe to call when no window exists (browser-fallback
-    mode, or the window was already closed)."""
+    clean shutdown). Safe to call when no window exists (never created,
+    or already closed)."""
     request_shutdown()
     with _window_lock:
         window = _window

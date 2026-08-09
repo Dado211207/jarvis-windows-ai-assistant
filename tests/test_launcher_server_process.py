@@ -357,3 +357,89 @@ def test_log_rotation_keeps_files_bounded(isolated_logs):
 
     assert not log_path.exists(), "the oversized file must have been rolled aside"
     assert log_path.with_suffix(".log.1").exists()
+
+
+# ---------------------------------------------------------------------------
+# Port release — a stopped process and a released socket are not the same
+# event
+# ---------------------------------------------------------------------------
+
+def test_a_free_port_is_reported_free():
+    from app.launcher.server_process import ServerProcess
+
+    server = ServerProcess(host="127.0.0.1", port=_free_port())
+
+    assert server.port_is_free() is True
+
+
+def test_a_port_with_a_live_listener_is_never_reported_free():
+    """The check that has to hold on Windows, where SO_REUSEADDR lets a
+    bind succeed while another process is still listening — a bind-only
+    probe would call this port free and send the replacement server
+    straight into a collision."""
+    from app.launcher.server_process import ServerProcess
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        server = ServerProcess(host="127.0.0.1", port=port)
+        assert server.port_is_free() is False
+    finally:
+        listener.close()
+
+
+def test_wait_until_port_released_returns_as_soon_as_the_listener_goes_away():
+    import threading as _threading
+
+    from app.launcher.server_process import ServerProcess
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    server = ServerProcess(host="127.0.0.1", port=port)
+
+    _threading.Timer(0.3, listener.close).start()
+
+    started = time.monotonic()
+    assert server.wait_until_port_released(timeout_seconds=10) is True
+    assert time.monotonic() - started < 5.0
+
+
+def test_wait_until_port_released_gives_up_and_says_so():
+    """A port held by something else must fail the wait rather than block
+    a restart forever — and the restart then reports "port_busy" instead
+    of blaming the runtime."""
+    from app.launcher.server_process import ServerProcess
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        server = ServerProcess(host="127.0.0.1", port=port)
+        started = time.monotonic()
+        assert server.wait_until_port_released(timeout_seconds=0.5) is False
+        assert 0.5 <= time.monotonic() - started < 5.0
+    finally:
+        listener.close()
+
+
+def test_stop_waits_for_the_kill_to_land_before_reporting_it():
+    """Returning "killed" while the process is still alive is how a
+    restart ends up racing a port that was never released."""
+    from app.launcher.server_process import ServerProcess
+
+    process = _FakeProcess(ignore_terminate=True)
+    server = ServerProcess(host="127.0.0.1", port=_free_port(), spawn=_SpawnRecorder(process))
+    server.start()
+
+    assert server.stop(timeout_seconds=0.3) == "killed"
+    assert process.terminate_calls == 1, "terminate must be tried before kill"
+    assert process.kill_calls == 1
+    assert process.poll() is not None, "stop() must not return before the child is really gone"

@@ -26,11 +26,11 @@ can never show a misleading connected state at startup.
 import os
 import sys
 import uuid
-import webbrowser
+from dataclasses import dataclass
 from typing import Optional
 
 from app.config import settings
-from app.launcher import boot_trace, instance_lock, server_process, window_process
+from app.launcher import attention, boot_trace, instance_lock, server_process, window_process
 from app.logging_config import get_logger, setup_logging
 
 logger = get_logger("launcher.gui")
@@ -71,6 +71,22 @@ def _fail(reason: str) -> None:
     logger.error("Launcher startup failed [%s]: %s", correlation_id, reason)
     _show_error_dialog("JARVIS couldn't start", _format_error_message(reason, correlation_id))
     sys.exit(1)
+
+
+@dataclass
+class RestartResult:
+    """The outcome of a restart, in enough detail to tell the user
+    something true.
+
+    `server_healthy` matters: a restart that brought the runtime back but
+    could not reopen the window is a degraded success, not the failure
+    the old single boolean reported it as.
+    """
+
+    ok: bool
+    stage: str = ""
+    window_reason: str = ""
+    server_healthy: bool = False
 
 
 class LauncherSupervisor:
@@ -114,41 +130,94 @@ class LauncherSupervisor:
         return self._server.wait_until_healthy(timeout_seconds=SERVER_HEALTH_TIMEOUT_SECONDS)
 
     def start_window(self) -> bool:
-        """Only ever called after the server has reported healthy."""
+        return self.start_window_detailed().ok
+
+    def start_window_detailed(self):
+        """Only ever called after the server has reported healthy.
+
+        Returns the typed result so callers can distinguish "the WebView2
+        runtime is missing" from "something else went wrong" and offer the
+        matching repair — a distinction the old boolean threw away.
+        """
         self._window = window_process.WindowProcess(
             url=dashboard_url(), close_action=settings.jarvis_close_action,
         )
-        return self._window.start()
+        result = self._window.start_detailed()
+        if not result.ok:
+            # Do not keep a handle to a window that never opened: a later
+            # stop() would otherwise spend its full timeout budget waiting
+            # on a process that is already gone.
+            self._window = None
+        return result
 
     def open_or_focus_window(self) -> bool:
         """Tray "Open JARVIS": focus the live window, or start a fresh one
         if it crashed. Never creates a second."""
-        if self._window is None:
-            return self.start_window()
-        return self._window.show_or_restart()
+        return self.open_or_focus_window_detailed().ok
+
+    def open_or_focus_window_detailed(self):
+        """The same thing, reporting *why* it could not open a window.
+
+        Every route a user takes to "open JARVIS" — the tray menu, the
+        Start-menu shortcut of an already-running instance, the installer's
+        finish action — ends here, and each of them needs to be able to
+        explain a missing WebView2 runtime rather than quietly substituting
+        a browser tab.
+
+        A dead or unresponsive child is replaced rather than reused: a
+        fresh WindowProcess picks up the current dashboard URL (which
+        changes the moment onboarding completes) and closes the previous
+        control channel instead of orphaning it.
+        """
+        if self._window is not None:
+            if self._window.is_running() and self._window.show():
+                return window_process.WindowStartResult(True, "")
+            logger.info("The existing window child is gone or unresponsive — replacing it.")
+            self._window.stop(timeout_seconds=WINDOW_STOP_TIMEOUT_SECONDS)
+            self._window = None
+        return self.start_window_detailed()
 
     # --- restart ---
 
-    def restart(self) -> bool:
-        """Window down, server down, fresh server, health, fresh window —
-        in that order, so no child is ever left pointing at a runtime that
-        is going away. The tray and the instance lock are untouched
-        throughout: this process stays the authoritative owner."""
+    def restart(self) -> "RestartResult":
+        """Window down, server down, port released, fresh server, health,
+        fresh window — in that order, so no child is ever left pointing at
+        a runtime that is going away, and the new server never races the
+        old one's socket. The tray and the instance lock are untouched
+        throughout: this process stays the authoritative owner.
+
+        Reports which stage failed. The previous version returned one
+        bare False for two very different outcomes — a dead runtime, and
+        a perfectly healthy runtime whose window did not open — and told
+        the user the same wrong thing ("the runtime did not come back up")
+        either way.
+        """
         logger.info("Restarting the JARVIS runtime.")
         if self._window is not None:
             self._window.stop(timeout_seconds=WINDOW_STOP_TIMEOUT_SECONDS)
             self._window = None
+
+        released = True
         if self._server is not None:
             self._server.stop(timeout_seconds=SERVER_STOP_TIMEOUT_SECONDS)
+            released = self._server.wait_until_port_released()
             self._server = None
+
+        if not released:
+            logger.error("Restart failed: the previous server did not release port %s.", settings.jarvis_port)
+            return RestartResult(False, "port_busy")
 
         if not self.start_server():
             logger.error("Restart failed: the new server child never became healthy.")
-            return False
-        if not self.start_window():
-            logger.error("Restart: server is healthy but the window child did not start.")
-            return False
-        return True
+            return RestartResult(False, "server_unhealthy")
+
+        window = self.start_window_detailed()
+        if not window.ok:
+            # The runtime *did* come back. Saying otherwise would send the
+            # user to quit and relaunch a working server.
+            logger.error("Restart: server is healthy but the window did not open (%s).", window.reason)
+            return RestartResult(False, "window_failed", window_reason=window.reason, server_healthy=True)
+        return RestartResult(True, "")
 
     # --- shutdown ---
 
@@ -189,12 +258,15 @@ def launch() -> LauncherSupervisor:
         f"port_conflict={check.port_in_use_by_other}"
     )
     if check.another_instance_running:
-        # A second launch must not create anything. Opening the running
-        # instance's dashboard is the closest this process can get to
-        # "focus the existing window" without an IPC channel into a
-        # parent it does not own.
-        logger.info("JARVIS is already running (pid=%s) — opening its dashboard.", check.pid)
-        webbrowser.open(dashboard_url())
+        # A second launch must not create anything — and must not open a
+        # browser either. Clicking the Start-menu shortcut while JARVIS is
+        # already running is one of the ordinary ways a user "opens" the
+        # app, and answering it with a browser tab is exactly the defect
+        # that made the browser look like the product's real interface.
+        # attention.request() leaves a signal the running instance's tray
+        # loop picks up and turns into a real window focus.
+        logger.info("JARVIS is already running (pid=%s) — asking it to show its window.", check.pid)
+        attention.request()
         sys.exit(0)
 
     if check.port_in_use_by_other:
@@ -204,6 +276,9 @@ def launch() -> LauncherSupervisor:
         )
 
     instance_lock.acquire_lock()
+    # A marker left by a crashed run must not make this one's window pop
+    # up on its own a moment after startup.
+    attention.clear()
     boot_trace.trace("lock acquired, starting server child")
 
     supervisor = LauncherSupervisor()
@@ -213,16 +288,38 @@ def launch() -> LauncherSupervisor:
         _fail("JARVIS's local server did not start correctly.")
 
     boot_trace.trace("server healthy, starting window child")
-    if not supervisor.start_window():
-        # A missing window is degraded, not fatal: the server is healthy
-        # and the tray still works, so fall back to the browser rather
-        # than refusing to run.
-        logger.warning("Window child unavailable — falling back to the browser.")
-        boot_trace.trace("window child failed; browser fallback")
-        webbrowser.open(dashboard_url())
+    window = supervisor.start_window_detailed()
+    if not window.ok:
+        # Deliberately NOT a silent browser fallback. Opening a browser
+        # here hid a fixable problem and quietly made the browser the
+        # product's interface — the owner rejected both. The user is told
+        # what is missing, offered the fix, and left with a working tray
+        # (including an explicit "Open in browser" if they want it now).
+        logger.warning("Window child unavailable (%s) — telling the user.", window.reason)
+        boot_trace.trace(f"window child failed: {window.reason}")
+        _report_window_failure(window.reason)
 
     boot_trace.trace("launch() complete")
     return supervisor
+
+
+def _report_window_failure(reason: str) -> None:
+    """One native dialog naming the missing runtime and offering the
+    download page. Never a raw traceback, never a silent fallback."""
+    from app.launcher import runtime_check
+
+    correlation_id = str(uuid.uuid4())
+    logger.error("Native window unavailable [%s]: %s", correlation_id, reason)
+
+    explanation = runtime_check.describe(reason)
+    fix_url = runtime_check.fix_url_for(reason)
+    if fix_url:
+        explanation += f"\n\nDownload it from:\n{fix_url}"
+    explanation += (
+        "\n\nJARVIS is running and its tray icon is available — use "
+        "\"Open in browser\" there if you need it right now."
+    )
+    _show_error_dialog("JARVIS couldn't open its window", _format_error_message(explanation, correlation_id))
 
 
 def run_windowed() -> None:

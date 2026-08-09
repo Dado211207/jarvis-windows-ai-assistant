@@ -65,6 +65,14 @@ def test_error_event_coerces_a_non_string_detail():
     assert ipc.validate_event({"event": "error", "detail": 99})["detail"] == ""
 
 
+@pytest.mark.parametrize("detail", sorted(ipc.VALID_ERROR_DETAILS))
+def test_every_named_failure_cause_survives_the_wire(detail):
+    """A missing WebView2 runtime and "something else broke" need
+    different repairs, so the cause has to reach the parent intact rather
+    than being flattened into one generic failure."""
+    assert ipc.validate_event({"event": "error", "detail": detail})["detail"] == detail
+
+
 # ---------------------------------------------------------------------------
 # Address parsing — loopback only
 # ---------------------------------------------------------------------------
@@ -187,6 +195,136 @@ def test_a_client_with_the_wrong_secret_is_rejected(listener):
 
     assert failure.get("connected") is not True, "a wrong authkey must never establish a session"
     assert accepted is False
+
+
+def test_accept_gives_up_instead_of_blocking_forever(listener):
+    """The defect this exists for: accept() had no timeout at all, so a
+    window child that died before connecting parked the parent's *main
+    thread* permanently — no window, no tray, no error dialog, and no way
+    to quit short of Task Manager. Nothing ever connects here, so a
+    regression would hang this test rather than fail it; the elapsed-time
+    assertion is what turns that into a real failure."""
+    import time
+
+    listener_obj, _ = listener
+
+    started = time.monotonic()
+    accepted = listener_obj.accept(timeout_seconds=0.5)
+    elapsed = time.monotonic() - started
+
+    assert accepted is False
+    assert 0.5 <= elapsed < 5.0, "accept() must return on its own deadline"
+
+
+def test_a_timed_out_accept_releases_its_waiting_thread(listener):
+    """Closing the listener is what actually unblocks the thread parked
+    in accept(); without it, one abandoned thread would survive per
+    attempt for the life of the process."""
+    import threading as _threading
+    import time
+
+    listener_obj, _ = listener
+
+    before = {t.name for t in _threading.enumerate()}
+    assert listener_obj.accept(timeout_seconds=0.3) is False
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        leaked = {t.name for t in _threading.enumerate()} - before
+        if not any(name.startswith("jarvis-ipc-accept") for name in leaked):
+            return
+        time.sleep(0.05)
+    pytest.fail("the accept() worker thread was never released")
+
+
+def test_wait_for_event_returns_the_awaited_event(listener):
+    listener_obj, secret = listener
+    client_box = {}
+
+    def _child():
+        client_box["client"] = ipc.ControlClient(listener_obj.address, secret)
+
+    thread = threading.Thread(target=_child, daemon=True)
+    thread.start()
+    assert listener_obj.accept() is True
+    thread.join(timeout=5)
+    client = client_box["client"]
+
+    try:
+        client.send_event(ipc.EVENT_READY)
+        assert listener_obj.wait_for_event(ipc.EVENT_READY, timeout_seconds=5) == {"event": "ready"}
+    finally:
+        client.close()
+
+
+def test_wait_for_event_returns_an_error_instead_of_waiting_out_the_timeout(listener):
+    """A child that reports it cannot build a window has said everything
+    it is going to say. Waiting the full ready timeout after that would
+    delay the user's error dialog by half a minute for no reason."""
+    listener_obj, secret = listener
+    client_box = {}
+
+    def _child():
+        client_box["client"] = ipc.ControlClient(listener_obj.address, secret)
+
+    thread = threading.Thread(target=_child, daemon=True)
+    thread.start()
+    assert listener_obj.accept() is True
+    thread.join(timeout=5)
+    client = client_box["client"]
+
+    try:
+        client.send_event(ipc.EVENT_ERROR, detail=ipc.ERROR_WEBVIEW2_MISSING)
+        event = listener_obj.wait_for_event(ipc.EVENT_READY, timeout_seconds=30)
+        assert event == {"event": "error", "detail": ipc.ERROR_WEBVIEW2_MISSING}
+    finally:
+        client.close()
+
+
+def test_wait_for_event_skips_traffic_that_arrives_first(listener):
+    listener_obj, secret = listener
+    client_box = {}
+
+    def _child():
+        client_box["client"] = ipc.ControlClient(listener_obj.address, secret)
+
+    thread = threading.Thread(target=_child, daemon=True)
+    thread.start()
+    assert listener_obj.accept() is True
+    thread.join(timeout=5)
+    client = client_box["client"]
+
+    try:
+        client.send_event(ipc.EVENT_CLOSED, reason=ipc.REASON_USER_CLOSED)
+        client.send_event(ipc.EVENT_READY)
+        assert listener_obj.wait_for_event(ipc.EVENT_READY, timeout_seconds=5) == {"event": "ready"}
+    finally:
+        client.close()
+
+
+def test_wait_for_event_times_out_when_the_child_goes_quiet(listener):
+    """A child that connected and then hung must not hold the parent
+    forever — that is the same defect as the untimed accept(), one step
+    later in the handshake."""
+    import time
+
+    listener_obj, secret = listener
+    client_box = {}
+
+    def _child():
+        client_box["client"] = ipc.ControlClient(listener_obj.address, secret)
+
+    thread = threading.Thread(target=_child, daemon=True)
+    thread.start()
+    assert listener_obj.accept() is True
+    thread.join(timeout=5)
+
+    try:
+        started = time.monotonic()
+        assert listener_obj.wait_for_event(ipc.EVENT_READY, timeout_seconds=0.5) is None
+        assert 0.5 <= time.monotonic() - started < 5.0
+    finally:
+        client_box["client"].close()
 
 
 def test_listener_refuses_to_send_an_unknown_command(listener):

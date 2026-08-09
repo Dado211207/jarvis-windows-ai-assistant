@@ -13,10 +13,11 @@ import pytest
 
 
 class _FakeServer:
-    def __init__(self, healthy=True, running=True):
+    def __init__(self, healthy=True, running=True, port_released=True):
         self.session_secret = "secret-" + str(id(self))
         self._healthy = healthy
         self._running = running
+        self._port_released = port_released
         self.started = False
         self.stopped = False
         self.stop_calls = 0
@@ -30,6 +31,9 @@ class _FakeServer:
     def is_running(self):
         return self._running
 
+    def wait_until_port_released(self, timeout_seconds=None):
+        return self._port_released
+
     def stop(self, timeout_seconds=None):
         self.stopped = True
         self.stop_calls += 1
@@ -38,8 +42,10 @@ class _FakeServer:
 
 
 class _FakeWindow:
-    def __init__(self, starts=True):
+    def __init__(self, starts=True, running=True, shows=True):
         self._starts = starts
+        self._running = running
+        self._shows = shows
         self.started = False
         self.stopped = False
         self.shown = False
@@ -48,12 +54,25 @@ class _FakeWindow:
         self.started = True
         return self._starts
 
+    def start_detailed(self, base_env=None):
+        from app.launcher.window_process import WindowStartResult
+        self.started = True
+        return WindowStartResult(self._starts, "" if self._starts else "window_failed")
+
+    def is_running(self):
+        return self._running
+
+    def show(self):
+        self.shown = self._shows
+        return self._shows
+
     def show_or_restart(self, base_env=None):
         self.shown = True
         return True
 
     def stop(self, timeout_seconds=None):
         self.stopped = True
+        self._running = False
         return "graceful"
 
 
@@ -63,7 +82,9 @@ def supervisor_factory(monkeypatch):
     the fakes above, recording the order they were called in."""
     from app.launcher import gui
 
-    def _make(server_healthy=True, window_starts=True):
+    def _make(server_healthy=True, window_starts=True, window_reason="window_failed"):
+        from app.launcher.window_process import WindowStartResult
+
         order = []
         created = {}
         sup = gui.LauncherSupervisor()
@@ -75,15 +96,16 @@ def supervisor_factory(monkeypatch):
             created["server"].start()
             return server_healthy
 
-        def _start_window():
+        def _start_window_detailed():
             order.append("window")
             created["window"] = _FakeWindow(starts=window_starts)
-            sup._window = created["window"]
+            sup._window = created["window"] if window_starts else None
             created["window"].start()
-            return window_starts
+            return WindowStartResult(window_starts, "" if window_starts else window_reason)
 
         monkeypatch.setattr(sup, "start_server", _start_server)
-        monkeypatch.setattr(sup, "start_window", _start_window)
+        monkeypatch.setattr(sup, "start_window_detailed", _start_window_detailed)
+        monkeypatch.setattr(sup, "start_window", lambda: _start_window_detailed().ok)
         return sup, order, created
 
     return _make
@@ -150,8 +172,8 @@ def test_failed_startup_releases_the_lock(monkeypatch, supervisor_factory):
 
 
 def test_window_failure_is_degraded_not_fatal(monkeypatch, supervisor_factory):
-    """A healthy server with no window must fall back to the browser
-    rather than refusing to run."""
+    """A healthy server with no window must keep running (the tray is
+    still a usable control surface) rather than refusing to start."""
     from app.launcher import gui
 
     sup, order, _ = supervisor_factory(window_starts=False)
@@ -159,21 +181,70 @@ def test_window_failure_is_degraded_not_fatal(monkeypatch, supervisor_factory):
                         lambda host, port: gui.instance_lock.InstanceCheckResult(False, False))
     monkeypatch.setattr(gui.instance_lock, "acquire_lock", MagicMock())
     monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
-    opened = MagicMock()
-    monkeypatch.setattr(gui.webbrowser, "open", opened)
+    monkeypatch.setattr(gui, "_show_error_dialog", MagicMock())
 
     result = gui.launch()  # must not raise SystemExit
 
     assert result is sup
-    opened.assert_called_once()
+
+
+def test_window_failure_never_silently_opens_a_browser(monkeypatch, supervisor_factory):
+    """The reported defect: a window that could not be created was
+    answered by quietly opening a browser tab, which is how the browser
+    came to look like the product's real interface. The user must be told
+    what is missing instead."""
+    import webbrowser
+
+    from app.launcher import gui
+
+    sup, _, _ = supervisor_factory(window_starts=False)
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(False, False))
+    monkeypatch.setattr(gui.instance_lock, "acquire_lock", MagicMock())
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
+    opened = MagicMock()
+    monkeypatch.setattr(webbrowser, "open", opened)
+    dialog = MagicMock()
+    monkeypatch.setattr(gui, "_show_error_dialog", dialog)
+
+    gui.launch()
+
+    opened.assert_not_called()
+    dialog.assert_called_once()
+
+
+def test_a_missing_webview2_runtime_is_named_with_its_download_link(monkeypatch, supervisor_factory):
+    """"Something went wrong" and "install the WebView2 runtime, here is
+    the link" are different problems with different fixes."""
+    from app.launcher import gui, ipc, runtime_check
+
+    sup, _, _ = supervisor_factory(window_starts=False, window_reason=ipc.ERROR_WEBVIEW2_MISSING)
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(False, False))
+    monkeypatch.setattr(gui.instance_lock, "acquire_lock", MagicMock())
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
+    dialog = MagicMock()
+    monkeypatch.setattr(gui, "_show_error_dialog", dialog)
+
+    gui.launch()
+
+    message = dialog.call_args.args[1]
+    assert "WebView2" in message
+    assert runtime_check.WEBVIEW2_DOWNLOAD_URL in message
 
 
 # ---------------------------------------------------------------------------
 # Single instance
 # ---------------------------------------------------------------------------
 
-def test_second_launch_creates_nothing_and_opens_the_running_instance(monkeypatch, supervisor_factory):
-    from app.launcher import gui
+def test_second_launch_creates_nothing_and_asks_the_running_one_to_show_itself(monkeypatch, supervisor_factory):
+    """Clicking the Start-menu shortcut while JARVIS is already running is
+    an ordinary way people open an app they think is closed. It must
+    surface the native window — not open a browser tab, which is what it
+    used to do."""
+    import webbrowser
+
+    from app.launcher import attention, gui
 
     sup, order, _ = supervisor_factory()
     monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
@@ -182,7 +253,9 @@ def test_second_launch_creates_nothing_and_opens_the_running_instance(monkeypatc
     monkeypatch.setattr(gui.instance_lock, "acquire_lock", acquire)
     monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
     opened = MagicMock()
-    monkeypatch.setattr(gui.webbrowser, "open", opened)
+    monkeypatch.setattr(webbrowser, "open", opened)
+    requested = MagicMock(return_value=True)
+    monkeypatch.setattr(attention, "request", requested)
 
     with pytest.raises(SystemExit) as exc:
         gui.launch()
@@ -190,7 +263,26 @@ def test_second_launch_creates_nothing_and_opens_the_running_instance(monkeypatc
     assert exc.value.code == 0
     assert order == [], "a second launch must not create a server or window"
     acquire.assert_not_called(), "a second launch must not take the lock"
-    opened.assert_called_once()
+    requested.assert_called_once()
+    opened.assert_not_called()
+
+
+def test_startup_clears_a_stale_attention_marker(monkeypatch, supervisor_factory):
+    """A marker left behind by a crashed run must not make this run's
+    window pop up unbidden a moment after startup."""
+    from app.launcher import attention, gui
+
+    sup, _, _ = supervisor_factory()
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(False, False))
+    monkeypatch.setattr(gui.instance_lock, "acquire_lock", MagicMock())
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
+    cleared = MagicMock()
+    monkeypatch.setattr(attention, "clear", cleared)
+
+    gui.launch()
+
+    cleared.assert_called_once()
 
 
 def test_port_held_by_an_unrelated_process_fails_with_a_dialog(monkeypatch, supervisor_factory):
@@ -215,9 +307,27 @@ def test_port_held_by_an_unrelated_process_fails_with_a_dialog(monkeypatch, supe
 # Restart
 # ---------------------------------------------------------------------------
 
+def _instrument_restart(sup, old_server, old_window, events):
+    from app.launcher.window_process import WindowStartResult
+
+    sup.start_server = lambda: (events.append("start_server"), True)[1]
+    sup.start_window_detailed = lambda: (
+        events.append("start_window"), WindowStartResult(True, ""),
+    )[1]
+    original_server_stop = old_server.stop
+    original_window_stop = old_window.stop
+    original_release = old_server.wait_until_port_released
+    old_server.stop = lambda timeout_seconds=None: (events.append("stop_server"), original_server_stop(timeout_seconds))[1]
+    old_server.wait_until_port_released = lambda timeout_seconds=None: (
+        events.append("await_port_release"), original_release(timeout_seconds),
+    )[1]
+    old_window.stop = lambda timeout_seconds=None: (events.append("stop_window"), original_window_stop(timeout_seconds))[1]
+
+
 def test_restart_stops_window_then_server_then_starts_fresh_ones(supervisor_factory):
     """Ordering matters: no child may be left pointing at a runtime that
-    is going away."""
+    is going away, and the new server must never race the old one's
+    socket."""
     from app.launcher import gui
 
     sup = gui.LauncherSupervisor()
@@ -225,15 +335,75 @@ def test_restart_stops_window_then_server_then_starts_fresh_ones(supervisor_fact
     sup._server, sup._window = old_server, old_window
 
     events = []
-    sup.start_server = lambda: (events.append("start_server"), True)[1]
-    sup.start_window = lambda: (events.append("start_window"), True)[1]
-    original_server_stop = old_server.stop
-    original_window_stop = old_window.stop
-    old_server.stop = lambda timeout_seconds=None: (events.append("stop_server"), original_server_stop(timeout_seconds))[1]
-    old_window.stop = lambda timeout_seconds=None: (events.append("stop_window"), original_window_stop(timeout_seconds))[1]
+    _instrument_restart(sup, old_server, old_window, events)
 
-    assert sup.restart() is True
-    assert events == ["stop_window", "stop_server", "start_server", "start_window"]
+    assert sup.restart().ok is True
+    assert events == [
+        "stop_window", "stop_server", "await_port_release", "start_server", "start_window",
+    ]
+
+
+def test_restart_waits_for_the_port_before_starting_a_new_server():
+    """A stopped process and a released socket are different events. The
+    old code assumed the first implied the second and started the
+    replacement server straight into a port that was still held."""
+    from app.launcher import gui
+
+    sup = gui.LauncherSupervisor()
+    sup._server = _FakeServer(port_released=False)
+    sup._window = _FakeWindow()
+    sup.start_server = lambda: pytest.fail("must not start a server before the port is free")
+    sup.start_window_detailed = lambda: pytest.fail("must not start a window either")
+
+    result = sup.restart()
+
+    assert result.ok is False
+    assert result.stage == "port_busy"
+    assert result.server_healthy is False
+
+
+def test_restart_that_only_loses_the_window_is_not_reported_as_a_dead_runtime():
+    """The exact defect from the hardware test: the user was told "the
+    JARVIS runtime did not come back up" and to quit and relaunch — while
+    the runtime was healthy and only the window had failed."""
+    from app.launcher import gui, ipc
+    from app.launcher.window_process import WindowStartResult
+
+    sup = gui.LauncherSupervisor()
+    sup._server, sup._window = _FakeServer(), _FakeWindow()
+    sup.start_server = lambda: True
+    sup.start_window_detailed = lambda: WindowStartResult(False, ipc.ERROR_WEBVIEW2_MISSING)
+
+    result = sup.restart()
+
+    assert result.ok is False
+    assert result.stage == "window_failed"
+    assert result.server_healthy is True, "the runtime came back; saying otherwise sends the user to fix nothing"
+    assert result.window_reason == ipc.ERROR_WEBVIEW2_MISSING
+
+
+def test_a_failed_restart_leaves_no_stale_window_handle():
+    """A handle to a window that never opened would make the next stop()
+    spend its whole timeout budget waiting on a process that is already
+    gone."""
+    from app.launcher import gui
+    from app.launcher.window_process import WindowStartResult
+
+    sup = gui.LauncherSupervisor()
+    sup._server, sup._window = _FakeServer(), _FakeWindow()
+    sup.start_server = lambda: True
+    sup.start_window_detailed = gui.LauncherSupervisor.start_window_detailed.__get__(sup)
+    sup._window_process_factory = None
+
+    import app.launcher.window_process as wp
+    original = wp.WindowProcess.start_detailed
+    try:
+        wp.WindowProcess.start_detailed = lambda self, base_env=None: WindowStartResult(False, "window_failed")
+        assert sup.restart().ok is False
+    finally:
+        wp.WindowProcess.start_detailed = original
+
+    assert sup.window is None
 
 
 def test_restart_creates_a_fresh_server_with_a_new_session_secret(monkeypatch):
@@ -257,9 +427,13 @@ def test_restart_reports_failure_when_the_new_server_is_unhealthy():
     sup = gui.LauncherSupervisor()
     sup._server, sup._window = _FakeServer(), _FakeWindow()
     sup.start_server = lambda: False
-    sup.start_window = lambda: pytest.fail("must not start a window after a failed server start")
+    sup.start_window_detailed = lambda: pytest.fail("must not start a window after a failed server start")
 
-    assert sup.restart() is False
+    result = sup.restart()
+
+    assert result.ok is False
+    assert result.stage == "server_unhealthy"
+    assert result.server_healthy is False
 
 
 # ---------------------------------------------------------------------------
@@ -344,16 +518,78 @@ def test_open_or_focus_shows_an_existing_window():
 
     assert sup.open_or_focus_window() is True
     assert window.shown is True
+    assert window.started is False, "a live window must be focused, not relaunched"
 
 
 def test_open_or_focus_starts_a_window_when_there_is_none(monkeypatch):
     from app.launcher import gui
+    from app.launcher.window_process import WindowStartResult
+
     sup = gui.LauncherSupervisor()
     started = {}
-    monkeypatch.setattr(sup, "start_window", lambda: started.setdefault("yes", True))
+    monkeypatch.setattr(
+        sup, "start_window_detailed",
+        lambda: (started.setdefault("yes", True), WindowStartResult(True, ""))[1],
+    )
 
     assert sup.open_or_focus_window() is True
     assert started == {"yes": True}
+
+
+def test_open_or_focus_replaces_a_window_child_that_died(monkeypatch):
+    """The tray's "Open JARVIS" must not be permanently broken by a
+    crashed window: the server and tray are still alive, so a fresh
+    window is the correct recovery."""
+    from app.launcher import gui
+    from app.launcher.window_process import WindowStartResult
+
+    sup = gui.LauncherSupervisor()
+    dead = _FakeWindow(running=False)
+    sup._window = dead
+    monkeypatch.setattr(sup, "start_window_detailed", lambda: WindowStartResult(True, ""))
+
+    assert sup.open_or_focus_window() is True
+    assert dead.stopped is True, "the dead child's control channel must be closed, not orphaned"
+
+
+def test_open_or_focus_replaces_a_window_child_that_stopped_answering(monkeypatch):
+    """A window process that is alive but no longer answering its control
+    channel is as useless to the user as a dead one, and reporting
+    success would leave "Open JARVIS" silently doing nothing."""
+    from app.launcher import gui
+    from app.launcher.window_process import WindowStartResult
+
+    sup = gui.LauncherSupervisor()
+    mute = _FakeWindow(running=True, shows=False)
+    sup._window = mute
+    replaced = {}
+    monkeypatch.setattr(
+        sup, "start_window_detailed",
+        lambda: (replaced.setdefault("yes", True), WindowStartResult(True, ""))[1],
+    )
+
+    assert sup.open_or_focus_window() is True
+    assert mute.stopped is True
+    assert replaced == {"yes": True}
+
+
+def test_open_or_focus_reports_why_no_window_could_be_opened(monkeypatch):
+    """Every route a user takes to "open JARVIS" ends here, and each of
+    them needs to be able to name a missing runtime rather than quietly
+    substituting a browser tab."""
+    from app.launcher import gui, ipc
+    from app.launcher.window_process import WindowStartResult
+
+    sup = gui.LauncherSupervisor()
+    monkeypatch.setattr(
+        sup, "start_window_detailed",
+        lambda: WindowStartResult(False, ipc.ERROR_WEBVIEW2_MISSING),
+    )
+
+    result = sup.open_or_focus_window_detailed()
+
+    assert result.ok is False
+    assert result.reason == ipc.ERROR_WEBVIEW2_MISSING
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,12 @@ from app.logging_config import get_logger, setup_logging
 logger = get_logger("launcher.window_main")
 
 COMMAND_POLL_INTERVAL_SECONDS = 0.2
+# How long the child waits for its own window object to appear before
+# declaring the window failed. Ten seconds of 0.1s polls: long enough for
+# a cold WebView2 start on a slow disk, short enough that a machine which
+# will never produce a window says so instead of hanging.
+WINDOW_READY_POLL_ATTEMPTS = 100
+WINDOW_READY_POLL_INTERVAL_SECONDS = 0.1
 NOT_A_USER_FACING_MODE_MESSAGE = (
     "This is an internal JARVIS component and is not meant to be started directly.\n"
     "Start JARVIS normally instead."
@@ -118,22 +124,37 @@ def main(argv=None, context=None, webview_module=None) -> int:
         client.send_event(ipc.EVENT_CLOSED, reason=close_reason["reason"])
         stop_event.set()
 
+    # Checked before anything is attempted, so a missing runtime produces
+    # a named cause the parent can offer a fix for, rather than an
+    # exception from deep inside pywebview that nobody can act on.
+    from app.launcher import runtime_check
+
+    missing = runtime_check.window_runtime_error()
+    if missing is not None:
+        logger.error("Window child cannot start: %s", missing)
+        client.send_event(ipc.EVENT_ERROR, detail=missing)
+        client.close()
+        return 4
+
     pump: Optional[threading.Thread] = None
     try:
-        client.send_event(ipc.EVENT_READY)
-        # The pump thread needs the window object, which only exists once
-        # create_and_run() has built it — webview_window exposes it via
-        # its module-level accessor, so the pump waits for it rather than
-        # racing construction.
+        # READY is sent from the pump thread, once a window object really
+        # exists — NOT here. Announcing readiness before calling
+        # create_and_run() is what let a machine with no working WebView2
+        # report a healthy start and then show the user nothing: the
+        # parent had proof the process connected and mistook it for proof
+        # the window worked.
         def _start_pump_when_ready() -> None:
-            for _ in range(100):
+            for _ in range(WINDOW_READY_POLL_ATTEMPTS):
                 window = webview_window.current_window()
                 if window is not None:
+                    client.send_event(ipc.EVENT_READY)
                     _command_pump(client, window, context["close_action"], stop_event)
                     return
-                if stop_event.wait(0.1):
+                if stop_event.wait(WINDOW_READY_POLL_INTERVAL_SECONDS):
                     return
             logger.warning("Window never became available for the command pump.")
+            client.send_event(ipc.EVENT_ERROR, detail=ipc.ERROR_WINDOW_FAILED)
 
         pump = threading.Thread(target=_start_pump_when_ready, daemon=True, name="jarvis-window-ipc")
         pump.start()
@@ -148,7 +169,7 @@ def main(argv=None, context=None, webview_module=None) -> int:
         return 0
     except Exception:
         logger.error("Window child failed to start its native window.", exc_info=True)
-        client.send_event(ipc.EVENT_ERROR, detail="native window unavailable")
+        client.send_event(ipc.EVENT_ERROR, detail=ipc.ERROR_WINDOW_FAILED)
         return 4
     finally:
         stop_event.set()

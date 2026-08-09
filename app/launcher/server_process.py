@@ -51,6 +51,8 @@ logger = get_logger("launcher.server_process")
 HEALTH_POLL_INTERVAL_SECONDS = 0.2
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 30.0
 DEFAULT_STOP_TIMEOUT_SECONDS = 8.0
+DEFAULT_PORT_RELEASE_TIMEOUT_SECONDS = 10.0
+PORT_RELEASE_POLL_INTERVAL_SECONDS = 0.1
 SESSION_SECRET_ENV = "JARVIS_SESSION_SECRET"
 CHILD_LOG_MAX_BYTES = 2 * 1024 * 1024
 CHILD_LOG_BACKUP_COUNT = 3
@@ -299,4 +301,78 @@ class ServerProcess:
             self._process.kill()
         except Exception:
             logger.warning("kill() failed on the server child.", exc_info=True)
+
+        # Wait for the kill to take effect rather than assuming it did.
+        # Returning while the process still holds the listening socket is
+        # how a restart ends up trying to bind a port that is not free
+        # yet, which then looks like "the new server never came up".
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if self._process.poll() is not None:
+                return "killed"
+            time.sleep(0.1)
+        logger.error("Server child (pid=%s) survived kill().", self.pid)
         return "killed"
+
+    def port_is_free(self) -> bool:
+        """Whether the next server could actually take this port.
+
+        Two checks, because neither alone is honest on both platforms:
+
+        * **Nothing answers a connection.** A live listener is a live
+          listener whatever bind() would say — and on Windows SO_REUSEADDR
+          lets a bind succeed *while another process is still listening*,
+          so a bind-only check would report a port free that plainly is
+          not.
+        * **A bind succeeds**, with the same SO_REUSEADDR uvicorn itself
+          sets. On Linux a socket still in TIME_WAIT refuses a plain bind,
+          so a stricter probe than the real server would report a port
+          busy that uvicorn would have taken happily.
+
+        Together they answer the question the next server actually asks.
+        """
+        import socket
+
+        connector = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connector.settimeout(0.25)
+        try:
+            if connector.connect_ex((self.host, self.port)) == 0:
+                return False
+        except OSError:
+            pass  # unresolvable/unreachable is not "someone is listening"
+        finally:
+            connector.close()
+
+        binder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        binder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            binder.bind((self.host, self.port))
+            return True
+        except OSError:
+            return False
+        finally:
+            binder.close()
+
+    def wait_until_port_released(self, timeout_seconds: float = DEFAULT_PORT_RELEASE_TIMEOUT_SECONDS) -> bool:
+        """Waits until this server's port is genuinely available again.
+
+        A restart rebinds the port the previous child just released, and
+        process exit and socket teardown are not the same instant. Before
+        this existed, restart() started the replacement server straight
+        after stop() returned; when the socket had not finished tearing
+        down, the new server died on bind and the user was told the
+        runtime "did not come back up" — with no mention of the port,
+        which was the entire problem.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            if self.port_is_free():
+                return True
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(PORT_RELEASE_POLL_INTERVAL_SECONDS)
+        logger.error(
+            "Port %s was still in use %.0fs after stopping the server child.",
+            self.port, timeout_seconds,
+        )
+        return False

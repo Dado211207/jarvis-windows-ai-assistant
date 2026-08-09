@@ -164,3 +164,146 @@ def test_poll_loop_survives_icon_update_menu_raising():
     stop_event.wait.side_effect = [False, True]
 
     _poll_loop(client, state, icon, stop_event)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _attention_loop — a second launch must surface the native window
+# ---------------------------------------------------------------------------
+
+def _one_tick_stop_event():
+    """A stop_event whose .wait() returns True (meaning "stop requested")
+    on the second call, so a loop body runs exactly once."""
+    stop_event = MagicMock(spec=threading.Event)
+    stop_event.wait.side_effect = [False, True]
+    return stop_event
+
+
+def test_attention_loop_shows_the_window_when_a_launch_asks(monkeypatch):
+    from app.launcher import attention, tray
+
+    monkeypatch.setattr(attention, "consume", MagicMock(side_effect=[True]))
+    on_attention = MagicMock()
+
+    tray._attention_loop(on_attention, _one_tick_stop_event())
+
+    on_attention.assert_called_once()
+
+
+def test_attention_loop_does_nothing_without_a_request(monkeypatch):
+    from app.launcher import attention, tray
+
+    monkeypatch.setattr(attention, "consume", MagicMock(return_value=False))
+    on_attention = MagicMock()
+
+    tray._attention_loop(on_attention, _one_tick_stop_event())
+
+    on_attention.assert_not_called()
+
+
+def test_attention_loop_survives_a_handler_that_raises(monkeypatch):
+    """A marker that cannot be turned into a window must not take the
+    thread down with it — the next click would then be ignored forever."""
+    from app.launcher import attention, tray
+
+    monkeypatch.setattr(attention, "consume", MagicMock(return_value=True))
+
+    tray._attention_loop(MagicMock(side_effect=RuntimeError("no window")), _one_tick_stop_event())
+
+
+def test_attention_is_checked_far_more_often_than_health(monkeypatch):
+    """Someone who just double-clicked the shortcut is watching for a
+    window right now; a five-second wait reads as "nothing happened"."""
+    from app.launcher import tray
+
+    assert tray.ATTENTION_POLL_INTERVAL_SECONDS <= 1.0
+    assert tray.ATTENTION_POLL_INTERVAL_SECONDS < tray.POLL_INTERVAL_SECONDS
+
+
+def test_attention_loop_waits_on_its_own_interval(monkeypatch):
+    from app.launcher import attention, tray
+
+    monkeypatch.setattr(attention, "consume", MagicMock(return_value=False))
+    stop_event = _one_tick_stop_event()
+
+    tray._attention_loop(MagicMock(), stop_event)
+
+    assert stop_event.wait.call_args_list[0].args == (tray.ATTENTION_POLL_INTERVAL_SECONDS,)
+
+
+# ---------------------------------------------------------------------------
+# Restart failure reporting — the message must match what actually failed
+# ---------------------------------------------------------------------------
+
+def test_each_restart_stage_gets_its_own_message(monkeypatch):
+    """The reported defect: every restart failure produced the same
+    sentence regardless of cause, which made the one real report of it
+    impossible to act on."""
+    from app.launcher import gui, tray
+
+    seen = {}
+    monkeypatch.setattr(gui, "_show_error_dialog", lambda title, message: seen.setdefault(title, []).append(message))
+
+    for stage in ("port_busy", "server_unhealthy", ""):
+        tray._show_restart_failure(stage)
+
+    messages = seen["JARVIS couldn't restart"]
+    assert len(set(messages)) == 3, "distinct causes must not collapse into one message"
+    assert "port" in messages[0].lower()
+
+
+def test_a_port_conflict_is_not_reported_as_a_dead_runtime(monkeypatch):
+    from app.launcher import gui, tray
+
+    captured = {}
+    monkeypatch.setattr(gui, "_show_error_dialog", lambda title, message: captured.update(message=message))
+
+    tray._show_restart_failure("port_busy")
+
+    assert "did not come back up" not in captured["message"]
+
+
+def test_a_window_only_failure_says_the_runtime_is_fine(monkeypatch):
+    """The exact wording from the hardware test — "the JARVIS runtime did
+    not come back up ... use Quit and start JARVIS again" — sent the user
+    to fix a runtime that was healthy."""
+    from app.launcher import gui, ipc, runtime_check, tray
+
+    captured = {}
+    monkeypatch.setattr(gui, "_show_error_dialog", lambda title, message: captured.update(title=title, message=message))
+
+    tray._show_window_failure(ipc.ERROR_WEBVIEW2_MISSING)
+
+    assert captured["title"] == "JARVIS couldn't open its window"
+    assert "WebView2" in captured["message"]
+    assert runtime_check.WEBVIEW2_DOWNLOAD_URL in captured["message"]
+    assert "running normally" in captured["message"]
+    assert "did not come back up" not in captured["message"]
+
+
+def test_a_generic_window_failure_offers_no_misleading_download(monkeypatch):
+    from app.launcher import gui, ipc, runtime_check, tray
+
+    captured = {}
+    monkeypatch.setattr(gui, "_show_error_dialog", lambda title, message: captured.update(message=message))
+
+    tray._show_window_failure(ipc.ERROR_WINDOW_FAILED)
+
+    assert runtime_check.WEBVIEW2_DOWNLOAD_URL not in captured["message"]
+
+
+def test_failure_messages_carry_a_reference_id_and_a_log_folder(monkeypatch):
+    """Both dialogs go through gui._format_error_message, so a user can
+    quote a reference ID and find the logs without being shown a
+    traceback."""
+    from app.launcher import gui, ipc, tray
+
+    captured = []
+    monkeypatch.setattr(gui, "_show_error_dialog", lambda title, message: captured.append(message))
+
+    tray._show_restart_failure("server_unhealthy")
+    tray._show_window_failure(ipc.ERROR_WINDOW_FAILED)
+
+    for message in captured:
+        assert "Reference ID:" in message
+        assert "Logs:" in message
+        assert "sk-" not in message

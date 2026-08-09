@@ -29,12 +29,13 @@ desktop session — neither can construct a real tray icon at all.
 
 Honesty note, matching this codebase's "say what's actually verified"
 standard for push-to-talk: build_menu_entries(), the label functions,
-load_icon_image(), and _poll_loop() are real, exercised logic. The
-native Win32 window/message-loop/menu code in run_tray_loop() itself
-has no automated test coverage — it could not even be import-checked in
-this project's Linux development sandbox, since pywin32 has nothing to
-install there. Real verification is the manual Windows acceptance test;
-see the packaging report.
+load_icon_image(), _poll_loop(), _attention_loop() and the two failure
+dialogs are real, exercised logic. The native Win32
+window/message-loop/menu code in run_tray_loop() itself has no automated
+test coverage — it could not even be import-checked in this project's
+Linux development sandbox, since pywin32 has nothing to install there.
+Real verification is the manual Windows acceptance test; see the
+packaging report.
 """
 
 import threading
@@ -43,13 +44,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from app.launcher import gui
+from app.launcher import attention, gui
 from app.launcher.tray_client import TrayApiClient
 from app.logging_config import get_logger
 
 logger = get_logger("launcher.tray")
 
 POLL_INTERVAL_SECONDS = 5.0
+# Deliberately much finer than the health poll. A status dot can be five
+# seconds stale without anyone noticing; someone who just double-clicked
+# the Start-menu shortcut is watching for a window right now.
+ATTENTION_POLL_INTERVAL_SECONDS = 0.5
 ICON_ASSET_PATH = Path(__file__).resolve().parent.parent / "ui" / "static" / "icon.ico"
 
 
@@ -94,13 +99,13 @@ def build_menu_entries(
     inside run_tray_loop() — a native popup menu has no persistent object
     to keep in sync the way a cross-platform library's Menu would).
 
-    "Open JARVIS" brings the native desktop window to front (creating
-    one isn't attempted from the tray — the window is always created by
-    app/launcher/gui.py::run_windowed() up front). "Open in Browser" is
-    the explicit fallback this milestone requires: always available,
-    regardless of whether the native window exists, for anyone who
-    prefers a browser tab or whose machine fell back to browser-only
-    mode (see app/launcher/webview_window.py)."""
+    "Open JARVIS" brings the native desktop window to front, starting a
+    fresh one if the previous window child died — never a browser, and
+    never a second window (see LauncherSupervisor.open_or_focus_window).
+    "Open in Browser" is the *explicitly named* browser action, the only
+    place in the product where a browser tab is offered: always
+    available, for anyone who prefers one or whose window cannot open
+    right now."""
     return [
         MenuEntry(status_label(state), None, enabled=False),
         MenuEntry("Open JARVIS", on_open_dashboard),
@@ -167,18 +172,80 @@ def _poll_loop(client: TrayApiClient, state: TrayState, icon, stop_event: thread
             pass  # icon may already be tearing down
 
 
-def _show_restart_failure() -> None:
+def _attention_loop(on_attention: Callable[[], None], stop_event: threading.Event) -> None:
+    """Turns a second launch's "show yourself" marker into a real window.
+
+    Clicking the Start-menu shortcut, the desktop shortcut or the
+    installer's finish action while JARVIS is already running used to be
+    answered with a browser tab — which is how the browser came to look
+    like the product's real interface. The second process exits
+    immediately after leaving a marker (see app/launcher/attention.py);
+    this loop is the running instance's side of that handshake.
+
+    Its own loop rather than a branch in _poll_loop() because the two have
+    genuinely different deadlines, and never raises: a marker that cannot
+    be turned into a window must not take the poll thread down with it.
+    """
+    while not stop_event.wait(ATTENTION_POLL_INTERVAL_SECONDS):
+        try:
+            if attention.consume():
+                logger.info("Another launch asked JARVIS to show its window.")
+                on_attention()
+        except Exception:
+            logger.warning("Could not show the window on request.", exc_info=True)
+
+
+_RESTART_STAGE_MESSAGES = {
+    "port_busy": (
+        "JARVIS's previous session was still holding its network port, so the "
+        "new one could not start.\n\n"
+        "This usually clears on its own. Use Quit, wait a few seconds, and start "
+        "JARVIS again."
+    ),
+    "server_unhealthy": (
+        "JARVIS's local service did not come back up after the restart.\n\n"
+        "Use Quit and start JARVIS again."
+    ),
+}
+
+
+def _show_restart_failure(stage: str = "") -> None:
     """An honest, native failure notice when Restart could not bring the
-    runtime back — silently leaving a dead tray icon would be worse. Uses
-    the launcher's own dialog helper so the message carries a correlation
-    ID and the safe log folder, never a raw traceback."""
+    runtime back — silently leaving a dead tray icon would be worse.
+
+    The message names the stage that actually failed. Every restart
+    failure used to produce the same sentence regardless of cause, which
+    made the one real report of this defect impossible to act on: "the
+    runtime did not come back up" is simply untrue when the runtime is
+    healthy and only the window failed.
+    """
+    reason = _RESTART_STAGE_MESSAGES.get(
+        stage,
+        "JARVIS's runtime did not come back up after a restart.\n"
+        "Use Quit and start JARVIS again.",
+    )
     gui._show_error_dialog(
         "JARVIS couldn't restart",
-        gui._format_error_message(
-            "The JARVIS runtime did not come back up after a restart.\n"
-            "Use Quit and start JARVIS again.",
-            uuid.uuid4().hex,
-        ),
+        gui._format_error_message(reason, uuid.uuid4().hex),
+    )
+
+
+def _show_window_failure(window_reason: str) -> None:
+    """The runtime is fine; only the window did not open. Names the
+    missing runtime and offers the fix, rather than blaming the restart."""
+    from app.launcher import runtime_check
+
+    explanation = runtime_check.describe(window_reason)
+    fix_url = runtime_check.fix_url_for(window_reason)
+    if fix_url:
+        explanation += f"\n\nDownload it from:\n{fix_url}"
+    explanation += (
+        "\n\nJARVIS itself is running normally — use \"Open in browser\" from "
+        "this tray menu in the meantime."
+    )
+    gui._show_error_dialog(
+        "JARVIS couldn't open its window",
+        gui._format_error_message(explanation, uuid.uuid4().hex),
     )
 
 
@@ -211,14 +278,15 @@ def run_tray_loop(
     ICON_UID = 1
 
     def open_dashboard() -> None:
-        # Focus the live window child, or start a fresh one if it
-        # crashed — show_or_restart() never creates a second window.
-        # Falls back to the browser only if no window can be started at
-        # all, so "Open JARVIS" is never a dead menu entry.
-        if supervisor.open_or_focus_window():
-            return
-        import webbrowser
-        webbrowser.open(gui.dashboard_url())
+        # Focus the live window child, or start a fresh one if it crashed
+        # — never a second window. Deliberately no silent browser
+        # fallback: answering "open JARVIS" with a browser tab is what
+        # made the browser look like the product's real interface. If the
+        # window cannot open, say what is missing and point at the
+        # explicitly named "Open in Browser" entry right above.
+        result = supervisor.open_or_focus_window_detailed()
+        if not result.ok:
+            _show_window_failure(result.reason)
 
     def open_in_browser() -> None:
         # Explicit, always-available fallback — independent of whether
@@ -239,16 +307,27 @@ def run_tray_loop(
         state.privacy_active = client.privacy_active()
 
     def do_restart() -> None:
-        """Window down, server down, fresh server, health, fresh window —
-        the supervisor owns that ordering. The tray process and the
-        instance lock are deliberately untouched: this parent stays the
-        authoritative owner across a restart."""
+        """Window down, server down, port released, fresh server, health,
+        fresh window — the supervisor owns that ordering. The tray process
+        and the instance lock are deliberately untouched: this parent
+        stays the authoritative owner across a restart."""
         logger.info("Tray: restarting JARVIS.")
         state.status = "starting"
-        if not supervisor.restart():
-            state.status = "offline"
-            logger.error("Tray: restart failed.")
-            _show_restart_failure()
+        result = supervisor.restart()
+        if result.ok:
+            return
+
+        logger.error("Tray: restart failed at stage %r.", result.stage)
+        if result.server_healthy:
+            # The runtime came back; only the window did not open. Telling
+            # the user to quit and relaunch a healthy server — which is
+            # what the old single failure message did — sends them to fix
+            # something that is not broken.
+            state.status = "running"
+            _show_window_failure(result.window_reason)
+            return
+        state.status = "offline"
+        _show_restart_failure(result.stage)
 
     quit_started = threading.Event()
 
@@ -392,6 +471,12 @@ def run_tray_loop(
         target=_poll_loop, args=(client, state, _TooltipHandle(), stop_event), daemon=True,
     )
     poll_thread.start()
+
+    attention_thread = threading.Thread(
+        target=_attention_loop, args=(open_dashboard, stop_event), daemon=True,
+        name="jarvis-tray-attention",
+    )
+    attention_thread.start()
 
     from app.launcher import boot_trace
     boot_trace.trace("tray PumpMessages() starting")

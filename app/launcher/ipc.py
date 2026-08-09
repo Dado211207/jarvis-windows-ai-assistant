@@ -57,10 +57,25 @@ COMMAND_QUIT = "quit"
 VALID_COMMANDS = frozenset({COMMAND_SHOW, COMMAND_HIDE, COMMAND_FOCUS, COMMAND_RELOAD, COMMAND_QUIT})
 
 # Child -> parent.
+#
+# EVENT_READY means "a native window exists on screen", not "this process
+# started". The distinction is load-bearing: the parent used to treat the
+# control connection itself as proof the window worked, so a machine
+# where the window could never be created reported a healthy start and
+# showed the user nothing at all.
 EVENT_READY = "ready"
 EVENT_CLOSED = "closed"
 EVENT_ERROR = "error"
 VALID_EVENTS = frozenset({EVENT_READY, EVENT_CLOSED, EVENT_ERROR})
+
+# Why a window could not be created. Carried on EVENT_ERROR so the parent
+# can offer the right repair instead of a generic failure — "install the
+# WebView2 runtime" and "something else went wrong" are different
+# problems with different fixes.
+ERROR_WEBVIEW2_MISSING = "webview2_missing"
+ERROR_DOTNET_MISSING = "dotnet_missing"
+ERROR_WINDOW_FAILED = "window_failed"
+VALID_ERROR_DETAILS = frozenset({ERROR_WEBVIEW2_MISSING, ERROR_DOTNET_MISSING, ERROR_WINDOW_FAILED})
 
 # Why the window closed. The distinction matters: a user clicking X with
 # close-to-tray enabled must not end the application, while a close that
@@ -128,17 +143,80 @@ class ControlListener:
         host, port = self.address
         return f"{host}:{port}"
 
-    def accept(self) -> bool:
-        """Blocks until the child authenticates. Returns False rather
-        than raising if the handshake fails — a child that cannot prove
-        it holds the secret is simply not accepted, and the caller
-        decides what to do about it."""
-        try:
-            self._conn = self._listener.accept()
+    def accept(self, timeout_seconds: float = DEFAULT_ACCEPT_TIMEOUT_SECONDS) -> bool:
+        """Waits, for a bounded time, for the child to authenticate.
+
+        **The timeout is the whole point.** This method used to call
+        `Listener.accept()` directly, which blocks forever with no way to
+        interrupt it. A window child that died before connecting — a
+        missing runtime DLL, a failed interpreter bootstrap, anything at
+        all — therefore parked the parent's main thread permanently: no
+        window, no tray, no error, no way to quit. That is the failure
+        this constant was declared for and never wired to.
+
+        Implemented by running the blocking accept on a daemon thread and
+        closing the listener on timeout, rather than reaching into
+        Listener's private socket to set SO_RCVTIMEO. Closing is what
+        actually unblocks a thread parked in accept(), and it uses only
+        public API.
+        """
+        import threading
+
+        result: Dict[str, Any] = {}
+
+        def _accept() -> None:
+            try:
+                result["conn"] = self._listener.accept()
+            except Exception as exc:  # noqa: BLE001 — reported via result, not raised
+                result["error"] = exc
+
+        worker = threading.Thread(target=_accept, daemon=True, name="jarvis-ipc-accept")
+        worker.start()
+        worker.join(timeout=timeout_seconds)
+
+        if "conn" in result:
+            self._conn = result["conn"]
             return True
-        except Exception:
-            logger.warning("Window control connection was not accepted.", exc_info=True)
+
+        if worker.is_alive():
+            logger.error(
+                "Window child did not connect within %.0fs; abandoning the control channel.",
+                timeout_seconds,
+            )
+            # Closing the listener is what releases the parked accept()
+            # thread. Without it the thread would live until process exit.
+            try:
+                self._listener.close()
+            except Exception:
+                pass
             return False
+
+        logger.warning("Window control connection was not accepted.", exc_info=result.get("error"))
+        return False
+
+    def wait_for_event(self, name: str, timeout_seconds: float) -> Optional[Dict[str, Any]]:
+        """Waits for one specific event, returning it, or the first
+        *error* event, or None on timeout.
+
+        Exists because "the child process connected" and "the child
+        actually has a window on screen" are different facts, and the
+        parent was treating the first as proof of the second. Events that
+        are neither the one awaited nor an error are skipped rather than
+        discarded silently — they are valid protocol traffic that simply
+        arrived first.
+        """
+        import time
+
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            event = self.poll_event(timeout=min(remaining, 0.25))
+            if event is None:
+                continue
+            if event["event"] in (name, EVENT_ERROR):
+                return event
 
     def send_command(self, command: str) -> bool:
         """Refuses to put an unknown command on the wire in the first

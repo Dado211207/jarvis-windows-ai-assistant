@@ -194,3 +194,147 @@ def test_command_pump_ignores_none_and_keeps_going():
     _command_pump(_Client(), _FakeWindow(), "tray", stop_event)
 
     assert stop_event.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Runtime preflight, and what READY is allowed to mean
+# ---------------------------------------------------------------------------
+
+class _RecordingClient:
+    """Captures everything the child reports to its parent."""
+
+    def __init__(self, commands=None):
+        self.events = []
+        self.closed = False
+        self._commands = list(commands or [])
+
+    def send_event(self, event, **fields):
+        self.events.append({"event": event, **fields})
+        return True
+
+    def poll_command(self, timeout=0.0):
+        return self._commands.pop(0) if self._commands else None
+
+    def close(self):
+        self.closed = True
+
+    def details_for(self, event):
+        return [e.get("detail") for e in self.events if e["event"] == event]
+
+
+_CONTEXT = {
+    "address": ("127.0.0.1", 1),
+    "secret": b"x",
+    "url": "http://127.0.0.1:5555/ui/",
+    "close_action": "tray",
+}
+
+
+def test_a_missing_runtime_is_reported_before_any_gui_work(monkeypatch):
+    """Checked up front so a missing WebView2 produces a named cause the
+    parent can offer a fix for, rather than an exception from deep inside
+    pywebview that nobody can act on."""
+    from app.launcher import runtime_check, window_main
+
+    client = _RecordingClient()
+    monkeypatch.setattr(window_main.ipc, "ControlClient", lambda *a, **k: client)
+    monkeypatch.setattr(runtime_check, "window_runtime_error", lambda: ipc.ERROR_WEBVIEW2_MISSING)
+    webview_module = MagicMock()
+
+    code = window_main.main(context=dict(_CONTEXT), webview_module=webview_module)
+
+    assert code == 4
+    assert client.details_for(ipc.EVENT_ERROR) == [ipc.ERROR_WEBVIEW2_MISSING]
+    assert ipc.EVENT_READY not in [e["event"] for e in client.events]
+    assert client.closed is True
+
+
+def test_the_preflight_runs_before_the_window_is_created(monkeypatch):
+    from app.launcher import runtime_check, webview_window, window_main
+
+    client = _RecordingClient()
+    monkeypatch.setattr(window_main.ipc, "ControlClient", lambda *a, **k: client)
+    monkeypatch.setattr(runtime_check, "window_runtime_error", lambda: ipc.ERROR_DOTNET_MISSING)
+    create = MagicMock()
+    monkeypatch.setattr(webview_window, "create_and_run", create)
+
+    window_main.main(context=dict(_CONTEXT), webview_module=MagicMock())
+
+    create.assert_not_called()
+
+
+def test_ready_is_only_sent_once_a_window_object_really_exists(monkeypatch):
+    """The regression that made the browser look like the product: READY
+    used to be sent before create_and_run(), so a machine that could
+    never build a window still reported a healthy start — and the parent,
+    seeing no window, opened a browser instead."""
+    from app.launcher import runtime_check, webview_window, window_main
+
+    client = _RecordingClient()
+    monkeypatch.setattr(window_main.ipc, "ControlClient", lambda *a, **k: client)
+    monkeypatch.setattr(runtime_check, "window_runtime_error", lambda: None)
+
+    events_at_creation = {}
+
+    def _create_and_run(**kwargs):
+        events_at_creation["before"] = [e["event"] for e in client.events]
+        webview_window._window = _FakeWindow()
+        # Let the pump thread notice the window, then end the "GUI loop".
+        import time
+        for _ in range(100):
+            if any(e["event"] == ipc.EVENT_READY for e in client.events):
+                return
+            time.sleep(0.02)
+
+    monkeypatch.setattr(webview_window, "create_and_run", _create_and_run)
+
+    code = window_main.main(context=dict(_CONTEXT), webview_module=MagicMock())
+
+    assert code == 0
+    assert events_at_creation["before"] == [], "nothing may be claimed before the window is attempted"
+    assert ipc.EVENT_READY in [e["event"] for e in client.events]
+
+
+def test_a_window_that_never_appears_reports_an_error_rather_than_ready(monkeypatch):
+    from app.launcher import runtime_check, webview_window, window_main
+
+    client = _RecordingClient()
+    monkeypatch.setattr(window_main.ipc, "ControlClient", lambda *a, **k: client)
+    monkeypatch.setattr(runtime_check, "window_runtime_error", lambda: None)
+    monkeypatch.setattr(webview_window, "current_window", lambda: None)
+    # Two very short polls: the real values would make this test a
+    # ten-second wait for a decision that is already determined.
+    monkeypatch.setattr(window_main, "WINDOW_READY_POLL_ATTEMPTS", 2)
+    monkeypatch.setattr(window_main, "WINDOW_READY_POLL_INTERVAL_SECONDS", 0.01)
+
+    def _create_and_run(**kwargs):
+        import time
+        for _ in range(100):
+            if client.events:
+                return
+            time.sleep(0.02)
+
+    monkeypatch.setattr(webview_window, "create_and_run", _create_and_run)
+
+    window_main.main(context=dict(_CONTEXT), webview_module=MagicMock())
+
+    assert client.details_for(ipc.EVENT_ERROR) == [ipc.ERROR_WINDOW_FAILED]
+    assert ipc.EVENT_READY not in [e["event"] for e in client.events]
+
+
+def test_a_crash_inside_pywebview_reports_a_named_cause(monkeypatch):
+    """A free-text reason could never be matched to a repair. Every
+    failure the parent sees is one of ipc.VALID_ERROR_DETAILS."""
+    from app.launcher import runtime_check, webview_window, window_main
+
+    client = _RecordingClient()
+    monkeypatch.setattr(window_main.ipc, "ControlClient", lambda *a, **k: client)
+    monkeypatch.setattr(runtime_check, "window_runtime_error", lambda: None)
+    monkeypatch.setattr(webview_window, "create_and_run",
+                        MagicMock(side_effect=RuntimeError("edgechromium is unavailable")))
+
+    code = window_main.main(context=dict(_CONTEXT), webview_module=MagicMock())
+
+    assert code == 4
+    reported = client.details_for(ipc.EVENT_ERROR)
+    assert reported and set(reported) <= ipc.VALID_ERROR_DETAILS

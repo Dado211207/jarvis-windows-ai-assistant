@@ -142,16 +142,62 @@ def test_the_api_binds_to_loopback_by_default():
     assert Settings().jarvis_host == "127.0.0.1"
 
 
+# One deliberate, reviewed exception, and the reason it is safe.
+#
+# Microsoft documents a WebView2 `pv` registry value of "0.0.0.0" as
+# explicitly meaning *not installed*. In app/launcher/runtime_check.py it
+# is a version sentinel being compared against, not an address being
+# bound. The exemption is only granted because that file cannot bind
+# anything at all — which is not taken on trust but proven by
+# test_the_bind_all_exemption_cannot_bind_anything() below. Every other
+# file, and any networking added to this one, still fails.
+_BIND_ALL_EXEMPT_FILES = {"runtime_check.py"}
+
+
 def test_nothing_binds_to_all_interfaces():
     """CLAUDE.md: never 0.0.0.0 without an explicit security review."""
     offenders = [
         f"{path.name}:{line}"
         for path in _python_sources()
         for value, line in _non_docstring_strings(path)
-        if "0.0.0.0" in value
+        if "0.0.0.0" in value and path.name not in _BIND_ALL_EXEMPT_FILES
     ]
 
     assert offenders == [], f"a bind-all address appears in {offenders}"
+
+
+def test_the_bind_all_exemption_cannot_bind_anything():
+    """The other half of the exemption above.
+
+    A file allowed to contain the literal "0.0.0.0" must have no way to
+    turn it into a listening socket: no socket module, no uvicorn, no
+    host= argument anywhere. If one of those ever appears, this fails and
+    the exemption has to be argued again rather than quietly widening.
+    """
+    for path in _python_sources():
+        if path.name not in _BIND_ALL_EXEMPT_FILES:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        assert not (imported & {"socket", "socketserver", "uvicorn", "http", "httpx", "asyncio"}), (
+            f"{path.name} is exempt from the bind-all check and must stay free of networking"
+        )
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                assert not any(kw.arg == "host" for kw in node.keywords), (
+                    f"{path.name} passes a host= argument"
+                )
+                name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+                assert name not in {"bind", "listen", "connect", "connect_ex", "run"}, (
+                    f"{path.name} calls {name}()"
+                )
 
 
 def test_the_websocket_stream_cannot_run_a_command():
