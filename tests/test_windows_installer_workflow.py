@@ -153,24 +153,30 @@ def test_superseded_runs_are_cancelled():
 # The acceptance test waits for readiness, not for a guessed interval
 # ---------------------------------------------------------------------------
 
-def test_the_clean_install_test_waits_for_the_tray_before_closing_it():
+def test_the_clean_install_test_waits_for_the_real_readiness_signal():
     """/health answers as soon as the server child is up, several seconds
-    before the parent has a window able to receive WM_CLOSE. A graceful
-    taskkill sent in that gap reaches nothing and the app never shuts
-    down — which is exactly what happened on CI the first time the native
-    window really opened.
+    before the parent has a window that can receive commands or a tray
+    loop that can receive a close request. A graceful taskkill sent in
+    that gap reaches nothing — which is exactly what happened on CI the
+    first time the native window really opened.
 
-    The fix has to be a readiness signal rather than a longer exit
-    timeout, or it hides the gap instead of closing it. This asserts
-    both halves: the wait exists, and it happens before the taskkill.
+    An earlier fix waited for a line in the boot trace. That was
+    acceptable as evidence and wrong as a contract: a human-readable log
+    line is not an interface, and anything parsing one is a rewording
+    away from breaking. The wait now polls the parent's own published
+    signal, and it must still happen before the close.
     """
     from pathlib import Path
 
     source = (Path(__file__).resolve().parent.parent / "scripts" / "test_clean_install.py").read_text(encoding="utf-8")
 
-    assert "wait_for_tray_loop" in source
-    assert source.index("wait_for_tray_loop()") < source.index('"taskkill"'), (
+    assert "wait_for_desktop_ready" in source
+    assert "/desktop/ready" in source
+    assert source.index("wait_for_desktop_ready()") < source.index('"taskkill"'), (
         "the readiness wait must come before the close request"
+    )
+    assert "PumpMessages() starting" not in source, (
+        "readiness must not go back to parsing a log line"
     )
 
 

@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, field_validator
 
 from app import __phase__, __version__
@@ -594,6 +594,88 @@ def remove_api_key() -> ApiKeyActionResponse:
         logger.info("Anthropic API key removed from the OS credential store.")
         return ApiKeyActionResponse(success=True, message="API key removed.")
     return ApiKeyActionResponse(success=False, message="Could not remove the key from the OS credential store.")
+
+
+# ---------------------------------------------------------------------------
+# The desktop readiness signal.
+#
+# Published by the launcher parent, which is the only process that can
+# know all four facts, and served here because the parent has no HTTP
+# surface of its own. See app/launcher/desktop_ready.py for why each fact
+# is proved rather than assumed, and why a boot-trace log line was the
+# wrong contract to build on.
+#
+# Writing is authenticated with the per-session secret the parent and
+# server child already share, so nothing else on the machine can declare
+# the desktop ready. Reading is open: it carries no user data, and
+# answering "not yet" to anything that asks is harmless.
+# ---------------------------------------------------------------------------
+
+class DesktopReadyResponse(BaseModel):
+    ready: bool = False
+    server_healthy: bool = False
+    window_alive: bool = False
+    tray_listening: bool = False
+    parent_running: bool = False
+    session_id: str = ""
+    detail: str = ""
+    missing: List[str] = []
+
+
+class PublishDesktopReadyRequest(BaseModel):
+    server_healthy: bool = False
+    window_alive: bool = False
+    tray_listening: bool = False
+    parent_running: bool = False
+    session_id: str = ""
+    detail: str = ""
+
+
+_desktop_ready_state: dict = {}
+
+
+def _require_desktop_secret(secret: Optional[str]) -> None:
+    """Constant-time check against the secret the parent inherited.
+
+    A server started without one (dev, tests) has nothing to compare
+    against, so it refuses every publish rather than accepting any — the
+    safe direction, and it keeps a missing secret from silently turning
+    into an open endpoint.
+    """
+    import os
+    import secrets as _secrets
+
+    from app.launcher.server_process import SESSION_SECRET_ENV
+
+    expected = os.environ.get(SESSION_SECRET_ENV, "")
+    if not expected or not secret or not _secrets.compare_digest(secret, expected):
+        raise HTTPException(status_code=403, detail="Not permitted.")
+
+
+@router.get("/desktop/ready", response_model=DesktopReadyResponse)
+def desktop_ready() -> DesktopReadyResponse:
+    """Whether the desktop application is up and controllable.
+
+    Distinct from /health, which answers for this server process alone
+    and says nothing about the window or the tray.
+    """
+    from app.launcher.desktop_ready import DesktopReadyState
+
+    state = DesktopReadyState(**_desktop_ready_state) if _desktop_ready_state else DesktopReadyState()
+    payload = state.to_payload()
+    payload["missing"] = state.missing()
+    return DesktopReadyResponse(**payload)
+
+
+@router.post("/desktop/ready", response_model=DesktopReadyResponse)
+def publish_desktop_ready(
+    req: PublishDesktopReadyRequest,
+    x_jarvis_desktop_secret: Optional[str] = Header(default=None),
+) -> DesktopReadyResponse:
+    _require_desktop_secret(x_jarvis_desktop_secret)
+    _desktop_ready_state.clear()
+    _desktop_ready_state.update(req.model_dump())
+    return desktop_ready()
 
 
 # ---------------------------------------------------------------------------

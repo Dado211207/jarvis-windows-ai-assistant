@@ -198,39 +198,52 @@ def wait_for_health_to_stop(timeout_seconds: float = HEALTH_TIMEOUT_SECONDS) -> 
     _fail(f"{HEALTH_URL} was still responding {timeout_seconds}s after requesting shutdown.")
 
 
-TRAY_LOOP_MARKER = "tray PumpMessages() starting"
-TRAY_READY_TIMEOUT_SECONDS = 30.0
+DESKTOP_READY_URL = f"http://{settings.jarvis_host}:{settings.jarvis_port}/desktop/ready"
+DESKTOP_READY_TIMEOUT_SECONDS = 60.0
 
 
-def wait_for_tray_loop(timeout_seconds: float = TRAY_READY_TIMEOUT_SECONDS) -> bool:
-    """Wait until the tray's message loop is actually pumping.
+def wait_for_desktop_ready(timeout_seconds: float = DESKTOP_READY_TIMEOUT_SECONDS) -> dict:
+    """Wait for the parent's own readiness signal.
 
-    /health answers as soon as the *server child* is up, which is several
-    seconds before the parent has a window able to receive WM_CLOSE. A
-    graceful taskkill sent in that gap reaches nothing and the app never
-    shuts down — which is precisely what happened on CI the first time
-    the native window really opened: health at 21:27:10, taskkill at
-    ~21:27:11, tray loop at 21:27:12.
+    /health answers as soon as the *server child* is up, several seconds
+    before the parent has a window that can receive commands or a tray
+    loop that can receive a close request. A graceful taskkill sent in
+    that gap reaches nothing — exactly what happened on CI the first time
+    the native window really opened.
 
-    This is deliberately a *readiness signal*, not a longer timeout. The
-    app was healthy and starting normally; the test was closing it before
-    it had finished starting, and stretching PROCESS_EXIT_TIMEOUT_SECONDS
-    would have hidden that rather than fixed it.
+    This polls GET /desktop/ready, which the launcher parent publishes
+    after *proving* four things: the server answered health, the window
+    child answered a ping over the authenticated control channel, the
+    tray's message loop dispatched a message posted to it, and the parent
+    finished startup. An earlier version of this wait parsed a line out of
+    the boot trace; that was acceptable as evidence and wrong as a
+    contract, since a human-readable log line is not an interface.
 
-    Read from the boot trace because that file is written independently of
-    the logging subsystem, so it still records progress when logging
-    itself is the broken part.
+    Returns the final body so callers can assert on session_id.
     """
-    trace = expected_boot_trace_file()
+    import httpx
+
     deadline = time.monotonic() + timeout_seconds
+    last = {}
     while time.monotonic() < deadline:
         try:
-            if trace.is_file() and TRAY_LOOP_MARKER in trace.read_text(encoding="utf-8", errors="replace"):
-                return True
-        except OSError:
-            pass  # the file is being written to; try again
+            response = httpx.get(DESKTOP_READY_URL, timeout=2.0)
+            if response.status_code == 200:
+                last = response.json()
+                if last.get("ready") is True:
+                    return last
+        except Exception:
+            pass  # the server may still be starting
         time.sleep(0.3)
-    return False
+
+    _fail(
+        f"The desktop never reported ready within {timeout_seconds}s.\n"
+        f"Still waiting on: {last.get('missing', 'unknown — no signal was ever published')}\n"
+        f"Last signal: {last}\n"
+        f"JARVIS's own log ({expected_log_file()}):\n{_read_file_tail(expected_log_file())}\n"
+        f"Boot trace ({expected_boot_trace_file()}):\n{_read_file_tail(expected_boot_trace_file())}"
+    )
+    return {}
 
 
 def wait_for_pid_exit(pid: int, timeout_seconds: float = PROCESS_EXIT_TIMEOUT_SECONDS) -> bool:
@@ -321,15 +334,12 @@ def phase_a_install_launch_and_stop(installer: Path, log_dir: Path) -> None:
             _fail("The first JARVIS.exe instance is no longer running after the second launch attempt.")
         print("OK: second launch exited immediately (code 0); the original instance is still the only server running")
 
-        _step("Phase A.9: Wait for the tray message loop before asking it to close")
-        if not wait_for_tray_loop():
-            _fail(
-                f"The tray message loop did not start within {TRAY_READY_TIMEOUT_SECONDS}s of the app "
-                f"becoming healthy. A graceful close cannot be delivered until it does.\n"
-                f"JARVIS's own log ({expected_log_file()}):\n{_read_file_tail(expected_log_file())}\n"
-                f"Boot trace ({expected_boot_trace_file()}):\n{_read_file_tail(expected_boot_trace_file())}"
-            )
-        print("OK: the tray loop is running and can receive a close request")
+        _step("Phase A.9: Wait for the desktop-ready signal before asking it to close")
+        ready = wait_for_desktop_ready()
+        print(
+            "OK: desktop ready — server healthy, window answering commands, "
+            f"tray listening, parent running (session {ready.get('session_id')})"
+        )
 
         _step("Phase A.10: Stop JARVIS gracefully (taskkill, no /F)")
         result = subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)

@@ -35,6 +35,9 @@ logger = get_logger("launcher.window_process")
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 20.0
 DEFAULT_READY_TIMEOUT_SECONDS = 30.0
 DEFAULT_STOP_TIMEOUT_SECONDS = 6.0
+# A ping is answered by a poll loop that wakes every 0.2s, so this only
+# needs to cover a few of those plus scheduling jitter.
+PING_TIMEOUT_SECONDS = 3.0
 
 
 def window_log_path() -> Path:
@@ -227,6 +230,21 @@ class WindowProcess:
 
     def poll_event(self, timeout: float = 0.0):
         return self._listener.poll_event(timeout) if self._listener is not None else None
+
+    def responds_to_commands(self, timeout_seconds: float = PING_TIMEOUT_SECONDS) -> bool:
+        """Whether the window child is still servicing its control channel.
+
+        A real round trip, not a process check: is_running() only says a
+        process exists, and a window child whose command pump has died is
+        a window the tray's Show, Restart and Quit can no longer reach.
+        Readiness has to mean the second thing.
+        """
+        if self._listener is None or not self.is_running():
+            return False
+        if not self._send(ipc.COMMAND_PING):
+            return False
+        event = self._listener.wait_for_event(ipc.EVENT_PONG, timeout_seconds=timeout_seconds)
+        return event is not None and event.get("event") == ipc.EVENT_PONG
 
     def show_or_restart(self, base_env: Optional[dict] = None) -> bool:
         """What the tray's "Open JARVIS" needs: focus the existing window,

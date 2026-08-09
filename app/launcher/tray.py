@@ -279,6 +279,12 @@ def run_tray_loop(
     stop_event = threading.Event()
 
     WM_TRAYICON = win32con.WM_USER + 20
+    # Posted to this window once, immediately before the message loop
+    # starts. Handling it is the *only* acceptable proof that the loop is
+    # dispatching: a flag set just before PumpMessages() would be set even
+    # if PumpMessages never ran, which is precisely the state that failed
+    # on CI — the tray existed on paper and no close request reached it.
+    WM_TRAY_READY = win32con.WM_USER + 21
     ICON_UID = 1
 
     def open_dashboard() -> None:
@@ -421,6 +427,20 @@ def run_tray_loop(
         if msg in _SHUTDOWN_MESSAGES:
             from app.launcher import boot_trace
             boot_trace.trace(f"tray wnd_proc received {_SHUTDOWN_MESSAGES[msg]}")
+        if msg == WM_TRAY_READY:
+            # Dispatched by the running loop, so by the time this handler
+            # executes the loop is provably servicing messages — Quit,
+            # Restart and Show can all be delivered.
+            from app.launcher import boot_trace
+            boot_trace.trace("tray message loop confirmed dispatching")
+            try:
+                supervisor.publish_readiness(
+                    tray_listening=True,
+                    detail="JARVIS is running.",
+                )
+            except Exception:
+                logger.warning("Could not publish tray readiness.", exc_info=True)
+            return 0
         if msg == WM_TRAYICON and lparam in (win32con.WM_LBUTTONUP, win32con.WM_RBUTTONUP):
             show_context_menu()
             return 0
@@ -492,5 +512,9 @@ def run_tray_loop(
 
     from app.launcher import boot_trace
     boot_trace.trace("tray PumpMessages() starting")
+    # Queued before the loop starts; the loop's first act is to dispatch
+    # it, which is what turns "the tray was created" into "the tray is
+    # listening".
+    win32gui.PostMessage(hwnd, WM_TRAY_READY, 0, 0)
     win32gui.PumpMessages()
     boot_trace.trace("tray PumpMessages() returned")

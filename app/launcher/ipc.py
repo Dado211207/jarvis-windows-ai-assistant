@@ -54,7 +54,15 @@ COMMAND_HIDE = "hide"
 COMMAND_FOCUS = "focus"
 COMMAND_RELOAD = "reload"
 COMMAND_QUIT = "quit"
-VALID_COMMANDS = frozenset({COMMAND_SHOW, COMMAND_HIDE, COMMAND_FOCUS, COMMAND_RELOAD, COMMAND_QUIT})
+# The only command with no visible effect. It exists so readiness can be
+# *proved* rather than assumed: "the child process is alive" and "the
+# child is still reading its control channel" are different facts, and
+# every other command changes what the user sees, so none of them can be
+# used as a liveness probe.
+COMMAND_PING = "ping"
+VALID_COMMANDS = frozenset({
+    COMMAND_SHOW, COMMAND_HIDE, COMMAND_FOCUS, COMMAND_RELOAD, COMMAND_QUIT, COMMAND_PING,
+})
 
 # Child -> parent.
 #
@@ -66,7 +74,11 @@ VALID_COMMANDS = frozenset({COMMAND_SHOW, COMMAND_HIDE, COMMAND_FOCUS, COMMAND_R
 EVENT_READY = "ready"
 EVENT_CLOSED = "closed"
 EVENT_ERROR = "error"
-VALID_EVENTS = frozenset({EVENT_READY, EVENT_CLOSED, EVENT_ERROR})
+# The answer to COMMAND_PING. A reply, not a status flag: it can only be
+# produced by a child that read the command off the channel and ran its
+# handler, which is the whole point.
+EVENT_PONG = "pong"
+VALID_EVENTS = frozenset({EVENT_READY, EVENT_CLOSED, EVENT_ERROR, EVENT_PONG})
 
 # Why a window could not be created. Carried on EVENT_ERROR so the parent
 # can offer the right repair instead of a generic failure — "install the

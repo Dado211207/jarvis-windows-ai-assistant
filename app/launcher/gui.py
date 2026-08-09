@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.config import settings
-from app.launcher import attention, boot_trace, instance_lock, server_process, window_process
+from app.launcher import attention, boot_trace, desktop_ready, instance_lock, server_process, window_process
 from app.logging_config import get_logger, setup_logging
 
 logger = get_logger("launcher.gui")
@@ -123,6 +123,50 @@ class LauncherSupervisor:
         self._server = server
         self._window = window
         self._quitting = False
+        self._ready = None  # a DesktopReadyPublisher, once a server exists
+
+    # --- readiness ---
+
+    @property
+    def ready_publisher(self):
+        return self._ready
+
+    def _new_ready_publisher(self):
+        """One publisher per server child, because the secret it
+        authenticates with belongs to that child. A restart therefore
+        publishes under a new session_id by construction — which is what
+        makes "the restart produced a genuinely fresh session" checkable
+        rather than asserted."""
+        if self._server is None:
+            return None
+        return desktop_ready.DesktopReadyPublisher(
+            host=settings.jarvis_host,
+            port=settings.jarvis_port,
+            session_secret=self._server.session_secret,
+            probe_window=self._probe_window,
+        )
+
+    def _probe_window(self) -> bool:
+        """Real evidence: the window child answered a ping over the
+        authenticated channel. `is_running()` would only prove a process
+        exists, and a window whose command pump has died cannot be shown,
+        restarted or quit from the tray."""
+        window = self._window
+        return bool(window is not None and window.responds_to_commands())
+
+    def verify_window_ready(self) -> bool:
+        """Re-probe the window and record the answer."""
+        if self._ready is None:
+            return self._probe_window()
+        return self._ready.verify_window()
+
+    def publish_readiness(self, **facts):
+        """Record verified readiness facts. Safe to call before a server
+        exists — startup does, and a dropped early update is not worth a
+        crash."""
+        if self._ready is None:
+            return None
+        return self._ready.update(**facts)
 
     # --- accessors used by the tray ---
 
@@ -151,7 +195,15 @@ class LauncherSupervisor:
         except Exception:
             logger.error("Could not start the server child.", exc_info=True)
             return False
-        return self._server.wait_until_healthy(timeout_seconds=SERVER_HEALTH_TIMEOUT_SECONDS)
+        healthy = self._server.wait_until_healthy(timeout_seconds=SERVER_HEALTH_TIMEOUT_SECONDS)
+        # A fresh publisher per server child, and the first fact recorded
+        # against it is the one this method just proved.
+        self._ready = self._new_ready_publisher()
+        self.publish_readiness(
+            server_healthy=healthy,
+            detail="Server running; starting the window." if healthy else "The server did not become healthy.",
+        )
+        return healthy
 
     def start_window(self) -> bool:
         return self.start_window_detailed().ok
@@ -341,6 +393,12 @@ def launch() -> LauncherSupervisor:
 
     boot_trace.trace("server healthy, starting window child")
     window = supervisor.start_window_detailed()
+    # Proved by a real ping over the control channel, not by the start
+    # having returned ok — see LauncherSupervisor._probe_window.
+    supervisor.publish_readiness(
+        window_alive=supervisor.verify_window_ready(),
+        detail="Window open; starting the tray." if window.ok else f"The window did not open ({window.reason}).",
+    )
     if not window.ok:
         # Deliberately NOT a silent browser fallback. Opening a browser
         # here hid a fixable problem and quietly made the browser the
@@ -351,6 +409,10 @@ def launch() -> LauncherSupervisor:
         boot_trace.trace(f"window child failed: {window.reason}")
         _report_window_failure(window.reason)
 
+    supervisor.publish_readiness(
+        parent_running=True,
+        detail="Startup complete; waiting for the tray message loop.",
+    )
     boot_trace.trace("launch() complete")
     return supervisor
 

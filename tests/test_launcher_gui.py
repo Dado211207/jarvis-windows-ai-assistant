@@ -62,6 +62,11 @@ class _FakeWindow:
     def is_running(self):
         return self._running
 
+    def responds_to_commands(self, timeout_seconds=None):
+        """The readiness probe: a live window child answers a ping over
+        its control channel. A dead one cannot."""
+        return self._running
+
     def show(self):
         self.shown = self._shows
         return self._shows
@@ -701,3 +706,87 @@ def test_dashboard_url_points_at_the_dashboard_after_onboarding(monkeypatch):
     from app.launcher import gui
     monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: True)
     assert gui.dashboard_url().endswith("/ui/")
+
+
+# ---------------------------------------------------------------------------
+# Readiness — proved, never assumed
+# ---------------------------------------------------------------------------
+
+def test_startup_publishes_each_fact_only_once_it_is_proved(monkeypatch, supervisor_factory):
+    """The order matters as much as the content: a signal that claimed
+    readiness before the tray existed would recreate the exact CI failure
+    it was built to prevent."""
+    from app.launcher import gui
+
+    sup, _, _ = supervisor_factory()
+    monkeypatch.setattr(gui.instance_lock, "check_existing_instance",
+                        lambda host, port: gui.instance_lock.InstanceCheckResult(False, False))
+    monkeypatch.setattr(gui.instance_lock, "acquire_lock", MagicMock())
+    monkeypatch.setattr(gui, "LauncherSupervisor", lambda: sup)
+
+    published = []
+    # Patched on the instance, not the class: the line above replaced the
+    # class itself with a factory lambda.
+    monkeypatch.setattr(sup, "publish_readiness", lambda **facts: published.append(facts) or None)
+
+    gui.launch()
+
+    keys = [set(facts) - {"detail"} for facts in published]
+
+    assert {"window_alive"} in keys, "the window fact must be published once probed"
+    assert published[-1]["parent_running"] is True, "the parent declares itself last"
+    # The tray fact is deliberately absent: only the message loop itself
+    # can prove it, and it is not running yet.
+    assert not any("tray_listening" in facts for facts in published)
+
+
+def test_the_window_fact_is_a_ping_not_a_process_check():
+    """A window child whose command pump has died still exists as a
+    process, and cannot be shown, restarted or quit from the tray.
+    Readiness has to mean the second thing."""
+    from app.launcher import gui
+
+    sup = gui.LauncherSupervisor()
+    window = _FakeWindow()
+    sup._window = window
+
+    probed = {}
+    window.responds_to_commands = lambda timeout_seconds=None: probed.setdefault("asked", True)
+
+    assert sup._probe_window() is True
+    assert probed == {"asked": True}
+
+
+def test_a_window_that_stopped_answering_is_not_ready():
+    from app.launcher import gui
+
+    sup = gui.LauncherSupervisor()
+    window = _FakeWindow()
+    window.responds_to_commands = lambda timeout_seconds=None: False
+    sup._window = window
+
+    assert sup._probe_window() is False
+
+
+def test_no_window_at_all_is_not_ready():
+    from app.launcher import gui
+
+    assert gui.LauncherSupervisor()._probe_window() is False
+
+
+def test_a_restart_publishes_under_a_fresh_session(monkeypatch):
+    """"The restart produced a genuinely new runtime" has to be checkable
+    from outside, not asserted by the thing that restarted."""
+    from app.launcher import gui
+
+    sup = gui.LauncherSupervisor()
+    monkeypatch.setattr(gui.server_process.ServerProcess, "start", lambda self: None)
+    monkeypatch.setattr(gui.server_process.ServerProcess, "wait_until_healthy", lambda self, timeout_seconds=None: True)
+    monkeypatch.setattr(gui.desktop_ready.DesktopReadyPublisher, "_publish", lambda self, snapshot: None)
+
+    assert sup.start_server() is True
+    first = sup.ready_publisher.state.session_id
+    assert sup.start_server() is True
+    second = sup.ready_publisher.state.session_id
+
+    assert first and second and first != second

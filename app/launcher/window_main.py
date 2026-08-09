@@ -61,6 +61,12 @@ def _handle_command(command: str, window, close_action: str) -> bool:
         except Exception:
             logger.warning("Window destroy failed during quit.", exc_info=True)
         return False
+    if command == ipc.COMMAND_PING:
+        # Deliberately touches no window API. Answering proves this
+        # process read the command off its control channel and ran its
+        # handler — which is exactly the fact readiness needs and the
+        # only one a liveness probe may claim.
+        return True
     if command == ipc.COMMAND_SHOW:
         window.show()
         window.restore()
@@ -87,6 +93,11 @@ def _command_pump(client, window, close_action: str, stop_event: threading.Event
             if not _handle_command(command, window, close_action):
                 stop_event.set()
                 return
+            if command == ipc.COMMAND_PING:
+                # Answered only after the handler ran, so a pong can
+                # never arrive from a child that is no longer servicing
+                # its channel.
+                client.send_event(ipc.EVENT_PONG)
         except Exception:
             logger.warning("Window command %r failed.", command, exc_info=True)
 

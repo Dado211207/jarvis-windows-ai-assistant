@@ -105,6 +105,20 @@ def test_the_route_walk_actually_finds_the_api():
 # Mutations are protected
 # ---------------------------------------------------------------------------
 
+# Mutating endpoints that are protected by something *other* than the
+# browser session token, with the reason.
+#
+# /desktop/ready is published by the launcher parent, which is not a
+# browser and has no cookie. It authenticates with the per-session secret
+# the parent and server child already share by inherited environment —
+# a value no page can read, so a forged cross-origin request cannot
+# produce it. That is a stronger gate than the CSRF token, not a weaker
+# one, but it is a different gate, so the exemption is listed here and
+# paired with test_the_alternative_gate_is_real() below, which proves the
+# endpoint actually refuses an unauthenticated call.
+_ALTERNATIVE_AUTH_ENDPOINTS = {"POST /desktop/ready"}
+
+
 def test_every_mutating_endpoint_requires_the_session_token():
     """CLAUDE.md's v0.2 rule. A new POST added without the dependency is
     reachable from any page the user happens to have open, so this fails
@@ -114,9 +128,47 @@ def test_every_mutating_endpoint_requires_the_session_token():
         for route in _api_routes()
         for method in sorted(route.methods & MUTATING_METHODS)
         if not _requires_session_token(route)
+        and f"{method} {route.path}" not in _ALTERNATIVE_AUTH_ENDPOINTS
     ]
 
     assert unprotected == [], f"unprotected mutating endpoint(s): {unprotected}"
+
+
+def test_the_alternative_gate_is_real():
+    """The other half of the exemption above: each endpoint excused from
+    the session token must genuinely refuse a request that presents no
+    credential at all. An exemption that was never checked would be a
+    hole with a comment next to it."""
+    from fastapi.testclient import TestClient
+
+    from app.api.server import app as jarvis_app
+
+    with TestClient(jarvis_app, raise_server_exceptions=True) as client:
+        for endpoint in sorted(_ALTERNATIVE_AUTH_ENDPOINTS):
+            method, path = endpoint.split(" ", 1)
+            response = client.request(method, path, json={})
+            assert response.status_code == 403, (
+                f"{endpoint} is exempt from the session token but accepted an "
+                f"unauthenticated request ({response.status_code})"
+            )
+
+
+def test_the_desktop_secret_is_never_sent_to_a_browser():
+    """The gate above only holds while the secret stays out of anything a
+    page can read."""
+    from fastapi.testclient import TestClient
+
+    from app.api.server import app as jarvis_app
+    from app.launcher.server_process import SESSION_SECRET_ENV
+
+    import os
+    os.environ[SESSION_SECRET_ENV] = "desktop-secret-must-not-leak"
+    try:
+        with TestClient(jarvis_app, raise_server_exceptions=True) as client:
+            for path in ("/ui/", "/ui/settings", "/desktop/ready", "/health"):
+                assert "desktop-secret-must-not-leak" not in client.get(path).text
+    finally:
+        os.environ.pop(SESSION_SECRET_ENV, None)
 
 
 def test_read_only_endpoints_do_not_demand_a_token_unnecessarily():
