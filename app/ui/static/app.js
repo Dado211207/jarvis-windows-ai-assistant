@@ -901,6 +901,152 @@ async function cancelModelInstall() {
   }
 }
 
+// ── Home / Overview ─────────────────────────────────────────────────────────
+// Every panel here has an explicit empty state and an explicit failure
+// state. A dashboard that silently shows nothing is indistinguishable
+// from one that is broken, which is the failure mode this avoids.
+
+function _setOverviewValue(id, text, tone) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = `metric-card-value${tone ? " " + tone : ""}`;
+}
+
+async function refreshOverviewProvider() {
+  try {
+    const data = await API.get("/providers");
+    const available = (data.providers || []).filter(p => p.available);
+    if (available.length) {
+      _setOverviewValue("dash-provider", available.map(p => p.display_name).join(", "), "text-ok");
+      _setOverviewValue("dash-provider-sub", "");
+    } else {
+      _setOverviewValue("dash-provider", "Local only", "text-muted");
+    }
+    const sub = $("dash-provider-sub");
+    if (sub) {
+      sub.textContent = available.length
+        ? "Natural-language chat is available."
+        : "Commands work; add a provider in Settings for conversational replies.";
+    }
+  } catch (e) {
+    _setOverviewValue("dash-provider", "Unavailable", "text-err");
+  }
+}
+
+async function refreshOverviewVoice() {
+  try {
+    const r = await API.get("/voice/stt-status");
+    _setOverviewValue("dash-voice-input", r.available ? "Ready" : "Not set up", r.available ? "text-ok" : "text-muted");
+    const sub = $("dash-voice-input-sub");
+    if (sub) sub.textContent = r.available ? "Push-to-talk only — never always listening." : r.reason;
+  } catch (e) {
+    _setOverviewValue("dash-voice-input", "Unavailable", "text-err");
+  }
+}
+
+async function refreshOverviewPrivacy() {
+  try {
+    const r = await API.get("/privacy/status");
+    _setOverviewValue("dash-privacy", r.active ? "On" : "Off", r.active ? "text-ok" : "text-muted");
+  } catch (e) {
+    _setOverviewValue("dash-privacy", "Unknown", "text-err");
+  }
+}
+
+async function refreshOverviewApprovals() {
+  const host = $("dash-pending-approvals");
+  if (!host) return;
+  host.textContent = "";
+  try {
+    const actions = await API.get("/actions/pending");
+    const pending = Array.isArray(actions) ? actions : (actions.actions || []);
+    if (!pending.length) {
+      const p = document.createElement("p");
+      p.className = "text-xs text-muted";
+      p.textContent = "Nothing is waiting for approval.";
+      host.appendChild(p);
+      return;
+    }
+    pending.forEach(action => {
+      const row = document.createElement("div");
+      row.className = "status-row";
+      const label = document.createElement("span");
+      label.className = "status-row-label";
+      label.textContent = action.tool_name || "Action";
+      const value = document.createElement("span");
+      value.className = "status-row-value text-warn";
+      value.textContent = "Waiting for approval";
+      row.appendChild(label);
+      row.appendChild(value);
+      host.appendChild(row);
+    });
+    const link = document.createElement("p");
+    link.className = "text-xs mt-2";
+    const a = document.createElement("a");
+    a.href = "/ui/actions";
+    a.textContent = `Review ${pending.length} pending action(s)`;
+    link.appendChild(a);
+    host.appendChild(link);
+  } catch (e) {
+    const p = document.createElement("p");
+    p.className = "text-xs text-err";
+    p.textContent = "Could not check pending approvals.";
+    host.appendChild(p);
+  }
+}
+
+async function refreshOverviewRecentActions() {
+  const host = $("dash-recent-actions");
+  if (!host) return;
+  host.textContent = "";
+  try {
+    const logs = await API.get("/logs?limit=5");
+    if (!logs.length) {
+      const p = document.createElement("p");
+      p.className = "text-xs text-muted";
+      p.textContent = "No actions yet. Anything JARVIS does will appear here.";
+      host.appendChild(p);
+      return;
+    }
+    logs.forEach(entry => {
+      const row = document.createElement("div");
+      row.className = "status-row";
+      const label = document.createElement("span");
+      label.className = "status-row-label";
+      label.textContent = entry.tool_name || entry.command || "Action";
+      const value = document.createElement("span");
+      const ok = (entry.status || "").toLowerCase() === "success";
+      value.className = `status-row-value ${ok ? "text-ok" : "text-muted"}`;
+      value.textContent = entry.status || "";
+      row.appendChild(label);
+      row.appendChild(value);
+      host.appendChild(row);
+    });
+  } catch (e) {
+    const p = document.createElement("p");
+    p.className = "text-xs text-err";
+    p.textContent = "Could not load recent actions.";
+    host.appendChild(p);
+  }
+}
+
+async function refreshOverviewRuntimeState() {
+  // Seeded from the topbar's current label so the card is correct
+  // immediately on load rather than waiting for the first WS event.
+  const label = $("topbar-runtime-label");
+  _setOverviewValue("dash-runtime-state", (label && label.textContent) ? label.textContent : "standby");
+}
+
+function refreshOverview() {
+  refreshOverviewRuntimeState();
+  refreshOverviewProvider();
+  refreshOverviewVoice();
+  refreshOverviewPrivacy();
+  refreshOverviewApprovals();
+  refreshOverviewRecentActions();
+}
+
 // ── Settings page ───────────────────────────────────────────────────────────
 
 async function refreshSettingsProviders() {
@@ -1596,6 +1742,18 @@ function handleStreamEvent(evt) {
 
   if (evt.type === "runtime_state" && evt.payload) {
     setRuntimeLabel(evt.payload.to);
+    // Home's "What JARVIS is doing" card reads the same source as the
+    // topbar, so the two can never disagree.
+    _setOverviewValue("dash-runtime-state", evt.payload.to || "standby");
+  }
+
+  // Keep Home's attention panel honest the moment an approval appears or
+  // resolves anywhere — a stale "nothing waiting" is worse than a delay.
+  if (evt.type === "action_approval_changed" || evt.type === "action_result") {
+    if ($("dash-pending-approvals")) {
+      refreshOverviewApprovals();
+      refreshOverviewRecentActions();
+    }
   }
 
   // Keep the privacy indicator live across every open tab/page the
@@ -1665,6 +1823,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (path === "/ui" || path === "/ui/dashboard" || path === "") {
     loadDashboard();
+    refreshOverview();
   } else if (path === "/ui/chat") {
     initChat();
   } else if (path === "/ui/actions") {

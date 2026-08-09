@@ -57,6 +57,61 @@
   </div>
 
   <div class="section">
+    <div class="section-title">Right now</div>
+    <div class="grid grid-2 mb-4">
+      <div class="metric-card">
+        <div class="metric-card-label">What JARVIS is doing</div>
+        <div id="dash-runtime-state" class="metric-card-value loading" aria-live="polite">&#8230;</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">AI provider</div>
+        <div id="dash-provider" class="metric-card-value loading">&#8230;</div>
+        <div id="dash-provider-sub" class="metric-card-sub"></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">Voice input</div>
+        <div id="dash-voice-input" class="metric-card-value loading">&#8230;</div>
+        <div id="dash-voice-input-sub" class="metric-card-sub"></div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-card-label">Privacy mode</div>
+        <div id="dash-privacy" class="metric-card-value loading" aria-live="polite">&#8230;</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Needs your attention</div>
+    <div class="card mb-4">
+      <div id="dash-pending-approvals" aria-live="polite">
+        <p class="text-xs text-muted">Checking…</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Recent actions</div>
+    <div class="card mb-4">
+      <div id="dash-recent-actions">
+        <p class="text-xs text-muted">Loading…</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Shortcuts</div>
+    <div class="card mb-4">
+      <nav class="btn-row" aria-label="Quick links">
+        <a class="btn btn-primary" href="/ui/chat">Open Chat</a>
+        <a class="btn btn-ghost" href="/ui/voice">Voice</a>
+        <a class="btn btn-ghost" href="/ui/actions">Approvals</a>
+        <a class="btn btn-ghost" href="/ui/settings">Settings</a>
+        <a class="btn btn-ghost" href="/ui/diagnostics">Diagnostics</a>
+      </nav>
+    </div>
+  </div>
+
+  <div class="section">
     <div class="section-title">Build</div>
     <div class="grid grid-2 mb-4">
       <div class="metric-card">
