@@ -863,6 +863,9 @@ async function loadMemory(query) {
 
       card.appendChild(text);
       if (meta.textContent) card.appendChild(meta);
+      if (item.id !== undefined && item.id !== null) {
+        card.appendChild(_memoryDeleteButton(item, query));
+      }
       list.appendChild(card);
     });
   } catch (e) {
@@ -874,9 +877,71 @@ async function loadMemory(query) {
   }
 }
 
+function _memoryDeleteButton(item, query) {
+  const button = document.createElement("button");
+  button.className = "btn btn-ghost btn-sm memory-delete";
+  button.type = "button";
+  // Named, so a screen-reader user hears which memory this removes
+  // rather than a row of identical "Delete" buttons.
+  const preview = (item.content || "").slice(0, 40);
+  button.setAttribute("aria-label", `Delete memory: ${preview}`);
+  button.textContent = "Delete";
+
+  button.addEventListener("click", async () => {
+    if (!window.confirm("Delete this memory?\n\nThis cannot be undone.")) return;
+    button.disabled = true;
+    try {
+      const r = await API.post(`/memory/${item.id}/delete`, {});
+      if (r.success) {
+        loadMemory(query || null);
+      } else {
+        _setMemoryMessage(r.message, false);
+        button.disabled = false;
+      }
+    } catch (e) {
+      _setMemoryMessage("Could not delete that memory: " + e.message, false);
+      button.disabled = false;
+    }
+  });
+  return button;
+}
+
+function _setMemoryMessage(text, ok) {
+  const el = $("memory-add-message");
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
+}
+
+async function addMemoryFromPage() {
+  const input = $("memory-add-input");
+  if (!input) return;
+  const content = input.value.trim();
+  if (!content) { _setMemoryMessage("Type something to remember first.", false); return; }
+
+  const button = $("memory-add-btn");
+  if (button) button.disabled = true;
+  try {
+    const r = await API.post("/memory", { content });
+    // Privacy mode refuses the write, and says so — the page must show
+    // that refusal rather than pretending it saved.
+    _setMemoryMessage(r.message, r.success);
+    if (r.success) {
+      input.value = "";
+      loadMemory(null);
+    }
+  } catch (e) {
+    _setMemoryMessage("Could not save that memory: " + e.message, false);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function initMemory() {
   const btn   = $("memory-search-btn");
   const input = $("memory-search");
+  const addBtn = $("memory-add-btn");
+  const addInput = $("memory-add-input");
 
   const doSearch = () => {
     const q = input ? input.value.trim() : "";
@@ -886,6 +951,11 @@ function initMemory() {
   if (btn)   btn.addEventListener("click", doSearch);
   if (input) input.addEventListener("keydown", e => {
     if (e.key === "Enter") { e.preventDefault(); doSearch(); }
+  });
+
+  if (addBtn) addBtn.addEventListener("click", addMemoryFromPage);
+  if (addInput) addInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); addMemoryFromPage(); }
   });
 
   loadMemory(null);
@@ -1476,13 +1546,77 @@ async function refreshSettingsStartup() {
 
 async function refreshSettingsPrivacy() {
   const el = $("settings-privacy-status");
-  if (!el) return;
+  const toggle = $("settings-privacy-toggle");
+  if (!el && !toggle) return;
   try {
     const r = await API.get("/privacy/status");
-    el.textContent = r.active ? "On" : "Off";
-    el.className = `status-row-value ${r.active ? "text-ok" : "text-muted"}`;
+    if (el) {
+      el.textContent = r.active ? "On" : "Off";
+      el.className = r.active ? "text-ok" : "text-muted";
+    }
+    if (toggle) toggle.checked = r.active;   // trust the server, not local state
   } catch (e) {
-    el.textContent = "Unknown";
+    if (el) { el.textContent = "Unknown"; el.className = "text-muted"; }
+  }
+}
+
+// Toggling goes through POST /command, not a dedicated write endpoint:
+// that path is already protected, already writes an audit record, and
+// already publishes the WebSocket event the topbar indicator listens
+// for. A second way to change the same state would have to reproduce
+// all three — see app/api/routes.py's own note on this.
+async function setPrivacyMode(active) {
+  const toggle = $("settings-privacy-toggle");
+  try {
+    await API.post("/command", { command: active ? "privacy mode on" : "privacy mode off" });
+  } catch (e) {
+    if (toggle) toggle.checked = !active;   // never show a state that isn't real
+  }
+  await refreshSettingsPrivacy();
+  refreshPrivacyIndicator();
+}
+
+async function refreshStoredData() {
+  const host = $("settings-stored-data");
+  if (!host) return;
+  host.textContent = "";
+  try {
+    const data = await API.get("/privacy/data");
+    (data.items || []).forEach(item => {
+      const row = document.createElement("div");
+      row.className = "status-row";
+
+      const label = document.createElement("span");
+      label.className = "status-row-label";
+      label.textContent = item.label;
+
+      const value = document.createElement("span");
+      value.className = "status-row-value";
+      value.textContent = String(item.count);
+
+      row.appendChild(label);
+      row.appendChild(value);
+      host.appendChild(row);
+
+      const detail = document.createElement("p");
+      detail.className = "text-xs text-muted mt-2";
+      detail.textContent = item.detail;
+      host.appendChild(detail);
+    });
+
+    const note = document.createElement("p");
+    note.className = "text-xs text-muted mt-2";
+    // Stated rather than omitted: "your data stays local" is not the
+    // same claim as "your data is protected".
+    note.textContent = data.encrypted
+      ? "Stored encrypted."
+      : "Stored unencrypted in a plain database file on this computer.";
+    host.appendChild(note);
+  } catch (e) {
+    const p = document.createElement("p");
+    p.className = "text-xs text-err";
+    p.textContent = "Could not read what is stored.";
+    host.appendChild(p);
   }
 }
 
@@ -1529,12 +1663,16 @@ function initSettings() {
   refreshSettingsStartup();
   refreshSettingsPrivacy();
   refreshSettingsPaths();
+  refreshStoredData();
 
   const saveBtn = $("settings-key-save");
   const removeBtn = $("settings-key-remove");
   const input = $("settings-key-input");
   const startup = $("settings-startup-toggle");
   const providerSave = $("settings-provider-save");
+  const privacyToggle = $("settings-privacy-toggle");
+
+  if (privacyToggle) privacyToggle.addEventListener("change", () => setPrivacyMode(privacyToggle.checked));
 
   if (providerSave) providerSave.addEventListener("click", saveProviderSelection);
 

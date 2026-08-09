@@ -85,6 +85,36 @@ class Database:
             for r in rows
         ]
 
+    def delete_memory(self, memory_id: int) -> bool:
+        """Delete one memory. Returns whether a row was actually removed,
+        so a caller can tell "deleted" from "was not there" rather than
+        reporting success for an id that never existed."""
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+    def clear_memories(self) -> int:
+        """Delete every stored memory. Returns the number removed."""
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM memories")
+        conn.commit()
+        return cur.rowcount
+
+    def count_rows(self, table: str) -> int:
+        """Row count for one of the tables JARVIS stores user data in.
+
+        The table name is checked against a fixed set rather than
+        interpolated blindly — a count endpoint is not a reason to open a
+        path from a request to arbitrary SQL.
+        """
+        allowed = {"memories", "conversations", "action_logs", "action_lifecycle"}
+        if table not in allowed:
+            raise ValueError(f"Unknown table: {table!r}")
+        conn = self._get_conn()
+        row = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
+        return int(row["n"]) if row else 0
+
     # --- conversations ---
 
     def add_conversation(self, role: str, content: str) -> int:

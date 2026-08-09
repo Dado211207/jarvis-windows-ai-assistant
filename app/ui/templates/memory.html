@@ -7,9 +7,25 @@
   <div class="page-header">
     <h1 class="page-title">Memory</h1>
     <p class="page-subtitle">
-      Notes saved with <code class="mono">memory add &lt;text&gt;</code>.
-      Stored in local SQLite &mdash; never sent to any external server.
+      Things you have asked JARVIS to remember. Stored on this computer only,
+      and never sent anywhere.
     </p>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-title">Remember something</div>
+    <div class="flex items-center gap-2 mt-3">
+      <input
+        id="memory-add-input"
+        class="input"
+        type="text"
+        placeholder="Something you want JARVIS to remember&hellip;"
+        autocomplete="off"
+        aria-label="New memory"
+      >
+      <button id="memory-add-btn" class="btn btn-primary" type="button">Save</button>
+    </div>
+    <p id="memory-add-message" class="text-xs mt-2" aria-live="polite"></p>
   </div>
 
   <div class="card mb-3">
@@ -27,6 +43,12 @@
   </div>
 
   <div id="memory-list"></div>
+
+  <p class="text-xs text-muted mt-3">
+    Deleting a memory cannot be undone. To remove all of them at once, send
+    <span class="font-mono">forget everything</span> from the Chat page &mdash; that one asks you
+    to confirm first, on the Actions page.
+  </p>
 
 </div>
 {% endblock %}

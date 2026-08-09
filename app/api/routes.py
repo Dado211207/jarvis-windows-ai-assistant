@@ -134,6 +134,56 @@ def search_memory(q: str = Query(..., min_length=1, description="Search query"))
     return results
 
 
+class AddMemoryRequest(BaseModel):
+    content: str
+    tags: str = ""
+
+    @field_validator("content")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
+
+
+class MemoryActionResponse(BaseModel):
+    success: bool
+    message: str
+
+
+@router.post(
+    "/memory",
+    response_model=MemoryActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def create_memory(req: AddMemoryRequest) -> MemoryActionResponse:
+    """Save a memory from the Memory page.
+
+    Goes through the same handler as the `memory add` command, so the
+    privacy-mode refusal is identical whichever way it is reached — there
+    is no path that saves while privacy mode says nothing should be
+    saved.
+    """
+    from app.core.memory import add_memory
+
+    result = add_memory(req.content.strip(), req.tags.strip())
+    return MemoryActionResponse(success=result["success"], message=result["message"])
+
+
+@router.post(
+    "/memory/{memory_id}/delete",
+    response_model=MemoryActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def remove_memory(memory_id: int) -> MemoryActionResponse:
+    """Delete one memory. Deleting *everything* is a different decision
+    and goes through the approval gate — see app/core/memory.py."""
+    from app.core.memory import delete_memory
+
+    result = delete_memory(memory_id)
+    return MemoryActionResponse(success=result["success"], message=result["message"])
+
+
 @router.get("/memory", response_model=List[MemoryEntry])
 def list_memory(limit: int = Query(default=20, ge=1, le=100)) -> List[MemoryEntry]:
     from db.database import get_db
@@ -302,6 +352,19 @@ class PrivacyStatusResponse(BaseModel):
     changed_at: Optional[str] = None
 
 
+class StoredDataItem(BaseModel):
+    key: str
+    label: str
+    count: int
+    detail: str
+
+
+class StoredDataResponse(BaseModel):
+    items: List[StoredDataItem]
+    location: str
+    encrypted: bool
+
+
 @router.get("/privacy/status", response_model=PrivacyStatusResponse)
 def privacy_status() -> PrivacyStatusResponse:
     from app.core.privacy import privacy_mode
@@ -309,6 +372,52 @@ def privacy_status() -> PrivacyStatusResponse:
     return PrivacyStatusResponse(
         active=privacy_mode.active,
         changed_at=changed_at.isoformat() if changed_at else None,
+    )
+
+
+@router.get("/privacy/data", response_model=StoredDataResponse)
+def stored_data() -> StoredDataResponse:
+    """What JARVIS is holding about you, counted.
+
+    "Your data stays local" is easy to write and impossible for a user to
+    check. This makes it checkable: how many rows of each kind exist,
+    where the file is, and — stated plainly rather than omitted — that
+    the file is not encrypted.
+
+    Counts only. No content is returned, so this stays safe to render on
+    a page that may be open while someone is looking over a shoulder.
+    """
+    from app.config import settings
+
+    def _count(table: str) -> int:
+        try:
+            from db.database import get_db
+            return get_db().count_rows(table)
+        except Exception:  # noqa: BLE001 — a missing DB reads as "nothing stored"
+            logger.warning("Could not count rows in %s.", table, exc_info=True)
+            return 0
+
+    return StoredDataResponse(
+        items=[
+            StoredDataItem(
+                key="memories", label="Saved memories", count=_count("memories"),
+                detail="Things you explicitly asked JARVIS to remember.",
+            ),
+            StoredDataItem(
+                key="conversations", label="Chat messages", count=_count("conversations"),
+                detail="Your side and JARVIS's side of past conversations.",
+            ),
+            StoredDataItem(
+                key="action_logs", label="Action log entries", count=_count("action_logs"),
+                detail="What was run, and whether it worked.",
+            ),
+            StoredDataItem(
+                key="action_lifecycle", label="Audit records", count=_count("action_lifecycle"),
+                detail="The full record of every action proposed on this computer.",
+            ),
+        ],
+        location=str(settings.db_path),
+        encrypted=False,
     )
 
 

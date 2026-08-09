@@ -78,6 +78,9 @@ ROUTES: List[Route] = [
     Route(r"^stop\s+speaking$", "tts_stop"),
     # Maintenance commands (Phase 5 — approval required)
     Route(r"^clear\s+logs?$", "clear_logs"),
+    # Bulk memory deletion — approval-required, same gate as clear_logs
+    Route(r"^(?:clear|forget)\s+(?:all\s+)?(?:memory|memories)$", "clear_memory"),
+    Route(r"^forget\s+everything$", "clear_memory"),
     # Phase 6: Dedicated system info commands
     Route(r"^disk\s+(?:space|usage)$", "disk_space"),
     Route(r"^show\s+disk(?:\s+usage)?$", "disk_space"),
@@ -126,6 +129,15 @@ _PENDING_ACTION_META: Dict[str, Dict[str, str]] = {
         "description": (
             "Permanently deletes all action log entries from the local JARVIS database. "
             "This action cannot be undone."
+        ),
+        "risk_level": "medium",
+    },
+    "clear_memory": {
+        "action_name": "Delete All Saved Memories",
+        "description": (
+            "Permanently deletes every memory you asked JARVIS to remember. "
+            "Your notes, chat history and action log are not affected. "
+            "This cannot be undone."
         ),
         "risk_level": "medium",
     },
