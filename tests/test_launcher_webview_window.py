@@ -312,7 +312,7 @@ def test_tray_close_action_stops_cancelling_the_close_once_shutdown_is_requested
     close_action="tray", the window's close handler cancelled the
     WM_CLOSE that a graceful `taskkill` sends, so the packaged app
     refused to exit and the clean-install test timed out waiting for it
-    (Phase A.9). A user's X click and an OS/installer shutdown request
+    (the graceful-taskkill phase). A user's X click and an OS/installer shutdown request
     are the same WM_CLOSE message and can't be told apart at the
     pywebview level — request_shutdown() is the explicit signal that
     distinguishes them."""

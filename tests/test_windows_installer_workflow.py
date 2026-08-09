@@ -147,3 +147,40 @@ def test_superseded_runs_are_cancelled():
     failures."""
     data = _parsed()
     assert data["concurrency"]["cancel-in-progress"] is True
+
+
+# ---------------------------------------------------------------------------
+# The acceptance test waits for readiness, not for a guessed interval
+# ---------------------------------------------------------------------------
+
+def test_the_clean_install_test_waits_for_the_tray_before_closing_it():
+    """/health answers as soon as the server child is up, several seconds
+    before the parent has a window able to receive WM_CLOSE. A graceful
+    taskkill sent in that gap reaches nothing and the app never shuts
+    down — which is exactly what happened on CI the first time the native
+    window really opened.
+
+    The fix has to be a readiness signal rather than a longer exit
+    timeout, or it hides the gap instead of closing it. This asserts
+    both halves: the wait exists, and it happens before the taskkill.
+    """
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "scripts" / "test_clean_install.py").read_text(encoding="utf-8")
+
+    assert "wait_for_tray_loop" in source
+    assert source.index("wait_for_tray_loop()") < source.index('"taskkill"'), (
+        "the readiness wait must come before the close request"
+    )
+
+
+def test_the_graceful_exit_budget_was_not_quietly_raised():
+    """The owner's rule: do not merely increase a timeout unless evidence
+    proves the app is healthy but slow. The readiness wait above is the
+    fix; this pins the exit budget so a future failure cannot be answered
+    by stretching it instead."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "scripts" / "test_clean_install.py").read_text(encoding="utf-8")
+
+    assert "PROCESS_EXIT_TIMEOUT_SECONDS = 15.0" in source
