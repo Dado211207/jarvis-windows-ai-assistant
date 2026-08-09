@@ -91,7 +91,11 @@ def test_only_text_notes_are_listed(notes_dir):
 # ---------------------------------------------------------------------------
 
 def test_a_note_can_be_read_back(notes_dir):
-    (notes_dir / "shopping.txt").write_text("milk\nbread", encoding="utf-8")
+    # Written as bytes on purpose: Path.write_text() translates newlines
+    # on Windows, so a text-mode write would not put the bytes on disk
+    # that this test claims to be reading back. read_note decodes the
+    # file exactly as stored, which is what a note's content means.
+    (notes_dir / "shopping.txt").write_bytes(b"milk\nbread")
 
     result = notes_module.read_note("shopping.txt")
 
