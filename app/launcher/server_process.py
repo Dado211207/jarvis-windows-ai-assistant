@@ -326,38 +326,42 @@ class ServerProcess:
     def port_is_free(self) -> bool:
         """Whether the next server could actually take this port.
 
-        Two checks, because neither alone is honest on both platforms:
+        A bind attempt, plus a connect attempt as a second opinion. The
+        subtlety is entirely in SO_REUSEADDR, which means *opposite
+        things* on the two platforms and cost this check two CI rounds to
+        get right:
 
-        * **Nothing answers a connection.** A live listener is a live
-          listener whatever bind() would say — and on Windows SO_REUSEADDR
-          lets a bind succeed *while another process is still listening*,
-          so a bind-only check would report a port free that plainly is
-          not.
-        * **A bind succeeds**, with the same SO_REUSEADDR uvicorn itself
-          sets. On Linux a socket still in TIME_WAIT refuses a plain bind,
-          so a stricter probe than the real server would report a port
-          busy that uvicorn would have taken happily.
+        * **On Windows**, SO_REUSEADDR lets a socket bind a port another
+          socket is actively listening on. A probe that sets it therefore
+          reports every busy port as free — which is exactly what it did,
+          silently, until its own test caught it. So the probe binds
+          *without* it, and a bind failure is a truthful "still in use".
+        * **On POSIX**, SO_REUSEADDR does not permit stealing a live
+          listener; it only permits rebinding through TIME_WAIT. uvicorn
+          sets it, so a probe without it would be stricter than the real
+          server and report a port busy that uvicorn would have taken.
 
-        Together they answer the question the next server actually asks.
+        Each branch is the right question for its own platform. The
+        connect check adds nothing on a machine where bind is already
+        correct, and costs one loopback attempt — worth keeping, because
+        "something answered on this port" is unambiguous evidence on any
+        platform whatever the binding rules happen to be.
         """
         import socket
 
         # create_connection(), not connect_ex() on a socket with a
-        # timeout: setting a timeout puts the socket in non-blocking
-        # mode, so on Windows connect_ex() returns WSAEWOULDBLOCK
-        # immediately instead of 0 even when the connection goes on to
-        # succeed. Only a loopback connect on Linux completes fast enough
-        # to return 0 — which is exactly why this passed here and failed
-        # on the platform that matters. create_connection does the
-        # non-blocking connect and the wait properly, on both.
+        # timeout: setting a timeout puts the socket in non-blocking mode,
+        # so connect_ex() returns WSAEWOULDBLOCK immediately on Windows
+        # rather than 0, even when the connection goes on to succeed.
         try:
             with socket.create_connection((self.host, self.port), timeout=0.25):
-                return False  # something is still listening
+                return False  # something answered; the port is plainly in use
         except OSError:
             pass  # nothing answered, which is what we want
 
         binder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        binder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if sys.platform != "win32":
+            binder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             binder.bind((self.host, self.port))
             return True

@@ -443,3 +443,48 @@ def test_stop_waits_for_the_kill_to_land_before_reporting_it():
     assert process.terminate_calls == 1, "terminate must be tried before kill"
     assert process.kill_calls == 1
     assert process.poll() is not None, "stop() must not return before the child is really gone"
+
+
+def test_the_probe_does_not_set_so_reuseaddr_on_windows(monkeypatch):
+    """The bug this pins, which took two CI rounds to find.
+
+    SO_REUSEADDR means opposite things on the two platforms: on Windows it
+    lets a socket bind a port another socket is actively listening on, so
+    a probe that sets it reports every busy port as free. On POSIX it only
+    permits rebinding through TIME_WAIT, and uvicorn sets it, so a probe
+    without it is stricter than the real server.
+
+    Asserted by watching the option actually being set, because the
+    consequence — a restart racing a port that was never released — is
+    invisible on the Linux machine this suite usually runs on.
+    """
+    import socket as socket_module
+
+    from app.launcher import server_process as sp
+    from app.launcher.server_process import ServerProcess
+
+    options = []
+    real_socket = socket_module.socket
+
+    class _WatchingSocket(real_socket):
+        def setsockopt(self, level, option, value):
+            options.append((level, option, value))
+            return super().setsockopt(level, option, value)
+
+    monkeypatch.setattr(socket_module, "socket", _WatchingSocket)
+
+    server = ServerProcess(host="127.0.0.1", port=_free_port())
+
+    monkeypatch.setattr(sp.sys, "platform", "win32")
+    options.clear()
+    server.port_is_free()
+    assert (socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1) not in options, (
+        "on Windows this would report every busy port as free"
+    )
+
+    monkeypatch.setattr(sp.sys, "platform", "linux")
+    options.clear()
+    server.port_is_free()
+    assert (socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1) in options, (
+        "on POSIX the probe must match what uvicorn itself does"
+    )
