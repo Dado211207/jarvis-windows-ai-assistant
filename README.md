@@ -461,6 +461,16 @@ pytest
 | Pipeline integration (v0.2) | `tests/test_pipeline_integration.py` | Real end-to-end dispatch → policy → lifecycle → events |
 | Concurrency (v0.2) | `tests/test_concurrency.py` | Real multi-threaded races, not just sequential double-calls |
 | Migration compatibility (v0.2) | `tests/test_migration_compatibility.py` | Upgrading an existing pre-v0.2 database preserves data |
+| AI providers | `tests/test_ai_providers.py` | Per-cause failure classification, streaming, cancellation, Ollama model honesty, no model download |
+| Chat pipeline | `tests/test_chat_pipeline.py` | Honest error messages, bounded history, privacy gating, streaming/stop/reset endpoints |
+| Provider selection | `tests/test_provider_selection.py` | Preferences allowlist, precedence, refusing an undetected provider or model |
+| Voice output | `tests/test_voice_output.py` | One flag across every surface, server-side gate, approval prompts never spoken |
+| Phase 7 actions | `tests/test_phase7_actions.py` | Note containment against real files and symlinks, clock, process snapshot, lock |
+| Action history | `tests/test_action_history.py` | Audit trail exposure, filtering, totals, no secret ever served |
+| Memory & privacy | `tests/test_memory_privacy.py` | Save/delete from the page, approval-gated bulk clear, stored-data counts |
+| About & updates | `tests/test_about_and_updates.py` | Version consistency across three files, no automatic update check, licence notices |
+| Security invariants | `tests/test_security_invariants.py` | Every mutating endpoint token-gated, no shell/eval/pickle, no credential literal, approval gate holds |
+| Browser + accessibility | `tests/test_playwright_e2e.py` | Real Chromium: streaming, Stop, spoken replies, skip link, heading order, axe |
 
 ### CI pipeline
 
