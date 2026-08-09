@@ -26,15 +26,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 CORE_IMPORTS = [
     "app.api.server",
+    "app.api.chat",
     "app.core.brain",
     "app.core.tool_registry",
     "app.core.policy",
     "app.core.runtime_state",
+    "app.core.ai",
+    "app.core.ai.anthropic_provider",
+    "app.core.ai.ollama_provider",
+    "app.core.conversation",
+    "app.core.generation",
+    "app.core.preferences",
     "app.desktop.apps",
     "app.desktop.folders",
     "app.desktop.clipboard",
     "app.desktop.notes",
+    "app.desktop.session",
 ]
+
+# Every page a user can reach from the sidebar. Walked over a real HTTP
+# connection to a real uvicorn bind, not a TestClient: a template that
+# renders fine in-process can still fail here (a missing static mount, a
+# response the ASGI layer cannot encode), and this job exists to catch
+# what only shows up when the server is really running.
+UI_PAGES = [
+    "/ui/", "/ui/chat", "/ui/actions", "/ui/voice", "/ui/logs", "/ui/memory",
+    "/ui/help", "/ui/settings", "/ui/diagnostics", "/ui/setup",
+]
+
+# Read-only endpoints. Mutating ones are deliberately absent: this smoke
+# check must not change anything on the machine it runs on.
+READ_ENDPOINTS = [
+    "/", "/health", "/system", "/tools", "/logs", "/memory", "/conversation",
+    "/voice/status", "/voice/stt-status", "/privacy/status", "/privacy/data",
+    "/providers", "/settings/api-key-status", "/settings/startup",
+    "/onboarding/readiness", "/onboarding/complete", "/diagnostics",
+    "/about", "/about/notices", "/actions/pending", "/actions/history",
+]
+
+STATIC_ASSETS = ["/ui/static/style.css", "/ui/static/app.js"]
 
 
 def check_imports() -> None:
@@ -54,24 +84,105 @@ def check_fastapi_startup() -> None:
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
 
+    base = "http://127.0.0.1:5599"
     healthy = False
+    failures = []
     try:
         for _ in range(50):
             try:
-                r = httpx.get("http://127.0.0.1:5599/health", timeout=1)
+                r = httpx.get(f"{base}/health", timeout=1)
                 if r.status_code == 200:
                     healthy = True
                     break
             except Exception:
                 pass
             time.sleep(0.2)
+
+        if healthy:
+            failures = _walk_everything(httpx, base)
     finally:
         server.should_exit = True
         thread.join(timeout=5)
 
     if not healthy:
         raise RuntimeError("FastAPI did not report healthy within the timeout")
-    print("FastAPI startup smoke OK (127.0.0.1 only, real bind, real shutdown)")
+    if failures:
+        raise RuntimeError("real-server checks failed:\n  " + "\n  ".join(failures))
+    print(
+        f"FastAPI smoke OK — {len(UI_PAGES)} pages, {len(READ_ENDPOINTS)} endpoints, "
+        f"{len(STATIC_ASSETS)} assets over a real bind, then a real shutdown"
+    )
+
+
+def _walk_everything(httpx, base):
+    """Every page, endpoint and asset over the live server. Collects all
+    failures rather than stopping at the first, so one run reports the
+    whole picture instead of one symptom at a time."""
+    failures = []
+
+    for path in UI_PAGES:
+        try:
+            response = httpx.get(f"{base}{path}", timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{path}: request failed ({type(exc).__name__})")
+            continue
+        if response.status_code != 200:
+            failures.append(f"{path}: HTTP {response.status_code}")
+        elif "<html" not in response.text.lower():
+            failures.append(f"{path}: did not return an HTML document")
+
+    for path in READ_ENDPOINTS:
+        try:
+            response = httpx.get(f"{base}{path}", timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{path}: request failed ({type(exc).__name__})")
+            continue
+        if response.status_code != 200:
+            failures.append(f"{path}: HTTP {response.status_code}")
+
+    for path in STATIC_ASSETS:
+        try:
+            response = httpx.get(f"{base}{path}", timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{path}: request failed ({type(exc).__name__})")
+            continue
+        if response.status_code != 200 or not response.text.strip():
+            failures.append(f"{path}: not served (HTTP {response.status_code})")
+
+    failures.extend(_check_no_credentials_are_served(httpx, base))
+    return failures
+
+
+def _check_no_credentials_are_served(httpx, base):
+    """Plant a credential-shaped value where the app would read one, then
+    walk every page and read-only endpoint asserting it never comes back.
+
+    Deliberately end-to-end: the unit suite proves each surface
+    individually, and this proves the assembled server — which is the
+    thing a user actually points a browser at.
+    """
+    from app.config import settings
+
+    planted = "sk-ant-smoke-check-must-never-be-served"
+    original = getattr(type(settings), "effective_api_key", None)
+    failures = []
+    try:
+        type(settings).effective_api_key = property(lambda self: planted)
+        for path in UI_PAGES + READ_ENDPOINTS:
+            try:
+                body = httpx.get(f"{base}{path}", timeout=10).text
+            except Exception:  # noqa: BLE001 — already reported above
+                continue
+            if planted in body or "sk-ant-" in body:
+                failures.append(f"{path}: served a credential-shaped value")
+    finally:
+        if original is not None:
+            type(settings).effective_api_key = original
+        else:
+            # Nothing to restore means the attribute was not there before;
+            # leaving the planted one behind would be worse than removing it.
+            delattr(type(settings), "effective_api_key")
+    return failures
 
 
 if __name__ == "__main__":
