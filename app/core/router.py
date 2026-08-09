@@ -92,6 +92,24 @@ ROUTES: List[Route] = [
         "create_note",
         lambda m: {"content": m.group(1).strip()},
     ),
+    # Phase 7: reading notes back. Listed before read_note's pattern so
+    # "list notes" can never be parsed as a request to read a note called
+    # "notes".
+    Route(r"^(?:list|show|my)\s+notes$", "list_notes"),
+    Route(r"^notes$", "list_notes"),
+    Route(
+        r"^(?:read|open)\s+note\s+(.+)$",
+        "read_note",
+        lambda m: {"filename": m.group(1).strip()},
+    ),
+    # Phase 7: time, processes, and locking the screen
+    Route(r"^(?:what(?:'s| is)\s+the\s+)?time$", "current_time"),
+    Route(r"^what\s+time\s+is\s+it\??$", "current_time"),
+    Route(r"^(?:what(?:'s| is)\s+(?:the\s+)?)?date$", "current_time"),
+    Route(r"^today(?:'s)?\s+date$", "current_time"),
+    Route(r"^(?:top|show)\s+processes$", "top_processes"),
+    Route(r"^what(?:'s| is)\s+using\s+(?:my\s+)?(?:memory|ram)\??$", "top_processes"),
+    Route(r"^lock(?:\s+(?:my\s+)?(?:screen|pc|computer|workstation))?$", "lock_workstation"),
     # v0.2: Clipboard read (SENSITIVE — always approval-required, see app/desktop/clipboard.py)
     Route(r"^(?:read|show|check)\s+clipboard$", "read_clipboard"),
     Route(r"^clipboard$", "read_clipboard"),

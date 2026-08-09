@@ -15,10 +15,63 @@ how Claude Code sessions should work on this codebase.
 - **Register, don't hard-code.** Add new tools via the `ToolRegistry`; do not add
   elif chains to `router.py` or `brain.py`.
 
+## AI provider rules (non-negotiable)
+
+- **One provider contract.** All generation goes through `app/core/ai/`.
+  Providers are constructed with a `ProviderConfig`; they never read
+  global settings, and they never raise a raw SDK exception past their
+  own boundary — only a `ProviderError` carrying an `ErrorCategory`.
+- **The failure a user reads must be the failure that happened.** A rate
+  limit, an expired key, an unreachable local server and a timeout are
+  four different problems with four different fixes. Never collapse them
+  into one message, and never tell someone to add an API key when they
+  already have one.
+- **Never claim a provider or model that was not detected.**
+  `POST /providers/select` refuses a provider that is not available and
+  an Ollama model the local instance does not report, and the refusal
+  names what *is* installed.
+- **JARVIS never downloads an AI model.** `/api/pull` is never called
+  from anywhere in this codebase — enforced by a test that walks the AST
+  of every module under `app/`.
+- **Ollama is loopback-only.** There is deliberately no setting for a
+  remote Ollama host; that would turn a local-first assistant into one
+  that ships conversations to a machine configured once and forgotten.
+- **Conversation history is bounded and privacy-gated.** The last few
+  turns are replayed so a follow-up question makes sense; while privacy
+  mode is on, a request carries only the message just typed.
+- **`/chat/stream` is not a second dispatch path.** It asks
+  `router.find_route()` first and executes a matched command through the
+  ordinary policy-gated path. No tool is reachable through it that
+  `POST /command` could not reach, and the approval gate applies
+  identically.
+
+## Preferences store rules (non-negotiable)
+
+- **`app/core/preferences.py` is an allowlist, not a settings store.**
+  Only `STORABLE_KEYS` may be written; anything else is refused. It must
+  never become a general "write any setting from the browser" mechanism.
+- **Never a credential.** API keys live in the OS credential store
+  (`app/core/credentials.py`). A plain JSON file in AppData is the wrong
+  place for a secret.
+- **A saved choice wins over the environment variable**, which supplies
+  the starting default. The reverse gives a control that silently does
+  nothing on a machine where the variable happens to be set.
+
 ## Phase 3 TTS rules (non-negotiable)
 
 - **Output only.** Phase 3 TTS is text-to-speech output. No microphone input,
   no speech-to-text, no always-listening behavior, no wake word — ever.
+  (v0.2 added push-to-talk input as a separate, explicitly user-triggered
+  feature in `app/voice/stt.py`; the TTS engine itself still never
+  captures audio.)
+- **One flag decides whether JARVIS speaks:** `tts_service.output_enabled`.
+  Every surface reads it — the `speak on`/`speak off` commands, the Voice
+  page toggle, the `/voice/speak` gate, `/voice/status` and the CLI. Two
+  flags is how the desktop app ended up never speaking at all.
+- **The speech gate is server-side.** A page left open before speech was
+  switched off elsewhere must not be able to make JARVIS talk.
+- **Approval prompts are never read aloud.** They are to be read and
+  decided on.
 - **TTS failures must never crash the app.** All pyttsx3 errors are caught and
   logged; the app continues normally without audio.
 - **Tests must mock the TTS engine.** No test may play real audio or require
@@ -124,6 +177,20 @@ how Claude Code sessions should work on this codebase.
 - **All Phase 6 tools are SAFE permission level.** None require approval or are blocked.
   No Phase 6 tool deletes files, modifies settings, or sends data externally.
 
+## Phase 7 action rules (non-negotiable)
+
+- **Notes are addressed by filename, never by path.** `read_note` refuses
+  a name containing a separator or `..` rather than sanitising it, and
+  re-checks containment after resolving, so a symlink planted in the
+  notes folder cannot read outside it. Notes are still never deleted.
+- **Locking is the only session action that will ever exist.** Sign out,
+  restart, sleep and shut down all end running programs and can lose
+  unsaved work in other applications; locking cannot. See
+  `app/desktop/session.py`, whose test asserts nothing else was added.
+- **Process information is a snapshot on request.** Nothing is sampled in
+  the background, recorded, or stored — that would be the monitoring this
+  file's Safety rules forbid.
+
 ## Phase 7 dashboard rules (non-negotiable)
 
 - **Sidebar layout only.** The dashboard uses a fixed 240 px sidebar replacing the
@@ -210,6 +277,17 @@ should be built on top of; see `docs/audit-v0.2.md` and
 > media device) remain deferred — see `docs/audit-v0.2.md`,
 > `docs/THREAT_MODEL.md`, and the PR description for the exact scope and
 > honest gaps.
+
+> **Desktop release-candidate pass** (also not a numbered phase, and
+> deliberately using its own numbering in the PR): the packaged Windows
+> desktop application. Three-process shell (tray parent, server child,
+> native window child) with authenticated IPC, an Inno Setup installer
+> and uninstaller, a first-run wizard, Settings and Diagnostics pages, a
+> Home overview, the AI provider pipeline above (streaming, stop,
+> conversation reset, selectable Anthropic/Ollama), spoken replies that
+> actually work in the desktop app, and the Phase 7 actions above.
+> Wake-word voice, OCR, browser automation and the Phase 8–10 scope
+> below are all still out.
 
 ## Do NOT implement in this repo (ever, without explicit separate design review)
 

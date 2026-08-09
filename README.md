@@ -174,13 +174,19 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 The following are **not** in the current release. Some are planned for later phases with explicit user confirmation and safety controls; others are permanently excluded.
 
 **Planned later (with explicit user permission and safety controls):**
-- Push-to-talk voice input (Phase 7 — approval-gated, no always-listening)
-- Screen intelligence / OCR — on user request only (Phase 7)
-- Browser automation with approval gate (Phase 8)
-- Controlled computer-use actions with preview + confirmation (Phase 9)
+- Screen intelligence / OCR — on user request only (Phase 8)
+- Browser automation with approval gate (Phase 9)
+- Smart home, health and trading integrations (Phase 10)
+
+**Session actions that will not be added:** JARVIS can lock the screen and
+nothing else. Sign out, restart, sleep and shut down all end running
+programs and can lose unsaved work in other applications; locking cannot.
+See `app/desktop/session.py`.
 
 **Permanently excluded:**
-- Always-listening / wake word (no microphone open in the background, ever)
+- Always-listening / wake word (no microphone open in the background, ever).
+  Push-to-talk voice input **is** included: one recording per button press,
+  started and stopped by the user.
 - Email sending without an approval flow
 - AnyDesk / remote control
 - Any network exposure (API binds to `127.0.0.1` only, never `0.0.0.0`)
@@ -298,6 +304,9 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | `disk space` | Show disk usage (used / free / total) |
 | `network status` | Show hostname and local IP (read-only, no scanning) |
 | `battery status` | Show battery / power status |
+| `what time is it` | Local date and time, read from this computer's clock |
+| `top processes` | What is using the most memory right now — a snapshot, nothing is recorded |
+| `lock screen` | Lock Windows, exactly like Win+L. Nothing closes and no work is lost |
 | `screenshot` | Capture screen → `data/screenshots/` |
 | `take screenshot` | Same as above |
 
@@ -337,16 +346,18 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | Command | What it does |
 |---|---|
 | `create note <text>` | Save a timestamped note to `~/Documents/JARVIS_Notes/` |
+| `list notes` | List saved notes, newest first |
+| `read note <filename>` | Read one note back (only from the notes folder; a path is refused) |
 | `memory add <text>` | Save a note to local SQLite memory |
 | `memory search <query>` | Search saved memories |
 
-### Voice (TTS)
+### Voice
 
 | Command | What it does |
 |---|---|
-| `speak on` | Enable TTS voice output for this session |
-| `speak off` | Disable TTS voice output |
-| `speak status` | Show TTS engine status |
+| `speak on` | Speak replies out loud. The choice is remembered across restarts |
+| `speak off` | Stop speaking replies |
+| `speak status` | Show whether replies are spoken, and the speech engine status |
 | `speak test` | Speak a test phrase aloud |
 | `stop speaking` | Stop current speech immediately |
 
@@ -372,9 +383,17 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | GET | `/actions/{id}` | Get one pending/resolved action by ID |
 | POST | `/actions/{id}/confirm` | Confirm and execute a pending action |
 | POST | `/actions/{id}/cancel` | Cancel a pending action |
-| GET | `/voice/status` | TTS enabled / engine / available |
-| POST | `/voice/speak` | `{"text": "hello"}` — speak text (requires TTS enabled) |
+| GET | `/voice/status` | Whether replies are spoken / engine / available |
+| POST | `/voice/output` | `{"enabled": true}` — turn spoken replies on or off; remembered |
+| POST | `/voice/speak` | `{"text": "hello"}` — speak text (refused when speech is off) |
 | POST | `/voice/stop` | Stop current speech |
+| GET | `/voice/stt-status` | Push-to-talk readiness (local speech recognition) |
+| POST | `/chat/stream` | `{"command": "..."}` — the chat answer, streamed as server-sent events |
+| POST | `/chat/stop` | Stop a generation in progress |
+| POST | `/conversation/reset` | Delete stored chat history (leaves the action audit trail alone) |
+| GET | `/providers` | Which AI providers were actually detected, and which is selected |
+| POST | `/providers/select` | `{"provider": "ollama", "model": "llama3:latest"}` — refuses anything not detected |
+| GET | `/diagnostics` | Copyable diagnostic report — never contains a credential |
 | WS | `/ws/events` | **(v0.2)** Real-time typed event stream — read-only, optional `?since=<seq>` to resume after a reconnect. See `app/api/ws.py`. |
 
 ---
@@ -580,24 +599,35 @@ app/
     memory.py           — Memory tool wrappers
     models.py           — Shared Pydantic models (incl. v0.2 RiskLevel, ActionLifecycleStatus)
     system_prompt.py    — JARVIS AI safety constraints
+    ai/                 — Provider contract, Anthropic and Ollama implementations
+    conversation.py     — History sent to a provider, persistence, and reset
+    generation.py       — Live generations, so one can be stopped
+    providers.py        — Provider detection: what this machine can really use
+    preferences.py      — Small allowlisted store for choices made in the app
+    credentials.py      — API key in the OS credential store (never a file)
+    diagnostics.py      — The copyable report, built by allowlist
   desktop/
     apps.py         — App launcher (allowlist)
     web.py          — Safe URL opener
     folders.py      — Safe folder opener (allowlisted roots)
-    notes.py        — Note creation
+    notes.py        — Notes: create, list, read (confined to JARVIS_Notes)
     screenshots.py  — Screenshot tool
-    system.py       — System status (psutil)
+    system.py       — System status, clock, memory snapshot (psutil)
+    session.py      — Lock the screen; the only session action that exists
     maintenance.py  — Log clearing (approval-required)
     clipboard.py     (v0.2) — read_clipboard (SENSITIVE, approval-required)
   voice/
-    tts.py          — Offline TTS (pyttsx3)
+    tts.py          — Offline speech output (pyttsx3)
+    stt.py          — Push-to-talk speech recognition (local, opt-in)
+  launcher/         — Desktop shell: tray, server child, native window child
   ui/
-    routes.py       — 7 dashboard pages
+    routes.py       — Dashboard pages
     templates/, static/ — Jinja2 + vanilla JS/CSS, no external CDNs
   api/
     server.py       — FastAPI app; CORS + lifespan runtime-state wiring
     routes.py       — Route handlers
     actions.py      — Approval confirm/cancel; v0.2 lifecycle sync
+    chat.py         — Streaming chat, stop-generation, conversation reset
     origin.py         (v0.2) — Shared CORS/WebSocket origin allowlist
     ws.py             (v0.2) — GET /ws/events real-time stream
 db/
