@@ -430,6 +430,94 @@ def onboarding_readiness() -> OnboardingReadinessResponse:
     )
 
 
+# ---------------------------------------------------------------------------
+# AI provider discovery (onboarding wizard + Settings). Read-only: this
+# only reports what was actually detected — see app/core/providers.py,
+# which never claims a provider is available without checking, and never
+# returns a credential.
+# ---------------------------------------------------------------------------
+
+class ProviderStatusResponse(BaseModel):
+    name: str
+    display_name: str
+    kind: str
+    available: bool
+    detail: str
+    models: List[str] = []
+    requires_credentials: bool = False
+
+
+class ProvidersResponse(BaseModel):
+    selected: str
+    providers: List[ProviderStatusResponse]
+
+
+@router.get("/providers", response_model=ProvidersResponse)
+def list_providers() -> ProvidersResponse:
+    from app.core.providers import detect_all, selected_provider
+
+    return ProvidersResponse(
+        selected=selected_provider(),
+        providers=[ProviderStatusResponse(**vars(status)) for status in detect_all()],
+    )
+
+
+# ---------------------------------------------------------------------------
+# "Start JARVIS when I sign in" — a real per-user Startup shortcut, not a
+# stored preference. State is read from disk so it can never drift out of
+# sync with reality; see app/launcher/startup_shortcut.py.
+# ---------------------------------------------------------------------------
+
+class StartupStatusResponse(BaseModel):
+    supported: bool
+    enabled: bool
+    detail: str
+
+
+class SetStartupRequest(BaseModel):
+    enabled: bool
+
+
+def _startup_status() -> StartupStatusResponse:
+    from app.launcher import startup_shortcut
+
+    supported = startup_shortcut.is_supported()
+    enabled = startup_shortcut.is_enabled()
+    return StartupStatusResponse(
+        supported=supported,
+        enabled=enabled,
+        detail=(
+            ("JARVIS starts automatically when you sign in." if enabled
+             else "JARVIS does not start automatically.")
+            if supported else
+            "Starting with Windows is only available on Windows."
+        ),
+    )
+
+
+@router.get("/settings/startup", response_model=StartupStatusResponse)
+def startup_status() -> StartupStatusResponse:
+    return _startup_status()
+
+
+@router.post(
+    "/settings/startup",
+    response_model=StartupStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_startup(req: SetStartupRequest) -> StartupStatusResponse:
+    from app.launcher import startup_shortcut
+
+    if req.enabled:
+        startup_shortcut.enable()
+    else:
+        startup_shortcut.disable()
+    # Report the real resulting state, not the requested one: if creating
+    # the shortcut failed, the response must say so rather than echo back
+    # a success the filesystem does not support.
+    return _startup_status()
+
+
 class OnboardingCompleteResponse(BaseModel):
     success: bool
 
