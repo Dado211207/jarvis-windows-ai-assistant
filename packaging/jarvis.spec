@@ -65,6 +65,15 @@ datas = [
     (str(repo_root / "app" / "ui" / "static"), "app/ui/static"),
     (str(repo_root / "docs" / "THIRD_PARTY_NOTICES.md"), "."),
     (str(repo_root / "README.md"), "."),
+    # Reproduced licence texts travel with the product, not with a link:
+    # the obligation is to the person holding the binary.
+    (str(repo_root / "docs" / "licences"), "docs/licences"),
+    # The pronunciation lexicon. PyInstaller does not collect package
+    # data for the application's own modules — only for third-party
+    # packages via collect_all — so without this line the installed app
+    # has a voice that cannot pronounce anything and falls back to
+    # spelling every word.
+    (str(repo_root / "app" / "voice" / "kokoro" / "data"), "app/voice/kokoro/data"),
 ]
 binaries = []
 

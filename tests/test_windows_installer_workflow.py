@@ -190,3 +190,35 @@ def test_the_graceful_exit_budget_was_not_quietly_raised():
     source = (Path(__file__).resolve().parent.parent / "scripts" / "test_clean_install.py").read_text(encoding="utf-8")
 
     assert "PROCESS_EXIT_TIMEOUT_SECONDS = 15.0" in source
+
+
+def test_the_gate_treats_pinned_bytes_as_packaging_relevant():
+    """The licence-byte fix was a .gitattributes and tests change, so the
+    gate skipped the installer job entirely — and the packaged-bytes
+    verification silently never ran. Anything whose exact bytes the
+    installer must preserve has to trigger the build that checks them."""
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parent.parent
+        / ".github" / "workflows" / "windows-installer.yml"
+    ).read_text(encoding="utf-8")
+
+    for path in ("docs/licences/", ".gitattributes", "tests/test_licence_policy.py"):
+        assert path in workflow, f"{path} must make the installer job run"
+
+
+def test_the_installed_bytes_are_verified_against_the_repository():
+    """Checked in the installed tree, not the repository: every step
+    between them can alter a file, and git's line-ending translation
+    already did once."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "scripts" / "test_clean_install.py"
+    ).read_text(encoding="utf-8")
+
+    assert "verify_installed_bytes" in source
+    assert "CMUDICT-LICENSE.txt" in source
+    assert "lexicon.txt.gz" in source
+    assert source.index("verify_installed_bytes()") < source.index('"taskkill"')

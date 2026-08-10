@@ -17,6 +17,9 @@ on:
       - "requirements.txt"
       - "requirements-windows.txt"
       - "run_jarvis.py"
+      - "docs/licences/**"
+      - ".gitattributes"
+      - "tests/test_licence_policy.py"
       - ".github/workflows/windows-installer.yml"
   push:
     branches:
@@ -29,6 +32,9 @@ on:
       - "requirements.txt"
       - "requirements-windows.txt"
       - "run_jarvis.py"
+      - "docs/licences/**"
+      - ".gitattributes"
+      - "tests/test_licence_policy.py"
 
 # Supersede an in-flight run when a newer commit lands on the same branch:
 # this job takes several minutes and installs/uninstalls a real
@@ -83,7 +89,7 @@ jobs:
           fi
           CHANGED="$(git diff --name-only "${RANGE_BEFORE}" "${RANGE_AFTER}")"
           echo "Files changed in this push range:"; echo "${CHANGED}"
-          if echo "${CHANGED}" | grep -qE '^(app/|packaging/|run_jarvis\.py|requirements.*\.txt|scripts/build-installer\.ps1|scripts/test_clean_install\.py|\.github/workflows/windows-installer\.yml)'; then
+          if echo "${CHANGED}" | grep -qE '^(app/|packaging/|run_jarvis\.py|requirements.*\.txt|scripts/build-installer\.ps1|scripts/test_clean_install\.py|docs/licences/|\.gitattributes|tests/test_licence_policy\.py|\.github/workflows/windows-installer\.yml)'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "Only unrelated files (docs, etc.) changed — skipping the installer build."

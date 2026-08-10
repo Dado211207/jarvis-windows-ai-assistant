@@ -230,3 +230,22 @@ def test_icon_png_exists_and_is_square():
     with Image.open(ICON_PNG_PATH) as img:
         assert img.width == img.height
         assert img.width >= 256
+
+
+def test_the_licence_texts_are_bundled():
+    """The obligation is to the person holding the binary, so the licence
+    travels with the product rather than with a link to it."""
+    source = _read(SPEC_PATH)
+
+    assert 'docs" / "licences"' in source or '"docs/licences"' in source
+
+
+def test_the_pronunciation_lexicon_is_bundled():
+    """PyInstaller collects package data for third-party packages via
+    collect_all, but not for the application's own modules. Without an
+    explicit datas entry the installed app has a voice that cannot
+    pronounce anything and spells every word instead."""
+    source = _read(SPEC_PATH)
+
+    assert "kokoro" in source and "data" in source
+    assert "app/voice/kokoro/data" in source

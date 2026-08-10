@@ -202,6 +202,53 @@ DESKTOP_READY_URL = f"http://{settings.jarvis_host}:{settings.jarvis_port}/deskt
 DESKTOP_READY_TIMEOUT_SECONDS = 60.0
 
 
+def verify_installed_bytes() -> None:
+    """The pinned licence and lexicon must survive packaging byte for byte.
+
+    Checked against the *installed* tree, not the repository, because
+    every step between them can alter a file: git's line-ending
+    translation already did once, and a packaging step that rewrote or
+    truncated a licence would be a real compliance problem that no
+    source-level test could see.
+
+    A licence text that has been edited is not the licence, and a lexicon
+    that has been altered is not the data whose provenance was recorded.
+    """
+    import hashlib
+
+    install_dir = expected_install_dir()
+    checks = [
+        (
+            install_dir / "_internal" / "docs" / "licences" / "CMUDICT-LICENSE.txt",
+            REPO_ROOT / "docs" / "licences" / "CMUDICT-LICENSE.txt",
+            "CMU licence text",
+        ),
+        (
+            install_dir / "_internal" / "app" / "voice" / "kokoro" / "data" / "lexicon.txt.gz",
+            REPO_ROOT / "app" / "voice" / "kokoro" / "data" / "lexicon.txt.gz",
+            "pronunciation lexicon",
+        ),
+    ]
+
+    for installed, original, label in checks:
+        if not installed.is_file():
+            _fail(
+                f"The installer did not ship the {label} — expected it at {installed}.\n"
+                "It is bundled by packaging/jarvis.spec's datas list; a missing file "
+                "there means the licence obligation does not travel with the product."
+            )
+        installed_digest = hashlib.sha256(installed.read_bytes()).hexdigest()
+        original_digest = hashlib.sha256(original.read_bytes()).hexdigest()
+        if installed_digest != original_digest:
+            _fail(
+                f"The installed {label} does not match the repository byte for byte.\n"
+                f"  repository: {original_digest}\n"
+                f"  installed:  {installed_digest}\n"
+                "Something between git and the installed tree rewrote it."
+            )
+        print(f"OK: {label} preserved exactly ({installed_digest[:16]}…)")
+
+
 def wait_for_desktop_ready(timeout_seconds: float = DESKTOP_READY_TIMEOUT_SECONDS) -> dict:
     """Wait for the parent's own readiness signal.
 
@@ -334,14 +381,17 @@ def phase_a_install_launch_and_stop(installer: Path, log_dir: Path) -> None:
             _fail("The first JARVIS.exe instance is no longer running after the second launch attempt.")
         print("OK: second launch exited immediately (code 0); the original instance is still the only server running")
 
-        _step("Phase A.9: Wait for the desktop-ready signal before asking it to close")
+        _step("Phase A.9: Verify the installer preserved the pinned licence and data bytes")
+        verify_installed_bytes()
+
+        _step("Phase A.10: Wait for the desktop-ready signal before asking it to close")
         ready = wait_for_desktop_ready()
         print(
             "OK: desktop ready — server healthy, window answering commands, "
             f"tray listening, parent running (session {ready.get('session_id')})"
         )
 
-        _step("Phase A.10: Stop JARVIS gracefully (taskkill, no /F)")
+        _step("Phase A.11: Stop JARVIS gracefully (taskkill, no /F)")
         result = subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
         print(result.stdout.strip() or result.stderr.strip())
         if not wait_for_pid_exit(proc.pid):
