@@ -61,6 +61,11 @@ PREFERENCES_FILENAME = "preferences.json"
 STORABLE_KEYS = (
     "ai_provider", "ollama_model", "speak_replies", "preferred_name",
     "close_action", "stt_enabled",
+    # Which of the neural voices JARVIS speaks with, and how fast. Both
+    # are choices made in the app, so both have to survive a restart —
+    # an environment variable cannot be edited by someone who installed
+    # a .exe.
+    "voice_key", "voice_speed",
 )
 
 # What a name is allowed to be. Deliberately generous about content and

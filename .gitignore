@@ -59,6 +59,15 @@ packaging/build/
 packaging/dist/
 installer-output/
 
+# Downloaded AI models: the speech model and the neural voice packs.
+# Data, not source — fetched on request with their licence, size and
+# SHA-256 shown first (app/voice/model_installer.py,
+# app/voice/kokoro/install.py), verified against the digests pinned in
+# app/voice/kokoro/assets.py, and stored in AppData in a real install.
+# A source checkout puts them here instead, where a 92 MB model would
+# otherwise land in a commit.
+models/
+
 # IDE
 .idea/
 .vscode/

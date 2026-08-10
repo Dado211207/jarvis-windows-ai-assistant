@@ -188,6 +188,13 @@ LICENCE_MANIFEST = (
         "distributed": "Bundled in the installer",
     },
     {
+        "component": "numpy",
+        "role": "Audio sample arrays",
+        "licence": "BSD-3-Clause",
+        "source": "https://github.com/numpy/numpy",
+        "distributed": "Bundled in the installer",
+    },
+    {
         "component": "CMU Pronouncing Dictionary (derived lexicon)",
         "role": "Word to phoneme lookup",
         "licence": "CMU's own licence — verbatim at docs/licences/CMUDICT-LICENSE.txt",

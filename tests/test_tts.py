@@ -1,9 +1,16 @@
-"""Tests for Phase 3 TTS voice output.
+"""Tests for TTS voice output.
 
-All tests mock pyttsx3 so no real audio hardware is required.
-No real Anthropic API calls are made.
+All tests mock the speech engines so no real audio hardware is required
+and nothing is ever played. No real Anthropic API calls are made.
+
+Speech is now a chain of three engines rather than one (see
+app/voice/engines.py), so the helpers below pin *which* engine a test is
+about instead of letting the machine running the test decide. A
+developer with the neural voice installed and a CI runner without it
+must get the same answer.
 """
 
+import contextlib
 import sys
 import threading
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -22,6 +29,64 @@ def _make_mock_engine():
     engine.stop = MagicMock()
     engine.setProperty = MagicMock()
     return engine
+
+
+@contextlib.contextmanager
+def _engine_state(runtime: bool, voice_installed: bool):
+    """Pin what each speech tier can do, as app/voice/engines.py sees it.
+
+    Patched through the `engines` module's own attributes rather than by
+    importing the target modules again. Several tests here use
+    `patch.dict(sys.modules, ...)`, which removes on exit anything that
+    was first imported inside the block — and this package is imported
+    lazily, so that quietly leaves two live copies of a module around.
+    Re-importing would then patch the copy nobody calls, and the test
+    would pass or fail depending on which earlier test ran first.
+    """
+    from app.voice import engines
+
+    with patch.object(engines.kokoro_engine, "runtime_available", return_value=runtime), \
+         patch.object(engines.install, "is_installed", return_value=voice_installed), \
+         patch.object(engines.winrt_voices, "is_available", return_value=False), \
+         patch.dict(sys.modules, {"pyttsx3": None}):
+        yield
+
+
+def _no_engines():
+    """Nothing on this machine can speak at all."""
+    return _engine_state(runtime=False, voice_installed=False)
+
+
+def _only_missing_the_voice():
+    """Everything is present except the downloaded voice — the state a
+    real user is in before they install it. The runtime and the model are
+    separated because they produce deliberately different messages: a
+    missing model names the download, a missing runtime cannot."""
+    return _engine_state(runtime=True, voice_installed=False)
+
+
+@contextlib.contextmanager
+def _sapi5_engine(engine, speaking: bool = False):
+    """Install a fake classic engine, and restore module state after —
+    it is a process-wide singleton, and a test that leaks it changes the
+    answer for every test that runs later."""
+    from app.voice import sapi5
+
+    previous_engine = sapi5._engine
+    previous_speaking = sapi5._speaking.is_set()
+    sapi5._engine = engine
+    if speaking:
+        sapi5._speaking.set()
+    else:
+        sapi5._speaking.clear()
+    try:
+        yield
+    finally:
+        sapi5._engine = previous_engine
+        if previous_speaking:
+            sapi5._speaking.set()
+        else:
+            sapi5._speaking.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -57,21 +122,34 @@ def test_tts_voice_default_empty():
 # 2. TextToSpeechService — availability
 # ---------------------------------------------------------------------------
 
-def test_is_available_true_when_pyttsx3_importable():
-    """is_available() returns True when pyttsx3 can be imported."""
+def test_is_available_is_true_when_only_the_last_resort_engine_can_run():
+    """Availability is now "can anything speak", not "is pyttsx3 here".
+
+    Pinned to the classic tier specifically: asserting only that the
+    answer is True would also pass on a machine with the neural voice
+    installed, which is a different fact and would leave this tier
+    untested.
+    """
+    from app.voice import engines
     from app.voice.tts import TextToSpeechService
-    svc = TextToSpeechService()
-    mock_module = MagicMock()
-    with patch.dict(sys.modules, {"pyttsx3": mock_module}):
+
+    with patch.object(engines.kokoro_engine.engine, "is_ready", return_value=False), \
+         patch.object(engines.kokoro_engine, "runtime_available", return_value=False), \
+         patch.object(engines.winrt_voices, "is_available", return_value=False), \
+         patch.object(engines, "_sapi5_available", return_value=True):
+        svc = TextToSpeechService()
         assert svc.is_available() is True
+        assert svc.active_engine() == engines.SAPI5
 
 
-def test_is_available_false_when_pyttsx3_missing():
-    """is_available() returns False when pyttsx3 is absent."""
+def test_is_available_is_false_only_when_no_engine_at_all_can_run():
+    from app.voice import engines
     from app.voice.tts import TextToSpeechService
-    svc = TextToSpeechService()
-    with patch.dict(sys.modules, {"pyttsx3": None}):
+
+    with _no_engines():
+        svc = TextToSpeechService()
         assert svc.is_available() is False
+        assert svc.active_engine() == engines.NONE
 
 
 # ---------------------------------------------------------------------------
@@ -124,13 +202,40 @@ def test_speak_exactly_max_length_succeeds():
     assert result.success is True
 
 
-def test_speak_when_pyttsx3_unavailable_returns_failure():
+def test_speak_when_no_engine_can_run_returns_failure():
+    """Every tier unavailable means no sound, said plainly.
+
+    The machine's own state is patched out rather than relied on: a
+    developer who has installed the neural voice must not get a
+    different result from CI, and "no engine" is the condition under
+    test, not "this laptop happens to lack one".
+    """
     from app.voice.tts import TextToSpeechService
     svc = TextToSpeechService()
-    with patch.dict(sys.modules, {"pyttsx3": None}):
+
+    with _no_engines():
         result = svc.speak("hello")
+
     assert result.success is False
-    assert "not available" in result.message
+    # Stronger than the old substring check: the message has to name the
+    # problem, not merely fail.
+    assert "no speech engine" in result.message.lower()
+    assert "nothing can be spoken" in result.message.lower()
+
+
+def test_a_missing_voice_says_what_to_install_not_just_that_it_failed():
+    """The difference between the two unavailable messages is the whole
+    point of having two. "No speech engine is available" is a dead end;
+    naming the download is something a person can act on."""
+    from app.voice.tts import TextToSpeechService
+
+    with _only_missing_the_voice():
+        result = TextToSpeechService().speak("hello")
+
+    assert result.success is False
+    assert "not installed" in result.message.lower()
+    assert "mb to download" in result.message.lower()
+    assert "voice page" in result.message.lower()
 
 
 def test_speak_engine_init_failure_is_handled_gracefully():
@@ -161,17 +266,36 @@ def test_stop_when_engine_not_initialised_returns_success():
     assert "not active" in result.message
 
 
-def test_stop_calls_engine_stop():
+def test_stop_reaches_the_engine_that_is_speaking():
+    """The service no longer owns a speech engine — app/voice/engines.py
+    picks one of three. Stop still has to reach whichever is talking."""
+    from app.voice import sapi5
     from app.voice.tts import TextToSpeechService
     svc = TextToSpeechService()
     mock_engine = _make_mock_engine()
-    svc._engine = mock_engine
 
-    result = svc.stop()
+    with _sapi5_engine(mock_engine, speaking=True):
+        result = svc.stop()
 
     mock_engine.stop.assert_called_once()
     assert result.success is True
     assert "stopped" in result.message
+
+
+def test_stop_reaches_every_engine_not_only_the_selected_one():
+    """A reply can start on one engine and the selection change under
+    it. A Stop that only reached the current choice would leave the
+    other one talking."""
+    from app.voice import audio
+    from app.voice.tts import TextToSpeechService
+    mock_engine = _make_mock_engine()
+
+    with _sapi5_engine(mock_engine, speaking=True):
+        with patch.object(audio.player, "stop", return_value=True) as player_stop:
+            TextToSpeechService().stop()
+
+    player_stop.assert_called_once()
+    mock_engine.stop.assert_called_once()
 
 
 def test_stop_engine_error_returns_failure():
@@ -179,9 +303,9 @@ def test_stop_engine_error_returns_failure():
     svc = TextToSpeechService()
     mock_engine = _make_mock_engine()
     mock_engine.stop.side_effect = RuntimeError("driver error")
-    svc._engine = mock_engine
 
-    result = svc.stop()
+    with _sapi5_engine(mock_engine, speaking=True):
+        result = svc.stop()
 
     assert result.success is False
     assert "Stop failed" in result.message
@@ -335,11 +459,14 @@ def test_speak_on_with_no_engine_says_nothing_will_be_spoken():
     from app.voice import tts as tts_module
     from app.voice.tts import tts_service
 
-    with patch.dict(sys.modules, {"pyttsx3": None}):
+    with _no_engines():
         result = tts_module._tts_enable()
 
     assert tts_service.output_enabled is True
-    assert "nothing will be spoken" in result["message"]
+    # Both halves, asserted separately: the setting did change, and it
+    # will still produce no sound. Either one alone is a half-truth.
+    assert "voice output is on" in result["message"].lower()
+    assert "nothing can be spoken" in result["message"].lower()
 
 
 def test_tts_status_tool_returns_status_string():
@@ -361,23 +488,22 @@ def test_tts_test_tool_with_mocked_engine():
 
 def test_tts_test_tool_when_unavailable():
     from app.voice import tts as tts_module
-    with patch.dict(sys.modules, {"pyttsx3": None}):
+    with _no_engines():
         result = tts_module._tts_test()
     assert result["success"] is False
-    assert "not available" in result["message"]
+    assert "no speech engine" in result["message"].lower()
 
 
-def test_tts_stop_tool_with_no_engine():
+def test_tts_stop_tool_with_nothing_playing():
+    """Stopping when nothing is speaking is a no-op, not an error — and
+    says so rather than claiming it stopped something."""
     from app.voice import tts as tts_module
-    from app.voice.tts import TextToSpeechService, tts_service
 
-    original_engine = tts_service._engine
-    tts_service._engine = None
-    try:
+    with _sapi5_engine(None, speaking=False):
         result = tts_module._tts_stop()
-        assert result["success"] is True
-    finally:
-        tts_service._engine = original_engine
+
+    assert result["success"] is True
+    assert "not active" in result["message"]
 
 
 # ---------------------------------------------------------------------------

@@ -97,15 +97,20 @@ binaries = []
 # same empirical reason: ctranslate2 is a compiled extension with its own
 # bundled DLLs, and tokenizers/onnxruntime carry data files PyInstaller's
 # static analysis does not follow.
+#
+# onnxruntime is required, not optional: it is what runs the neural
+# voice. A build without it produces an application whose speech falls
+# straight through to the robotic tier with no way for a user to fix it,
+# which is the exact failure this release exists to correct.
 _REQUIRED_PACKAGES = (
     "pydantic_settings", "anthropic", "pyttsx3", "webview", "pythonnet", "clr_loader",
-    "faster_whisper", "ctranslate2",
+    "faster_whisper", "ctranslate2", "onnxruntime", "numpy",
 )
 # Transitive dependencies of faster-whisper whose exact set varies by
 # version. Collected when present, skipped when not — a build must not
 # fail because a package the current faster-whisper does not happen to
 # depend on is absent, and it must not silently miss one that is.
-_OPTIONAL_PACKAGES = ("tokenizers", "onnxruntime", "av", "huggingface_hub")
+_OPTIONAL_PACKAGES = ("tokenizers", "av", "huggingface_hub")
 
 # Nothing named after a copyleft speech engine may reach the installed
 # tree, and collect_all() will put it there by default if left alone:

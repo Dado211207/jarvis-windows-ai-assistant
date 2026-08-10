@@ -184,6 +184,56 @@ another browser tab.
   `webview` module; the real native window is verified only by the
   manual Windows acceptance test.
 
+## The neural voice: ONNX Runtime, numpy, and the Kokoro model
+
+**Decision:** JARVIS's normal speaking voice is Kokoro 82M running
+locally on ONNX Runtime. The old SAPI5 voice is retained only as a last
+resort, and Windows' own natural voices sit between them — see
+`app/voice/engines.py` for the selection order and
+`app/voice/kokoro/assets.py` for the complete manifest, which is kept as
+data so this file and the in-app licence page cannot drift apart.
+
+The constraint driving every choice below was the owner's: the complete
+distributed dependency chain stays permissive, and no GPL component is
+bundled, imported, invoked or downloaded.
+
+- **ONNX Runtime:** MIT. Runs the model on the CPU. Bundled in the
+  installer. No GPU is required and none is used — the model is the
+  quantized build specifically so it runs on an ordinary desktop CPU.
+- **numpy:** BSD-3-Clause. Arrives as an ONNX Runtime dependency and is
+  used directly for the sample arrays. Bundled in the installer.
+- **Kokoro 82M (ONNX, quantized) and the `bm_*` voice packs:**
+  Apache-2.0. *Not* bundled — downloaded on request from a pinned
+  repository revision, verified against the SHA-256 digests recorded in
+  `app/voice/kokoro/assets.py`, and never fetched without the size,
+  source and licence being shown first.
+- **CMU Pronouncing Dictionary (derived lexicon):** CMU's own licence,
+  reproduced verbatim at `docs/licences/CMUDICT-LICENSE.txt` and shipped
+  with the application. Deliberately **not** labelled with an SPDX
+  identifier: the text reads like a two-clause BSD licence but is not
+  literally one, and the acknowledgement it asks for is carried in
+  `app/voice/kokoro/lexicon_source.py` and the About page. The upstream
+  data files are pinned by content hash and converted by a script in
+  this repository; the `cmudict` *PyPI package* is GPL-3.0-or-later and
+  is not installed.
+
+### What was rejected, and why
+
+- **Piper** — GPL-3.0-or-later since its rewrite. Out on licence alone.
+- **`kokoro-onnx`** — depends on `espeakng-loader` and
+  `phonemizer-fork`, which exist to drive espeak-ng (GPL-3.0).
+- **`misaki[en]`** — misaki itself is Apache-2.0 and its English G2P can
+  run without an espeak fallback, so the licence is not the objection.
+  The `[en]` extra is: as a set it pulls `espeakng-loader` and
+  `phonemizer-fork`, so that extra is never installed.
+- **pyttsx3's espeak driver** — pyttsx3 is bundled for the last-resort
+  tier, but its espeak ctypes bindings are excluded from the build
+  (`packaging/jarvis.spec`). They are pyttsx3's own source rather than
+  GPL text, but they are a loader for a GPL library, and a Windows-only
+  application that can never select that driver has no reason to carry
+  one. Enforced by `tests/test_licence_policy.py` against the real
+  installed tree.
+
 ## Where this ships
 
 `scripts/build-installer.ps1` copies this file into the PyInstaller
