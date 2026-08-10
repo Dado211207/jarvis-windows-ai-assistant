@@ -215,9 +215,25 @@ def test_main_calls_every_phase_in_the_only_order_that_works():
     assert phase_calls == [
         "phase_a_install_launch_and_stop",
         "phase_d_repeated_start_and_quit",
+        "phase_e_repeated_restart",
         "phase_b_uninstall_preserves_data_by_default",
         "phase_c_reinstall_then_explicit_data_removal",
     ]
+
+
+def test_restart_is_exercised_enough_times_and_proves_replacement():
+    """A restart that reused the old process would pass a bare "is it
+    healthy" check. What has to be true is that the previous runtime is
+    gone and a different one answers."""
+    import re
+
+    content = _read()
+    match = re.search(r"^RESTART_CYCLES\s*=\s*(\d+)", content, re.MULTILINE)
+
+    assert match, "the restart loop must declare how many cycles it runs"
+    assert int(match.group(1)) >= 10
+    assert "pid did not change" in content, "a reused process must be caught"
+    assert "is still running after the restart" in content, "an orphaned previous runtime must be caught"
 
 
 def test_the_lifecycle_loop_runs_enough_times_to_prove_nothing_accumulates():

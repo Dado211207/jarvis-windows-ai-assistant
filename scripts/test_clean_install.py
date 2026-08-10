@@ -17,15 +17,27 @@ thing no amount of source-level testing (tests/test_packaging_spec.py,
 tests/test_installer_script.py) can prove: that the real installer really
 produces a real, independently-runnable Windows application.
 
-Three phases:
+Five phases, in the order they have to run:
   A. Install, verify layout, launch the real exe, verify it serves real
      traffic, verify single-instance behavior, stop it gracefully.
+  D. Start and gracefully stop that same installed application ten times,
+     checking after each one that the process is gone, the port is
+     released and no JARVIS-started WebView2 process was left behind.
+     One clean shutdown is a happy path; ten is evidence that nothing
+     accumulates.
+  E. Ten restarts through the code path the tray's Restart item calls,
+     each proving the previous runtime was replaced rather than joined.
   B. Silent-uninstall with no extra flags: verify removal, verify user
      data is preserved by default (the documented, safe default).
   C. Reinstall over the preserved data (proving the install-dir/data-dir
      separation actually protects data across a reinstall), then
      silent-uninstall again with the explicit /DELETEDATA=yes opt-in:
      verify user data is actually removed this time.
+
+D and E keep their letters rather than being renamed to fit the running
+order: the phase names appear in CI logs and in the acceptance report,
+and renaming A-C would silently invalidate every earlier reference to
+them.
 """
 
 import glob
@@ -571,6 +583,91 @@ def phase_d_repeated_start_and_quit(log_dir: Path) -> None:
     print(f"OK: {LIFECYCLE_CYCLES} consecutive start/quit cycles left nothing behind")
 
 
+RESTART_CYCLES = 10
+
+
+def phase_e_repeated_restart(log_dir: Path) -> None:
+    """Ten restarts through the code path the tray's Restart item calls.
+
+    **What this covers and what it does not**, stated plainly because the
+    difference matters. It drives `LauncherSupervisor.restart()` — the
+    real method, with real child processes, a real port and a real health
+    check — ten times in a row. It does not click the tray menu item: a
+    native popup menu builds its command IDs when it opens, so there is
+    no stable ID an external process could post, and the only way to make
+    one would be to ship a control path into the product purely so a test
+    could use it. The menu entry that calls this method is covered by
+    unit tests instead (tests/test_launcher_tray.py).
+
+    The property being proved is the one the reported defect was about:
+    a restart leaves exactly one server behind, on a port it actually
+    owns, with nothing from the previous generation still running.
+    """
+    import httpx
+    import psutil
+
+    from app.launcher.gui import LauncherSupervisor
+
+    if not _wait_for_port_release():
+        _fail("The port was still busy before the restart test — an earlier phase left something running.")
+
+    supervisor = LauncherSupervisor()
+    _step("Phase E.0: Start a runtime to restart")
+    if not supervisor.start_server():
+        _fail("The server child never became healthy, so restarts cannot be tested.")
+
+    previous_pid = supervisor.server.pid
+    print(f"OK: server child running (pid={previous_pid})")
+
+    try:
+        for cycle in range(1, RESTART_CYCLES + 1):
+            _step(f"Phase E.{cycle}: restart ({cycle} of {RESTART_CYCLES})")
+            started = time.monotonic()
+            result = supervisor.restart()
+
+            # A restart that brought the runtime back but could not open a
+            # window is a different outcome from one that did not come
+            # back at all, and only the second is a failure of this test —
+            # a CI runner has no desktop session to show a window in.
+            if not result.ok and not result.server_healthy:
+                _fail(
+                    f"Cycle {cycle}: the runtime did not come back after a restart "
+                    f"(stage: {result.reason})."
+                )
+
+            server = supervisor.server
+            if server is None:
+                _fail(f"Cycle {cycle}: the supervisor has no server child after restarting.")
+            if server.pid == previous_pid:
+                _fail(
+                    f"Cycle {cycle}: the server child pid did not change ({server.pid}); "
+                    "the restart reused the old process instead of replacing it."
+                )
+
+            if psutil.pid_exists(previous_pid):
+                _fail(
+                    f"Cycle {cycle}: the previous server child (pid={previous_pid}) "
+                    "is still running after the restart that replaced it."
+                )
+
+            health = httpx.get(HEALTH_URL, timeout=10.0)
+            if health.status_code != 200:
+                _fail(f"Cycle {cycle}: /health returned {health.status_code} after the restart.")
+
+            print(
+                f"OK: cycle {cycle} — new server pid={server.pid} healthy in "
+                f"{time.monotonic() - started:.1f}s, previous generation gone"
+                + ("" if result.ok else f" (window not opened: {result.window_reason})")
+            )
+            previous_pid = server.pid
+    finally:
+        supervisor.quit()
+
+    if not _wait_for_port_release():
+        _fail("The port was still held after the restart test shut its runtime down.")
+    print(f"OK: {RESTART_CYCLES} restart cycles, each replacing the previous runtime completely")
+
+
 def phase_b_uninstall_preserves_data_by_default(log_dir: Path) -> None:
     _step("Phase B.1: Silent uninstall (no /DELETEDATA flag)")
     uninstaller = find_uninstaller()
@@ -657,6 +754,7 @@ def main() -> None:
     # times. One clean shutdown is a happy path; ten is evidence nothing
     # accumulates.
     phase_d_repeated_start_and_quit(log_dir)
+    phase_e_repeated_restart(log_dir)
     phase_b_uninstall_preserves_data_by_default(log_dir)
     phase_c_reinstall_then_explicit_data_removal(installer, log_dir)
 
