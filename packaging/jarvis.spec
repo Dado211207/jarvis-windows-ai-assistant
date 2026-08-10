@@ -107,6 +107,53 @@ _REQUIRED_PACKAGES = (
 # depend on is absent, and it must not silently miss one that is.
 _OPTIONAL_PACKAGES = ("tokenizers", "onnxruntime", "av", "huggingface_hub")
 
+# Nothing named after a copyleft speech engine may reach the installed
+# tree, and collect_all() will put it there by default if left alone:
+# it passes include_py_files=True, which copies every .py in a collected
+# package into _internal/ as a loose data file on top of the module in
+# the PYZ archive. That is how pyttsx3's espeak ctypes bindings shipped
+# in the release candidate — caught by tests/test_licence_policy.py
+# running against the real installed tree in the Windows Installer job,
+# and by nothing before it.
+#
+# Those bindings are pyttsx3's own source, not GPL text; what they are
+# is a loader for libespeak, which is GPL. This product's rule is that no
+# GPL component is bundled, imported, invoked or downloaded, and shipping
+# the loader for one in a Windows-only application that can never select
+# it is all licence surface and no function: pyttsx3 chooses its driver
+# dynamically by platform (importlib.import_module) and chooses sapi5
+# here, which is hidden-imported above and unaffected.
+#
+# Enforced twice deliberately. _forbidden_file() drops them from the
+# collected file lists, and _EXCLUDED_MODULES keeps them out of the
+# module graph so they cannot arrive through the PYZ archive instead.
+_FORBIDDEN_FILE_MARKERS = ("espeak", "piper")
+
+_EXCLUDED_MODULES = [
+    "pyttsx3.drivers.espeak",
+    "pyttsx3.drivers._espeak",
+]
+
+
+def _forbidden_file(entry):
+    """True for a (source, destination) pair naming a forbidden engine.
+
+    Matched on the file name, the same way the packaged-tree test reads
+    the installed app, so the spec and the check cannot disagree about
+    what counts.
+    """
+    source = str(entry[0] if isinstance(entry, (tuple, list)) else entry)
+    name = Path(source).name.lower()
+    return any(marker in name for marker in _FORBIDDEN_FILE_MARKERS)
+
+
+def _forbidden_module(name):
+    if name in _EXCLUDED_MODULES:
+        return True
+    leaf = name.rsplit(".", 1)[-1].lower().lstrip("_")
+    return any(marker == leaf for marker in _FORBIDDEN_FILE_MARKERS)
+
+
 for _pkg in _REQUIRED_PACKAGES + _OPTIONAL_PACKAGES:
     try:
         _pkg_datas, _pkg_binaries, _pkg_hiddenimports = collect_all(_pkg)
@@ -119,9 +166,12 @@ for _pkg in _REQUIRED_PACKAGES + _OPTIONAL_PACKAGES:
             )
         print(f"packaging/jarvis.spec: optional package {_pkg!r} not present; skipping.")
         continue
-    datas += _pkg_datas
-    binaries += _pkg_binaries
-    hidden_imports += _pkg_hiddenimports
+    _dropped = [entry for entry in _pkg_datas + _pkg_binaries if _forbidden_file(entry)]
+    for _entry in _dropped:
+        print(f"packaging/jarvis.spec: dropping {Path(str(_entry[0])).name} from {_pkg} (licence policy)")
+    datas += [entry for entry in _pkg_datas if not _forbidden_file(entry)]
+    binaries += [entry for entry in _pkg_binaries if not _forbidden_file(entry)]
+    hidden_imports += [name for name in _pkg_hiddenimports if not _forbidden_module(name)]
 
 a = Analysis(
     [str(repo_root / "run_jarvis.py")],
@@ -132,7 +182,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=_EXCLUDED_MODULES,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

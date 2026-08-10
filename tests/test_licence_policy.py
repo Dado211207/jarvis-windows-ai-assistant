@@ -106,18 +106,83 @@ def test_no_misaki_extra_is_installed():
 # What the executable is built from
 # ---------------------------------------------------------------------------
 
+def _spec_tree():
+    return ast.parse((REPO_ROOT / "packaging" / "jarvis.spec").read_text(encoding="utf-8"))
+
+
+def _spec_literals(tree):
+    """Top-level assignments in the spec whose value is a literal."""
+    values = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            try:
+                values[node.targets[0].id] = ast.literal_eval(node.value)
+            except (ValueError, TypeError, SyntaxError):
+                continue
+    return values
+
+
+# The two lists whose entire purpose is to name what must be kept out.
+# They are the only place in the spec a forbidden name may legitimately
+# appear, and their contents are asserted directly by
+# test_the_pyinstaller_spec_excludes_the_espeak_bindings.
+SANCTIONED_SPEC_ASSIGNMENTS = ("_FORBIDDEN_FILE_MARKERS", "_EXCLUDED_MODULES")
+
+
 def test_the_pyinstaller_spec_collects_nothing_forbidden():
-    spec = (REPO_ROOT / "packaging" / "jarvis.spec").read_text(encoding="utf-8")
-    tree = ast.parse(spec)
+    """A forbidden name anywhere in the spec fails, with one carve-out:
+    the exclusion lists, which exist to name these components precisely
+    so they are dropped. Naming something in order to remove it is the
+    opposite of bundling it, and a check that cannot tell the two apart
+    would force the spec to enforce the policy silently or not at all."""
+    tree = _spec_tree()
+
+    sanctioned = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in SANCTIONED_SPEC_ASSIGNMENTS
+            for target in node.targets
+        ):
+            sanctioned.update(id(child) for child in ast.walk(node.value))
 
     named = {
         node.value.lower()
         for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in sanctioned
     }
     offenders = sorted(named & {p.replace("-", "_") for p in FORBIDDEN_PACKAGES})
 
     assert offenders == [], f"the spec bundles {offenders}"
+
+
+def test_the_pyinstaller_spec_excludes_the_espeak_bindings():
+    """The release candidate shipped pyttsx3's espeak ctypes bindings.
+
+    collect_all() passes include_py_files=True, so every .py in a
+    collected package is copied into _internal/ as a loose data file —
+    which put a loader for a GPL library into a Windows-only application
+    that can never select it. Asserted here as well as against the built
+    tree, so the regression is caught on any machine in a second rather
+    than only after a twenty-minute Windows build.
+    """
+    tree = _spec_tree()
+    literals = _spec_literals(tree)
+
+    assert {"pyttsx3.drivers.espeak", "pyttsx3.drivers._espeak"} <= set(
+        literals.get("_EXCLUDED_MODULES", [])
+    ), "the espeak driver bindings must be excluded from the module graph"
+
+    analysis = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Analysis"
+    )
+    excludes = next(kw for kw in analysis.keywords if kw.arg == "excludes")
+    assert getattr(excludes.value, "id", None) == "_EXCLUDED_MODULES", (
+        "Analysis(excludes=...) must use the exclusion list, not declare it and ignore it"
+    )
 
 
 # ---------------------------------------------------------------------------
