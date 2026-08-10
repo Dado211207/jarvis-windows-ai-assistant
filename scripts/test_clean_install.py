@@ -413,6 +413,164 @@ def phase_a_install_launch_and_stop(installer: Path, log_dir: Path) -> None:
             proc.kill()  # safety net only — the graceful path above is what's actually being verified
 
 
+# ---------------------------------------------------------------------------
+# Lifecycle: does it start and stop cleanly, every time, not just once
+# ---------------------------------------------------------------------------
+
+# Ten, because the failures this exists to catch are the ones that do not
+# happen on the first try: a port still held by the previous run, a
+# WebView2 process that outlived its parent, a lock file nobody released.
+# One start/stop proves the happy path; the tenth proves nothing is
+# accumulating.
+LIFECYCLE_CYCLES = 10
+
+# The browser process WebView2 runs the window in. It is started by the
+# window child, so it is JARVIS's to clean up — an orphan here is the
+# defect, not an unrelated process.
+WEBVIEW_PROCESS_NAME = "msedgewebview2.exe"
+
+
+def _jarvis_processes() -> list:
+    """Every running JARVIS.exe, by image name.
+
+    Deliberately name-based *here* and nowhere in the product: this is a
+    test asserting that nothing called JARVIS.exe survives, which is
+    precisely the question a name answers. The application itself only
+    ever terminates processes it can prove are its own descendants (see
+    app/launcher/process_tree.py).
+    """
+    import psutil
+
+    found = []
+    for process in psutil.process_iter(["pid", "name"]):
+        try:
+            if (process.info["name"] or "").lower() == "jarvis.exe":
+                found.append(process)
+        except psutil.Error:
+            continue
+    return found
+
+
+def _webview_children_of(pids: set) -> list:
+    import psutil
+
+    found = []
+    for process in psutil.process_iter(["pid", "name", "ppid"]):
+        try:
+            if (process.info["name"] or "").lower() != WEBVIEW_PROCESS_NAME:
+                continue
+            if process.info["ppid"] in pids:
+                found.append(process)
+        except psutil.Error:
+            continue
+    return found
+
+
+def _port_is_free() -> bool:
+    """Whether the server port has actually been released.
+
+    Uses a real connect attempt rather than a bind: on Windows a bind can
+    succeed against a port another socket is still listening on, which
+    would report a busy port as free — the exact bug fixed in
+    app/launcher/server_process.py.
+    """
+    import socket
+
+    try:
+        with socket.create_connection((settings.jarvis_host, settings.jarvis_port), timeout=1.0):
+            return False
+    except OSError:
+        return True
+
+
+def _wait_for_port_release(timeout_seconds: float = 15.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if _port_is_free():
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def phase_d_repeated_start_and_quit(log_dir: Path) -> None:
+    """Start and gracefully stop the installed application ten times.
+
+    Every cycle asserts the whole contract, not just that the process
+    exited: the desktop reported itself ready, the process is gone, the
+    health endpoint stopped answering, the port was released, and neither
+    a JARVIS.exe nor a JARVIS-owned WebView2 process was left behind.
+    """
+    exe_path = expected_install_dir() / "JARVIS.exe"
+    if not exe_path.is_file():
+        _fail(f"Expected {exe_path} to exist before the lifecycle test.")
+
+    leftovers = _jarvis_processes()
+    if leftovers:
+        _fail(
+            "JARVIS.exe was already running before the lifecycle test started "
+            f"(pids {[p.pid for p in leftovers]}); the earlier phases did not shut down cleanly."
+        )
+
+    for cycle in range(1, LIFECYCLE_CYCLES + 1):
+        _step(f"Phase D.{cycle}: cold start and graceful quit ({cycle} of {LIFECYCLE_CYCLES})")
+        started = time.monotonic()
+        proc = subprocess.Popen([str(exe_path)], cwd=str(expected_install_dir()))
+
+        try:
+            wait_for_health(proc)
+            ready = wait_for_desktop_ready()
+            ready_seconds = time.monotonic() - started
+
+            # Record the whole family before asking it to stop, so an
+            # orphan can be named rather than merely counted.
+            own_pids = {process.pid for process in _jarvis_processes()}
+            own_pids.add(proc.pid)
+            webview_before = {process.pid for process in _webview_children_of(own_pids)}
+
+            subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
+
+            if not wait_for_pid_exit(proc.pid):
+                _fail(
+                    f"Cycle {cycle}: JARVIS.exe (pid={proc.pid}) did not exit within "
+                    f"{PROCESS_EXIT_TIMEOUT_SECONDS}s of a graceful taskkill.\n"
+                    f"Boot trace:\n{_read_file_tail(expected_boot_trace_file())}"
+                )
+            wait_for_health_to_stop()
+
+            if not _wait_for_port_release():
+                _fail(
+                    f"Cycle {cycle}: port {settings.jarvis_port} was still accepting connections "
+                    "after the process exited — something is still listening on it."
+                )
+
+            surviving = _jarvis_processes()
+            if surviving:
+                _fail(
+                    f"Cycle {cycle}: {len(surviving)} JARVIS.exe process(es) survived a graceful "
+                    f"quit (pids {[p.pid for p in surviving]})."
+                )
+
+            import psutil
+
+            orphaned_webviews = [pid for pid in webview_before if psutil.pid_exists(pid)]
+            if orphaned_webviews:
+                _fail(
+                    f"Cycle {cycle}: {len(orphaned_webviews)} WebView2 process(es) started by "
+                    f"JARVIS outlived it (pids {orphaned_webviews})."
+                )
+
+            print(
+                f"OK: cycle {cycle} — ready in {ready_seconds:.1f}s "
+                f"(session {ready.get('session_id')}), exited cleanly, port released, "
+                f"no JARVIS or WebView2 process left behind"
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()  # safety net only; the graceful path is what is being verified
+
+    print(f"OK: {LIFECYCLE_CYCLES} consecutive start/quit cycles left nothing behind")
+
+
 def phase_b_uninstall_preserves_data_by_default(log_dir: Path) -> None:
     _step("Phase B.1: Silent uninstall (no /DELETEDATA flag)")
     uninstaller = find_uninstaller()
@@ -495,6 +653,10 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     phase_a_install_launch_and_stop(installer, log_dir)
+    # Before uninstalling: the same artifact, started and stopped ten
+    # times. One clean shutdown is a happy path; ten is evidence nothing
+    # accumulates.
+    phase_d_repeated_start_and_quit(log_dir)
     phase_b_uninstall_preserves_data_by_default(log_dir)
     phase_c_reinstall_then_explicit_data_removal(installer, log_dir)
 

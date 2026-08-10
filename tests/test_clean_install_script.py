@@ -198,7 +198,13 @@ def test_all_three_phases_are_defined():
         assert expected in defined
 
 
-def test_main_calls_all_three_phases_in_order():
+def test_main_calls_every_phase_in_the_only_order_that_works():
+    """The order is a dependency, not a preference.
+
+    The lifecycle loop needs an installed application, so it has to run
+    after the install phase and before the uninstall phases — running it
+    last would mean starting an application that had just been removed.
+    """
     tree = ast.parse(_read())
     main_fn = _find_function(tree, "main")
     call_names = [
@@ -208,9 +214,33 @@ def test_main_calls_all_three_phases_in_order():
     phase_calls = [n for n in call_names if n.startswith("phase_")]
     assert phase_calls == [
         "phase_a_install_launch_and_stop",
+        "phase_d_repeated_start_and_quit",
         "phase_b_uninstall_preserves_data_by_default",
         "phase_c_reinstall_then_explicit_data_removal",
     ]
+
+
+def test_the_lifecycle_loop_runs_enough_times_to_prove_nothing_accumulates():
+    """One start/stop is a happy path. The failures this catches — a port
+    still held, a WebView2 process that outlived its parent — are the
+    ones that only appear after repetition."""
+    import re
+
+    content = _read()
+    match = re.search(r"^LIFECYCLE_CYCLES\s*=\s*(\d+)", content, re.MULTILINE)
+
+    assert match, "the lifecycle loop must declare how many cycles it runs"
+    assert int(match.group(1)) >= 10
+
+
+def test_each_lifecycle_cycle_checks_for_orphans_and_a_released_port():
+    """Asserting only that the process exited would pass while leaving a
+    WebView2 process running and the port held."""
+    content = _read()
+
+    assert "msedgewebview2.exe" in content, "orphaned WebView2 processes must be checked for"
+    assert "_wait_for_port_release" in content
+    assert "_jarvis_processes" in content
 
 
 # ---------------------------------------------------------------------------
