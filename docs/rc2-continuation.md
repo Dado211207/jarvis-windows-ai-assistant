@@ -69,7 +69,8 @@ Everything else below is independent of this decision.
 ## Done and verified
 
 Commit range on the branch, oldest first:
-`350fd82`, `2a6f7c4`, `9633dbe`, `c491e1a`, `a5be0ab`, `d3d14b2`.
+`350fd82`, `2a6f7c4`, `9633dbe`, `c491e1a`, `a5be0ab`, `d3d14b2`,
+`5cc78fe`, `9e639a6`, `5fe04ce`.
 
 ### The espeak defect in the installed tree (`350fd82`)
 
@@ -177,8 +178,29 @@ data. Fixed, with a test that fails if it regresses.
   changed, the previous one no longer exists, and `/health` answers from
   the new one.
 
-**Phase D found a real defect on its first cycle**, run
-`31392641519`:
+**Both phases now pass against the real installed application**, run
+[`31393740442`](https://github.com/Dado211207/jarvis-windows-ai-assistant/actions/runs/31393740442),
+commit `5fe04ce`, job "Windows Installer / windows-latest" — every step
+green, ending `ALL CLEAN-INSTALL CHECKS PASSED`.
+
+Phase D, ten cold start/quit cycles against the installed `JARVIS.exe`.
+Each line is the real log:
+
+    OK: cycle 1  - ready in  8.0s, exited cleanly, port released,
+                   no JARVIS or WebView2 process left behind
+    ... cycles 2-9, ready in 7.4s to 17.6s ...
+    OK: cycle 10 - ready in  7.2s ...
+    OK: 10 consecutive start/quit cycles left nothing behind
+
+Phase E, ten restarts, each proving replacement rather than survival:
+
+    OK: cycle 1  - new server pid=7780 healthy in 3.5s, previous generation gone
+    ... cycles 2-9, healthy in 4.9s to 5.8s ...
+    OK: cycle 10 - new server pid=1620 healthy in 5.7s, previous generation gone
+    OK: 10 restart cycles, each replacing the previous runtime completely
+
+Getting there took one real fix. **Phase D failed on its first cycle the
+first time it ran** (run `31392641519`):
 
     FAILED: Cycle 1: 1 WebView2 process(es) started by JARVIS
             outlived it (pids [8340]).
@@ -189,20 +211,42 @@ because it only ever asked whether `JARVIS.exe` itself had exited.
 
 The cause was in `WindowProcess.stop()`, which asked for the window
 child's descendants *after* `poll()` confirmed it had already exited.
-`process_tree.py`'s own docstring states the rule it was breaking:
-once the parent is gone, the relationship identifying its descendants is
-gone with it, so a capture taken afterwards walks a dead PID and returns
+`process_tree.py`'s own docstring states the rule it was breaking: once
+the parent is gone, the relationship identifying its descendants is gone
+with it, so a capture taken afterwards walks a dead PID and returns
 nothing. The kill path captured correctly; the graceful path — the one
 taken every ordinary time somebody chooses Quit — did not, so it cleaned
 up nothing, every time.
 
-Fixed by capturing before anything is asked to stop, re-capturing while
-the child is still alive (WebView2 starts helpers lazily), and
-terminating that accumulated set on every exit path. Three regression
-tests cover it; all three fail against the previous code.
+Fixed in `5fe04ce` by capturing before anything is asked to stop,
+re-capturing while the child is still alive (WebView2 starts helpers
+lazily), and terminating that accumulated set on every exit path. Three
+regression tests cover it; all three were confirmed to fail against the
+previous code.
 
-Phase E has still not run — the first execution of Phase D failed before
-reaching it.
+### The installer built from `5fe04ce`
+
+| | |
+|---|---|
+| Filename | `JARVIS-Setup-v0.2.0-rc1-x64.exe` |
+| Version reported by the running app | `0.2.0-rc1` (asserted against `app.__version__`) |
+| Artifact | `JARVIS-Windows-Installer`, ID `9065124959`, 98,861,744 bytes (zip, containing the .exe and its `.sha256`) |
+| Run | https://github.com/Dado211207/jarvis-windows-ai-assistant/actions/runs/31393740442 |
+| Artifact link | https://github.com/Dado211207/jarvis-windows-ai-assistant/actions/runs/31393740442/artifacts/9065124959 |
+| Test logs | `JARVIS-Installer-Test-Logs`, ID `9065122227` |
+
+The installer `.exe`'s own SHA-256 is computed by the build and written
+beside it as `JARVIS-Setup-v0.2.0-rc1-x64.exe.sha256`, which ships inside
+that artifact. **It is deliberately not quoted here**: it sits in a part
+of the job log this session could not reach, and a digest copied from
+somewhere other than the artifact is worth nothing. Read it from the
+`.sha256` file after downloading, and check it against the `.exe`.
+
+Also confirmed in the same run: the licence-policy suite (17 tests)
+against the real packaged tree, the pinned CMU licence and lexicon bytes
+preserved byte-for-byte through the installer, uninstall preserving user
+data by default, reinstall over preserved data, and uninstall with
+`/DELETEDATA=yes` actually removing it.
 
 ---
 
