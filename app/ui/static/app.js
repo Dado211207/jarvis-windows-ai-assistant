@@ -2158,6 +2158,325 @@ function initSetup() {
   });
 }
 
+// ── JARVIS's voice: engines, installation, pronunciation ─────────────────────
+//
+// Every string that reaches the page goes in with textContent. None of
+// this builds markup from server data.
+
+let nvInstallTimer = null;
+
+function nvFormatMB(bytes) {
+  return (bytes / (1024 * 1024)).toFixed(0) + " MB";
+}
+
+function nvRenderEngines(data) {
+  const list = $("nv-engine-list");
+  if (!list) return;
+  _clearEl(list);
+
+  data.engines.forEach((engine) => {
+    const row = document.createElement("div");
+    row.className = "status-row";
+
+    const label = document.createElement("span");
+    label.className = "status-row-label";
+    label.textContent = engine.name;
+
+    const value = document.createElement("span");
+    value.className = "status-row-value";
+    // The mark says which one is speaking; the detail says why the
+    // others are not. Both matter — a list of ticks and crosses with no
+    // reasons is what made the reported failure impossible to act on.
+    const badge = document.createElement("span");
+    badge.className = "badge " + (engine.active ? "badge-ok" : engine.available ? "badge-info" : "badge-warn");
+    badge.textContent = engine.active ? "in use" : engine.available ? "ready" : "unavailable";
+
+    const detail = document.createElement("div");
+    detail.className = "text-xs text-muted";
+    detail.textContent = engine.detail;
+
+    value.appendChild(badge);
+    row.appendChild(label);
+    row.appendChild(value);
+    list.appendChild(row);
+    list.appendChild(detail);
+  });
+}
+
+function nvRenderVoices(data) {
+  const select = $("nv-voice-select");
+  if (!select) return;
+  _clearEl(select);
+
+  data.voices.forEach((voice) => {
+    const option = document.createElement("option");
+    option.value = voice.key;
+    option.textContent = voice.installed
+      ? voice.display_name
+      : `${voice.display_name} — not installed`;
+    if (voice.key === data.voice_key) option.selected = true;
+    select.appendChild(option);
+  });
+
+  const chosen = data.voices.find((voice) => voice.key === data.voice_key);
+  setText("nv-voice-description", chosen ? chosen.description : "");
+}
+
+async function refreshNeuralVoice() {
+  try {
+    const data = await API.get("/voice/engine-status");
+
+    setText("nv-active-engine", data.active_engine_name);
+    const active = $("nv-active-engine");
+    if (active) active.className = "status-row-value " + (data.available ? "text-ok" : "text-warn");
+
+    nvRenderEngines(data);
+    nvRenderVoices(data);
+
+    const speed = $("nv-speed");
+    if (speed) speed.value = data.speed.toFixed(2);
+
+    const installCard = $("nv-install-card");
+    if (installCard) installCard.hidden = data.model_installed;
+    if (!data.model_installed) await refreshVoiceInstallPreview(data.voice_key);
+  } catch (e) {
+    console.error("voice engine status error", e);
+  }
+}
+
+async function refreshVoiceInstallPreview(voiceKey) {
+  try {
+    const info = await API.get("/voice/install-preview?voice_key=" + encodeURIComponent(voiceKey));
+    setText("nv-install-size", nvFormatMB(info.download_bytes));
+    setText("nv-install-source", info.source);
+    setText("nv-install-licence", info.licence);
+    setText("nv-install-destination", info.destination);
+  } catch (e) {
+    console.error("voice install preview error", e);
+  }
+}
+
+function nvApplyInstallState(state) {
+  const wrap = $("nv-progress-wrap");
+  const bar = $("nv-progress-bar");
+  const text = $("nv-progress-text");
+  const startBtn = $("nv-install-start");
+  const cancelBtn = $("nv-install-cancel");
+  const retryBtn = $("nv-install-retry");
+
+  const busy = state.running || state.status === "downloading" ||
+               state.status === "verifying" || state.status === "installing";
+
+  if (wrap) wrap.hidden = !busy && state.status !== "error";
+  if (bar) bar.style.width = state.percent + "%";
+  if (startBtn) startBtn.hidden = busy;
+  if (cancelBtn) cancelBtn.hidden = !busy;
+  if (retryBtn) retryBtn.hidden = state.status !== "error";
+
+  if (text) {
+    if (busy && state.bytes_total > 0) {
+      text.textContent = `${state.status} ${state.current_file} — ` +
+        `${nvFormatMB(state.bytes_downloaded)} of ${nvFormatMB(state.bytes_total)} (${state.percent}%)`;
+    } else {
+      text.textContent = state.message || "";
+    }
+    text.className = "text-xs mt-2 " + (state.status === "error" ? "text-err" : "text-muted");
+  }
+
+  return busy;
+}
+
+async function pollVoiceInstallStatus() {
+  try {
+    const state = await API.get("/voice/install-status");
+    const busy = nvApplyInstallState(state);
+
+    if (busy) {
+      if (nvInstallTimer) clearTimeout(nvInstallTimer);
+      nvInstallTimer = setTimeout(pollVoiceInstallStatus, 500);
+    } else {
+      if (nvInstallTimer) { clearTimeout(nvInstallTimer); nvInstallTimer = null; }
+      if (state.status === "complete") await refreshNeuralVoice();
+    }
+  } catch (e) {
+    console.error("voice install status error", e);
+  }
+}
+
+async function startVoiceInstall() {
+  const select = $("nv-voice-select");
+  try {
+    const state = await API.post("/voice/install", { voice_key: select ? select.value : undefined });
+    nvApplyInstallState(state);
+    pollVoiceInstallStatus();
+  } catch (e) {
+    setText("nv-message", "The voice could not be installed. " + e.message);
+  }
+}
+
+async function cancelVoiceInstall() {
+  try {
+    nvApplyInstallState(await API.post("/voice/install/cancel", {}));
+  } catch (e) {
+    console.error("voice install cancel error", e);
+  }
+}
+
+async function testNeuralVoice() {
+  const select = $("nv-voice-select");
+  const message = $("nv-message");
+  try {
+    const r = await API.post("/voice/test", { voice_key: select ? select.value : undefined });
+    if (message) {
+      message.textContent = r.success ? "Speaking a sample…" : r.message;
+      message.className = "text-xs mt-2 " + (r.success ? "text-muted" : "text-warn");
+    }
+  } catch (e) {
+    if (message) {
+      message.textContent = "The voice could not be tested. " + e.message;
+      message.className = "text-xs mt-2 text-err";
+    }
+  }
+}
+
+async function selectNeuralVoice(key) {
+  try {
+    nvRenderVoices(await API.post("/voice/select", { voice_key: key }));
+    await refreshNeuralVoice();
+  } catch (e) {
+    console.error("voice select error", e);
+  }
+}
+
+async function setNeuralSpeed(value) {
+  try {
+    await API.post("/voice/speed", { speed: parseFloat(value) });
+  } catch (e) {
+    console.error("voice speed error", e);
+  }
+}
+
+// ── Pronunciations ───────────────────────────────────────────────────────────
+
+function nvRenderPronunciations(data) {
+  const list = $("pron-list");
+  if (list) {
+    _clearEl(list);
+    if (!data.entries.length) {
+      const empty = document.createElement("p");
+      empty.className = "text-xs text-muted";
+      empty.textContent = "No custom pronunciations saved.";
+      list.appendChild(empty);
+    }
+    data.entries.forEach((entry) => {
+      const row = document.createElement("div");
+      row.className = "status-row";
+
+      const label = document.createElement("span");
+      label.className = "status-row-label";
+      label.textContent = entry.word;
+
+      const value = document.createElement("span");
+      value.className = "status-row-value";
+
+      const said = document.createElement("span");
+      said.className = "text-xs text-muted";
+      said.textContent = entry.input;
+
+      const remove = document.createElement("button");
+      remove.className = "btn btn-ghost";
+      remove.type = "button";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => removePronunciation(entry.word));
+
+      value.appendChild(said);
+      value.appendChild(remove);
+      row.appendChild(label);
+      row.appendChild(value);
+      list.appendChild(row);
+    });
+  }
+
+  const prompt = $("nv-name-prompt");
+  if (prompt) {
+    prompt.hidden = !data.name_needs_pronunciation;
+    if (data.name_needs_pronunciation) {
+      // Offered, never guessed: proposing a pronunciation nobody asked
+      // for would be inventing how someone's name sounds.
+      prompt.textContent =
+        `JARVIS does not know how to say “${data.preferred_name}”, so it will spell it out. ` +
+        "You can teach it below.";
+      prompt.className = "text-xs mt-2 text-warn";
+    }
+  }
+}
+
+async function refreshPronunciations() {
+  try {
+    nvRenderPronunciations(await API.get("/voice/pronunciations"));
+  } catch (e) {
+    console.error("pronunciations error", e);
+  }
+}
+
+async function previewPronunciation() {
+  const word = $("pron-word");
+  const spoken = $("pron-spoken");
+  const message = $("pron-message");
+  if (!word || !spoken) return;
+  try {
+    const r = await API.post("/voice/pronunciations/preview", {
+      word: word.value, spoken_as: spoken.value,
+    });
+    if (message) {
+      message.textContent = r.message;
+      message.className = "text-xs mt-2 " + (r.success ? "text-muted" : "text-warn");
+    }
+    if (r.success) {
+      await API.post("/voice/test", { text: word.value });
+    }
+  } catch (e) {
+    if (message) {
+      message.textContent = "That could not be checked. " + e.message;
+      message.className = "text-xs mt-2 text-err";
+    }
+  }
+}
+
+async function savePronunciation() {
+  const word = $("pron-word");
+  const spoken = $("pron-spoken");
+  const message = $("pron-message");
+  if (!word || !spoken) return;
+  try {
+    const data = await API.post("/voice/pronunciations", {
+      word: word.value, spoken_as: spoken.value,
+    });
+    const saved = data.entries.some((entry) => entry.word === word.value.trim().toLowerCase());
+    if (message) {
+      message.textContent = saved
+        ? `JARVIS will say “${word.value.trim()}” that way.`
+        : "That pronunciation could not be saved — try spelling it in syllables, like “dah-doh”.";
+      message.className = "text-xs mt-2 " + (saved ? "text-ok" : "text-warn");
+    }
+    if (saved) { word.value = ""; spoken.value = ""; }
+    nvRenderPronunciations(data);
+  } catch (e) {
+    if (message) {
+      message.textContent = "That could not be saved. " + e.message;
+      message.className = "text-xs mt-2 text-err";
+    }
+  }
+}
+
+async function removePronunciation(word) {
+  try {
+    nvRenderPronunciations(await API.post("/voice/pronunciations/remove", { word, spoken_as: "" }));
+  } catch (e) {
+    console.error("pronunciation remove error", e);
+  }
+}
+
 function initVoice() {
   const test   = $("btn-speak-test");
   const stop   = $("btn-speak-stop");
@@ -2187,11 +2506,35 @@ function initVoice() {
   // An open microphone must not survive navigating away from the page.
   window.addEventListener("pagehide", stopMicrophoneTest);
 
+  // The neural voice: engines, installation, and how names are said.
+  const nvTest = $("nv-test");
+  const nvStop = $("nv-stop");
+  const nvSelect = $("nv-voice-select");
+  const nvSpeed = $("nv-speed");
+  const nvStart = $("nv-install-start");
+  const nvCancel = $("nv-install-cancel");
+  const nvRetry = $("nv-install-retry");
+  if (nvTest) nvTest.addEventListener("click", testNeuralVoice);
+  if (nvStop) nvStop.addEventListener("click", voiceStop);
+  if (nvSelect) nvSelect.addEventListener("change", () => selectNeuralVoice(nvSelect.value));
+  if (nvSpeed) nvSpeed.addEventListener("change", () => setNeuralSpeed(nvSpeed.value));
+  if (nvStart) nvStart.addEventListener("click", startVoiceInstall);
+  if (nvCancel) nvCancel.addEventListener("click", cancelVoiceInstall);
+  if (nvRetry) nvRetry.addEventListener("click", startVoiceInstall);
+
+  const pronPreview = $("pron-preview");
+  const pronSave = $("pron-save");
+  if (pronPreview) pronPreview.addEventListener("click", previewPronunciation);
+  if (pronSave) pronSave.addEventListener("click", savePronunciation);
+
   refreshVoiceStatus();
   refreshVoiceInputStatus();
   refreshVoiceDiagnostics();
   refreshModelPreview();
   pollModelInstallStatus();  // covers an install already running from a previous page load
+  refreshNeuralVoice();
+  refreshPronunciations();
+  pollVoiceInstallStatus();  // likewise, for a voice install already in flight
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
