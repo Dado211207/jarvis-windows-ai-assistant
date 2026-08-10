@@ -38,8 +38,19 @@
 #
 #   pip install -r requirements.txt -r requirements-windows.txt
 #
+#   - winsdk: the WinRT projection behind the *second* speech tier
+#     (app/voice/winrt_voices.py) — Windows' own natural voices, tried
+#     after the neural voice and before the old robotic one. MIT, from
+#     Microsoft. Without it that tier can never be selected at all, so
+#     the chain silently fell from the neural voice straight to SAPI5;
+#     the adapter was written and unreachable. Windows-only, imported
+#     strictly inside the function that needs it, and collected as an
+#     *optional* package by the PyInstaller spec — if it cannot be
+#     bundled the tier reports itself unavailable, which is exactly what
+#     it already does on a machine that lacks it.
 pywin32==312
 keyring==25.7.0
+winsdk==1.0.0b10
 pywebview==6.2.1
 pythonnet==3.1.0
 faster-whisper==1.2.0

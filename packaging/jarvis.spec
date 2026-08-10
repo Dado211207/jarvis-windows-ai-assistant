@@ -110,7 +110,13 @@ _REQUIRED_PACKAGES = (
 # version. Collected when present, skipped when not — a build must not
 # fail because a package the current faster-whisper does not happen to
 # depend on is absent, and it must not silently miss one that is.
-_OPTIONAL_PACKAGES = ("tokenizers", "av", "huggingface_hub")
+#
+# winsdk is optional on purpose: it is the WinRT projection behind the
+# second speech tier, and a build that cannot collect it should produce
+# an application whose Windows-natural-voice tier reports itself
+# unavailable — the same thing it does on a machine without it — rather
+# than no application at all.
+_OPTIONAL_PACKAGES = ("tokenizers", "av", "huggingface_hub", "winsdk")
 
 # Nothing named after a copyleft speech engine may reach the installed
 # tree, and collect_all() will put it there by default if left alone:

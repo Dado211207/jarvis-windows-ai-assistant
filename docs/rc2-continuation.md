@@ -91,6 +91,8 @@ second; SAPI5 only when neither can run (`app/voice/engines.py`).
 
 Verified rather than assumed:
 
+- All four pinned voice-pack SHA-256 digests in `assets.py` were
+  re-downloaded and re-verified, not just the default one.
 - The ONNX interface was **read from the pinned model**, not from
   documentation: `input_ids` int64[1, seq], `style` float32[1, 256],
   `speed` float32[1] → `waveform` float32[1, N] at 24 kHz.
@@ -105,6 +107,10 @@ Verified rather than assumed:
   present, end to end through this project's own normaliser and G2P
   (`tests/test_kokoro_engine.py`). Skips loudly, with the install path,
   when it is not.
+
+`scripts/make_voice_samples.py` writes one WAV per installed voice
+through the real path, so the voice can be chosen by ear and re-checked
+whenever the normaliser or G2P changes.
 
 Measured, on the machine that ran it — a shared 4-core Xeon @ 2.80 GHz
 container, **not** the owner's Ryzen 7 2700X:
@@ -185,9 +191,8 @@ Their results must be read before either is described as passing.
 | **RC2-A WebView2 bootstrapping in the installer** | The native-window and second-launch behaviour is fixed and confirmed by the owner. The installer does not yet bundle or bootstrap the WebView2 runtime, and there is no repair action. |
 | **RC2-D push-to-talk on real hardware** | The engine ships and the chain is fixed; verified via mocked adapters and browser E2E with a fake media device. **Never verified against a physical microphone.** Do not claim otherwise. |
 | **RC2-G upgrade path** | Reinstall-over-existing and both uninstall modes are covered by phases B and C. Upgrading from an *older installed version* is not exercised. |
-| **Voice WAV artefacts per voice** | Not produced. `app/voice/audio.py::write_wav` exists; nothing calls it to emit per-voice samples for review. |
-| **`bm_george` as default** | Chosen as the default already, but **not** on the strength of listened-to samples. Nobody has heard these voices; the choice is currently arbitrary and should be confirmed by ear. |
-| **Windows natural voices (WinRT)** | `app/voice/winrt_voices.py` is written and degrades honestly when the projection is absent. It has **not** been exercised on a Windows machine with the projection installed, and `winsdk` is not in any requirements file — so in practice this tier is currently always unavailable and the chain falls to SAPI5. |
+| **`bm_george` as default** | Samples for all four voices were produced and sent to the owner. The default stays `bm_george` **until the owner says otherwise** — the choice is theirs to confirm by ear, and has not been confirmed yet. |
+| **Windows natural voices (WinRT)** | `winsdk` is now in `requirements-windows.txt` and collected as an *optional* package, so the tier can be selected at all — it previously could not, making the adapter unreachable. It has still **not** been exercised on a Windows machine with the projection installed. |
 | **Installer artefact for the final commit** | Not produced or hashed yet. |
 | **Final report** | Not written. |
 
