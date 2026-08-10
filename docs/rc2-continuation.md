@@ -177,9 +177,32 @@ data. Fixed, with a test that fails if it regresses.
   changed, the previous one no longer exists, and `/health` answers from
   the new one.
 
-**Not yet run.** These were pushed in `a5be0ab` and `d3d14b2`; the
-Windows Installer job for them had not reported when this was written.
-Their results must be read before either is described as passing.
+**Phase D found a real defect on its first cycle**, run
+`31392641519`:
+
+    FAILED: Cycle 1: 1 WebView2 process(es) started by JARVIS
+            outlived it (pids [8340]).
+
+That is reported defect 8 — Quit leaving a JARVIS-owned WebView2 process
+behind — reproduced automatically. Phase A had passed on the same run,
+because it only ever asked whether `JARVIS.exe` itself had exited.
+
+The cause was in `WindowProcess.stop()`, which asked for the window
+child's descendants *after* `poll()` confirmed it had already exited.
+`process_tree.py`'s own docstring states the rule it was breaking:
+once the parent is gone, the relationship identifying its descendants is
+gone with it, so a capture taken afterwards walks a dead PID and returns
+nothing. The kill path captured correctly; the graceful path — the one
+taken every ordinary time somebody chooses Quit — did not, so it cleaned
+up nothing, every time.
+
+Fixed by capturing before anything is asked to stop, re-capturing while
+the child is still alive (WebView2 starts helpers lazily), and
+terminating that accumulated set on every exit path. Three regression
+tests cover it; all three fail against the previous code.
+
+Phase E has still not run — the first execution of Phase D failed before
+reaching it.
 
 ---
 

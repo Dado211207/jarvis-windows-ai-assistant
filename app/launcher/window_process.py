@@ -263,26 +263,50 @@ class WindowProcess:
 
         Every path ends with the child genuinely gone, or a logged error
         saying it is not — never with an optimistic return.
+
+        **Descendants are captured before anything is asked to stop**, and
+        that ordering is the whole point rather than a detail. WebView2
+        runs its browser and GPU processes as children of the window
+        child; once that child exits, the parent/child relationship that
+        identifies them is gone, so a capture taken afterwards walks a
+        dead PID, returns nothing, and cleans up nothing.
+
+        This method used to capture on each exit path *after* poll() had
+        already confirmed the child was gone — which meant the graceful
+        path, the one taken every ordinary time somebody chooses Quit,
+        reliably left an msedgewebview2.exe behind. It was found by the
+        ten-cycle lifecycle test in scripts/test_clean_install.py, on
+        cycle one, and by nothing before it: every earlier check asked
+        only whether JARVIS.exe itself had exited.
         """
         if self._process is None:
             self._close_listener()
             return "not_started"
-        if self._process.poll() is not None:
-            terminate_pids(descendant_pids(self.pid))
+
+        leftovers = set(descendant_pids(self.pid))
+
+        def _finish(outcome: str) -> str:
+            terminate_pids(sorted(leftovers))
             self._close_listener()
-            return "already_exited"
+            return outcome
+
+        if self._process.poll() is not None:
+            return _finish("already_exited")
 
         self._send(ipc.COMMAND_QUIT)
 
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
-                terminate_pids(descendant_pids(self.pid))
-                self._close_listener()
-                return "graceful"
+                return _finish("graceful")
+            # Still alive, so it can still spawn: WebView2 starts its
+            # helper processes lazily, and one that appears after the
+            # first capture is exactly the one that would be missed.
+            leftovers.update(descendant_pids(self.pid))
             time.sleep(0.1)
 
         logger.warning("Window child did not exit on request — terminating this launcher's own child only.")
+        leftovers.update(descendant_pids(self.pid))
         try:
             self._process.terminate()
         except Exception:
@@ -291,12 +315,10 @@ class WindowProcess:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
-                terminate_pids(descendant_pids(self.pid))
-                self._close_listener()
-                return "terminated"
+                return _finish("terminated")
             time.sleep(0.1)
 
-        descendants = descendant_pids(self.pid)
+        leftovers.update(descendant_pids(self.pid))
         try:
             self._process.kill()
         except Exception:
@@ -316,9 +338,7 @@ class WindowProcess:
         # normal lifetime: killing the window child can leave msedge
         # children behind that the user then sees in Task Manager. Only
         # processes that were descendants of *our own* child are touched.
-        terminate_pids(descendants)
-        self._close_listener()
-        return "killed"
+        return _finish("killed")
 
     def _close_listener(self) -> None:
         if self._listener is not None:

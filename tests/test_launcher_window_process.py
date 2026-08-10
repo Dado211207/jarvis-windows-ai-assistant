@@ -321,6 +321,100 @@ def test_stop_kills_only_after_terminate_also_fails():
     assert process.kill_calls == 1
 
 
+# ---------------------------------------------------------------------------
+# WebView2 leftovers — the reported "Quit leaves processes running" defect
+# ---------------------------------------------------------------------------
+
+class _TreeSpy:
+    """Stands in for the real process tree.
+
+    Models the property that made the bug invisible: a process's children
+    are only discoverable while it is alive. Ask after it exits and you
+    get nothing back — which is exactly what the old code did, and why it
+    cleaned up nothing on the path everyone actually takes.
+    """
+
+    def __init__(self, process, children):
+        self._process = process
+        self._children = children
+        self.terminated = []
+
+    def descendant_pids(self, pid):
+        if pid is None or self._process.poll() is not None:
+            return []          # dead parent: the relationship is gone
+        return list(self._children)
+
+    def terminate_pids(self, pids):
+        self.terminated.extend(pids)
+
+
+def _with_tree_spy(monkeypatch, process, children):
+    import app.launcher.window_process as wp
+
+    spy = _TreeSpy(process, children)
+    monkeypatch.setattr(wp, "descendant_pids", spy.descendant_pids)
+    monkeypatch.setattr(wp, "terminate_pids", spy.terminate_pids)
+    return spy
+
+
+def test_a_graceful_quit_cleans_up_the_webview_processes(monkeypatch):
+    """The defect, exactly: choosing Quit worked, the window closed, and
+    an msedgewebview2.exe stayed in Task Manager afterwards.
+
+    The old code asked for the child's descendants *after* confirming it
+    had exited, so it walked a dead PID and found none. Descendants have
+    to be captured while the child is still alive.
+    """
+    window, process, _, _ = _make()
+    spy = _with_tree_spy(monkeypatch, process, children=[4242])
+    window.start(base_env={})
+
+    assert window.stop(timeout_seconds=5) == "graceful"
+    assert spy.terminated == [4242], "a graceful quit must not leave WebView2 processes behind"
+
+
+def test_leftovers_are_cleaned_up_on_every_exit_path(monkeypatch):
+    """Not just the kill path, which was the only one that got it right."""
+    for ignore_quit, ignore_terminate, expected in (
+        (False, False, "graceful"),
+        (True, False, "terminated"),
+        (True, True, "killed"),
+    ):
+        process = _FakeProcess(ignore_quit=ignore_quit, ignore_terminate=ignore_terminate)
+        window, process, _, _ = _make(process=process)
+        spy = _with_tree_spy(monkeypatch, process, children=[99])
+        window.start(base_env={})
+
+        assert window.stop(timeout_seconds=0.3) == expected
+        assert 99 in spy.terminated, f"leftovers survived the {expected!r} path"
+
+
+def test_a_helper_process_that_appears_late_is_still_cleaned_up(monkeypatch):
+    """WebView2 starts its helpers lazily, so one can appear after the
+    first capture and before the window finishes closing."""
+    import app.launcher.window_process as wp
+
+    window, process, _, _ = _make(process=_FakeProcess(ignore_quit=True))
+    appeared = []
+    spy = _TreeSpy(process, children=appeared)
+
+    calls = {"n": 0}
+
+    def _descendants(pid):
+        calls["n"] += 1
+        if calls["n"] == 2:      # a helper shows up mid-shutdown
+            appeared.append(7)
+        return spy.descendant_pids(pid)
+
+    monkeypatch.setattr(wp, "descendant_pids", _descendants)
+    monkeypatch.setattr(wp, "terminate_pids", spy.terminate_pids)
+    window.start(base_env={})
+
+    window.stop(timeout_seconds=0.3)
+
+    assert 7 in spy.terminated, "a helper that appeared after the first capture was missed"
+
+
 def test_stop_on_an_already_exited_child_does_not_signal_it():
     window, process, _, _ = _make()
     window.start(base_env={})
