@@ -7,7 +7,7 @@ SESSION_TOKEN_HEADER = "X-JARVIS-Session-Token"
 
 @pytest.fixture(autouse=True)
 def isolated_preferences(tmp_path, monkeypatch):
-    """Every test gets its own preferences file.
+    """Every test gets its own preferences file and pronunciation store.
 
     Autouse and unconditional: app/core/preferences.py is written to by
     ordinary product code (turning on spoken replies, picking an AI
@@ -15,8 +15,16 @@ def isolated_preferences(tmp_path, monkeypatch):
     settings, and — worse — one test's choice would silently change what
     the next test observes. Redirecting only the preferences module's own
     reference leaves app_paths' own tests measuring the real thing.
+
+    app/voice/pronunciations.py is redirected for exactly the same
+    reason and needs its own line: it holds its own reference to
+    config_dir, so patching the preferences module does not reach it.
+    Both are per-test user data written by ordinary use of the product,
+    and a test that saves how to say a name must not change how the next
+    test hears it.
     """
     monkeypatch.setattr("app.core.preferences.config_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.voice.pronunciations.config_dir", lambda: tmp_path)
     yield tmp_path
 
 

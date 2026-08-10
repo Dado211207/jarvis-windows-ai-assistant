@@ -226,10 +226,17 @@ class SetVoiceOutputRequest(BaseModel):
 
 @router.get("/voice/status", response_model=VoiceStatusResponse)
 def voice_status() -> VoiceStatusResponse:
-    from app.config import settings
+    """`tts_engine` is the engine actually speaking, not the configured
+    one. It used to report `settings.jarvis_tts_engine`, a fixed string
+    reading "pyttsx3" — which stopped being true the moment speech could
+    come from any of three engines, and would have named the robotic one
+    while the neural voice was talking. See /voice/engine-status for the
+    full per-tier picture."""
+    from app.voice import engines
+
     return VoiceStatusResponse(
         tts_enabled=tts_service.output_enabled,
-        tts_engine=settings.jarvis_tts_engine,
+        tts_engine=engines.DISPLAY_NAMES[tts_service.active_engine()],
         tts_available=tts_service.is_available(),
     )
 
