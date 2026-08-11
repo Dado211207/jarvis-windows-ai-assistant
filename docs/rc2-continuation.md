@@ -274,6 +274,21 @@ data by default, reinstall over preserved data, and uninstall with
 
 ## Things worth not re-learning
 
+- **The installer job's concurrency group belongs on the job, not the
+  workflow.** At workflow level, every push joins it — including a
+  docs-only push whose gate then correctly skips the build. The
+  cancellation happens first, so a docs commit kills a build in flight
+  and then skips its own. Three runs were lost this way before it was
+  noticed, and the tell was needing `workflow_dispatch` to get a build to
+  finish.
+- **`pytest | tail` reports `tail`'s exit status.** A chained
+  `pytest ... | tail && git commit` will commit a red suite. Redirect to
+  a file and check `$?` instead.
+- **This session can only reach GitHub through the MCP tools.** Direct
+  `curl` to `api.github.com` returns 403 ("GitHub access is not enabled
+  for this session"), so a `Monitor` polling loop built on curl spins
+  without ever seeing the run. Poll with `mcp__github__actions_list`
+  instead.
 - `collect_all()` copies `.py` files into `_internal/` as data. Anything
   bundled is licence surface whether or not it can ever run.
 - `patch.dict(sys.modules, ...)` removes on exit anything first imported
