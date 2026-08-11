@@ -47,6 +47,7 @@ class Brain:
         from app.core import memory as memory_module
         from app.core import privacy as privacy_module
         from app.desktop import apps, clipboard, folders, maintenance, notes, screenshots, session, system, web
+        from app.voice import speak_reply as speak_reply_module
         from app.voice import tts as tts_module
 
         apps.register_tools(registry)
@@ -54,6 +55,7 @@ class Brain:
         system.register_tools(registry)
         memory_module.register_tools(registry)
         tts_module.register_tools(registry)
+        speak_reply_module.register_tools(registry)
         maintenance.register_tools(registry)
         web.register_tools(registry)
         folders.register_tools(registry)

@@ -15,8 +15,13 @@ Type 'help' to list commands, 'exit' to quit.
 
 PROMPT = "jarvis> "
 
-# TTS control tools manage their own speech — don't auto-speak their responses.
-_TTS_CONTROL_TOOLS = {"tts_enable", "tts_disable", "tts_status", "tts_test", "tts_stop"}
+# TTS control tools manage their own speech — don't auto-speak their
+# responses. speak_last_reply is here for the same reason and a sharper
+# one: it has just started speaking the previous answer, and speaking its
+# own confirmation on top of that would overlap two utterances.
+_TTS_CONTROL_TOOLS = {
+    "tts_enable", "tts_disable", "tts_status", "tts_test", "tts_stop", "speak_last_reply",
+}
 
 
 def main() -> None:

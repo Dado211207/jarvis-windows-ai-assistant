@@ -76,6 +76,30 @@ ROUTES: List[Route] = [
     Route(r"^speak\s+status$", "tts_status"),
     Route(r"^speak\s+test$", "tts_test"),
     Route(r"^stop\s+speaking$", "tts_stop"),
+    # Asking JARVIS to speak. Deterministic on purpose: the installed
+    # release candidate answered "answer me with your voice" by saying it
+    # had no text-to-speech and recommending three other programs, and a
+    # request to use a capability the product ships should never have
+    # depended on a model's opinion of itself. Listed after the four
+    # `speak <word>` control commands above so none of them is shadowed.
+    Route(
+        r"^(?:answer|reply|respond|talk|speak)(?:\s+(?:to\s+)?me)?\s+(?:with|using|in)\s+(?:your\s+)?voice$",
+        "speak_last_reply",
+    ),
+    Route(r"^use\s+your\s+voice$", "speak_last_reply"),
+    # "say that", "read this aloud", "repeat that out loud", "read it
+    # back to me" — the modifiers stack in any order people use them.
+    Route(
+        r"^(?:say|speak|read|repeat)\s+(?:that|this|it)"
+        r"(?:\s+(?:again|back|out\s+loud|aloud|to\s+me))*$",
+        "speak_last_reply",
+    ),
+    Route(
+        r"^(?:say|speak|read)\s+(?:your\s+|the\s+)?(?:last|previous)\s+"
+        r"(?:answer|reply|message|response)(?:\s+(?:again|out\s+loud|aloud))?$",
+        "speak_last_reply",
+    ),
+    Route(r"^(?:speak|talk)(?:\s+(?:out\s+loud|aloud|up))?$", "speak_last_reply"),
     # Maintenance commands (Phase 5 — approval required)
     Route(r"^clear\s+logs?$", "clear_logs"),
     # Bulk memory deletion — approval-required, same gate as clear_logs
