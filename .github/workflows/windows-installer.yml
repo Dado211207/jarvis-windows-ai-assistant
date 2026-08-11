@@ -36,13 +36,20 @@ on:
       - ".gitattributes"
       - "tests/test_licence_policy.py"
 
-# Supersede an in-flight run when a newer commit lands on the same branch:
-# this job takes several minutes and installs/uninstalls a real
-# application, so racing two of them against one runner's registry and
-# %LOCALAPPDATA% is both wasteful and a source of spurious failures.
-concurrency:
-  group: windows-installer-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+# NOTE: the concurrency group lives on the installer job below, not here.
+#
+# At workflow level it cancelled builds that mattered. Every push starts
+# this workflow, including a documentation-only one whose gate correctly
+# decides no build is needed — but the cancellation happened first, so a
+# docs commit pushed while a real packaging build was running killed that
+# build and then skipped its own. Observed repeatedly: three separate
+# installer runs were cancelled mid-flight by later docs commits, and one
+# of them was the run that would have first exercised the ten-cycle
+# lifecycle test.
+#
+# On the job, a skipped job never joins the group, so a docs push cannot
+# cancel a build in progress. Two real packaging pushes still supersede
+# each other, which is what the group is for.
 
 jobs:
   # Why this gate exists, verified rather than assumed: the `paths:`
@@ -101,6 +108,15 @@ jobs:
     runs-on: windows-latest
     needs: detect-relevant-changes
     if: needs.detect-relevant-changes.outputs.relevant == 'true'
+
+    # Here rather than at workflow level, so a run whose gate skips this
+    # job cannot cancel one that is genuinely building. This job takes
+    # several minutes and installs/uninstalls a real application, so two
+    # of them racing one runner's registry and %LOCALAPPDATA% is both
+    # wasteful and a source of spurious failures — that part still holds.
+    concurrency:
+      group: windows-installer-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout repository
