@@ -116,12 +116,22 @@ class Brain:
     @staticmethod
     def _system_prompt() -> str:
         """The immutable system prompt, plus the name the user asked to
-        be called. Read per request rather than cached, so changing it in
-        Settings takes effect on the next message instead of the next
-        restart."""
+        be called, plus what this installation can actually do.
+
+        All three parts are read per request rather than cached. For the
+        name that means a change in Settings takes effect on the next
+        message instead of the next restart; for the capabilities it
+        means a voice that finished installing two minutes ago is one the
+        model knows it has. A remembered answer would be wrong in exactly
+        the moment somebody asks about it.
+        """
+        from app.core.capabilities import describe_now
         from app.core.preferences import get as get_preference
 
-        return build_system_prompt(get_preference("preferred_name") or "")
+        return build_system_prompt(
+            get_preference("preferred_name") or "",
+            capabilities=describe_now(),
+        )
 
     @staticmethod
     def _ollama_model() -> str:

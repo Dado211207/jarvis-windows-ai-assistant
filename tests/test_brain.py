@@ -114,7 +114,15 @@ def test_generate_response_uses_api_when_key_present():
 
 
 def test_generate_response_passes_system_prompt():
-    """Verify the system prompt is forwarded to the Anthropic SDK."""
+    """Verify the system prompt is forwarded to the Anthropic SDK.
+
+    Compared with startswith() rather than equality: the immutable rules
+    are the prefix, and what follows them is appended per request — the
+    preferred name and the live capability block from
+    app/core/capabilities.py. Equality here would mean the prompt could
+    never tell the model anything about this machine, which is the defect
+    tests/test_capabilities.py exists for.
+    """
     from app.core.brain import Brain
     from app.core.system_prompt import SYSTEM_PROMPT
     b = Brain()
@@ -137,7 +145,8 @@ def test_generate_response_passes_system_prompt():
         b.generate_response("tell me a joke")
 
     call_kwargs = mock_client.messages.create.call_args
-    assert call_kwargs.kwargs.get("system") == SYSTEM_PROMPT
+    system = call_kwargs.kwargs.get("system")
+    assert system.startswith(SYSTEM_PROMPT), "the immutable rules must be sent unchanged"
 
 
 # ---------------------------------------------------------------------------
