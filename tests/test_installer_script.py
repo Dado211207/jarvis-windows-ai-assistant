@@ -240,3 +240,57 @@ def test_references_the_real_icon_file():
 def test_files_source_matches_expected_pyinstaller_distpath():
     files = _section("Files")
     assert 'Source: "dist\\JARVIS\\*"' in files
+
+
+# ---------------------------------------------------------------------------
+# WebView2 is installed by setup, not discovered as missing at first launch
+# ---------------------------------------------------------------------------
+
+def test_setup_detects_the_webview2_runtime_the_same_way_the_app_does():
+    """Two places ask "is WebView2 here". If they disagree, setup thinks
+    it installed something the app then reports as missing."""
+    from app.launcher.runtime_check import WEBVIEW2_CLIENT_KEY
+
+    content = _read()
+    guid = WEBVIEW2_CLIENT_KEY.split("\\")[-1]
+
+    assert guid in content, "the installer must look under the same registry key as the app"
+    assert "0.0.0.0" in content, (
+        "Microsoft uses 0.0.0.0 to mean 'not installed'; setup must treat it that way too"
+    )
+
+
+def test_setup_installs_webview2_when_it_is_missing():
+    content = _read()
+
+    assert "DownloadTemporaryFile" in content
+    assert "go.microsoft.com/fwlink" in content, "use Microsoft's own bootstrapper link"
+    assert "/silent /install" in content
+
+
+def test_the_webview2_step_runs_on_a_silent_install_too():
+    """NextButtonClick never fires without a wizard, so a /VERYSILENT
+    install — CI's, and any unattended deployment — would silently skip
+    it. PrepareToInstall runs in both."""
+    assert "function PrepareToInstall" in _read()
+
+
+def test_a_failed_webview2_install_never_aborts_the_installation():
+    """An offline machine must still end up with a working JARVIS, minus
+    the native window. Aborting a working installation over an optional
+    component is the worse trade, and PrepareToInstall aborts setup by
+    returning a non-empty string."""
+    import re
+
+    content = _read()
+    body = content[content.index("function PrepareToInstall"):]
+    body = body[:body.index("function GetJarvisDataDir")]
+
+    assignments = re.findall(r"Result\s*:=\s*(.+?);", body)
+    assert assignments, "expected PrepareToInstall to set Result"
+    assert all(value.strip() in ("''", '""') for value in assignments), (
+        f"PrepareToInstall must always return an empty string; found {assignments}"
+    )
+    assert "except" in body or "except" in content[:content.index("function PrepareToInstall")], (
+        "the download must be wrapped so a failure cannot propagate"
+    )

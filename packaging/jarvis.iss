@@ -155,6 +155,106 @@ Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: st
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+// ---------------------------------------------------------------------------
+// WebView2: install it if it is missing, rather than letting the app
+// discover that at first launch.
+//
+// JARVIS's window is a WebView2 control. On a machine without the
+// runtime the app used to start, fail to build a window, and fall back
+// to a browser tab — which is what made the browser look like the
+// product's real interface. Detecting it here and installing it once,
+// during setup, is where that belongs.
+//
+// The URL is Microsoft's own permanent link to the Evergreen
+// Bootstrapper, a ~2 MB downloader that fetches and installs the current
+// runtime. It is not redistributed in this installer — bundling it would
+// pin a version that goes stale, and Microsoft's guidance is to use this
+// link.
+//
+// **A failure here never fails the install.** An offline machine, a
+// blocked download or a declined elevation all leave JARVIS installed
+// and working, minus the native window; Diagnostics then reports exactly
+// what is missing with a link. Aborting a working installation over an
+// optional component would be the worse trade.
+// ---------------------------------------------------------------------------
+const
+  WebView2ClientKey = 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  WebView2Wow6432Key = 'Software\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  WebView2BootstrapperUrl = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
+
+function VersionMeansInstalled(const Version: String): Boolean;
+begin
+  // Microsoft documents "0.0.0.0" as explicitly meaning "not installed"
+  // rather than the key being absent. Matches
+  // app/launcher/runtime_check.py::_read_webview2_version().
+  Result := (Version <> '') and (Version <> '0.0.0.0');
+end;
+
+function WebView2Installed(): Boolean;
+var
+  Version: String;
+begin
+  Result := False;
+  if RegQueryStringValue(HKEY_LOCAL_MACHINE, WebView2Wow6432Key, 'pv', Version) then
+    if VersionMeansInstalled(Version) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  if RegQueryStringValue(HKEY_LOCAL_MACHINE, WebView2ClientKey, 'pv', Version) then
+    if VersionMeansInstalled(Version) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  if RegQueryStringValue(HKEY_CURRENT_USER, WebView2ClientKey, 'pv', Version) then
+    Result := VersionMeansInstalled(Version);
+end;
+
+function OnWebView2DownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
+begin
+  Result := True;
+end;
+
+procedure EnsureWebView2();
+var
+  BootstrapperPath: String;
+  ResultCode: Integer;
+begin
+  if WebView2Installed() then
+    Exit;
+
+  Log('WebView2 runtime not found; fetching the Microsoft bootstrapper.');
+  try
+    DownloadTemporaryFile(
+      WebView2BootstrapperUrl, 'MicrosoftEdgeWebview2Setup.exe', '',
+      @OnWebView2DownloadProgress);
+  except
+    // Offline, or the download was blocked. The app still installs.
+    Log('WebView2 bootstrapper could not be downloaded: ' + GetExceptionMessage);
+    Exit;
+  end;
+
+  BootstrapperPath := ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe');
+  // Per-user install, silent: matches this installer's own
+  // PrivilegesRequired=lowest, so it never provokes an elevation prompt
+  // in an install the user chose to run without one.
+  if Exec(BootstrapperPath, '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('WebView2 bootstrapper finished with exit code ' + IntToStr(ResultCode))
+  else
+    Log('WebView2 bootstrapper could not be started.');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  // Runs in silent installs too, which NextButtonClick would not — the
+  // CI clean-install test and any unattended deployment both take this
+  // path. Always returns '' : a non-empty result aborts setup, and a
+  // missing optional runtime is not grounds for that.
+  Result := '';
+  EnsureWebView2();
+end;
+
 function GetJarvisDataDir(): String;
 begin
   // Matches app/core/app_paths.py::app_data_root() exactly for a
