@@ -258,11 +258,15 @@ def set_voice_output(req: SetVoiceOutputRequest) -> VoiceStatusResponse:
 
 @router.post("/voice/speak", dependencies=[Depends(require_session_token)])
 def voice_speak(req: SpeakRequest) -> dict:
-    """Speak text through the local engine, if the user turned speech on.
+    """Speak text *automatically*, if the user turned spoken replies on.
 
-    The gate lives here rather than in the browser so a stale page cannot
-    make JARVIS talk after speech was switched off in another tab or by
-    a `speak off` command.
+    This is the path the chat page uses to read each new answer aloud by
+    itself. The gate lives here rather than in the browser so a stale
+    page cannot keep narrating after speech was switched off in another
+    tab or by a `speak off` command.
+
+    A person pressing the speaker button on one message is asking for
+    something different and goes to /voice/speak-once below.
     """
     if not tts_service.output_enabled:
         return {
@@ -271,6 +275,54 @@ def voice_speak(req: SpeakRequest) -> dict:
         }
     result = tts_service.speak(req.text)
     return {"success": result.success, "message": result.message}
+
+
+@router.post("/voice/speak-once", dependencies=[Depends(require_session_token)])
+def voice_speak_once(req: SpeakRequest) -> dict:
+    """Read one specific thing aloud because the user just asked for it.
+
+    Deliberately not gated on `output_enabled`. That flag answers "speak
+    every reply automatically"; someone who has just pressed a speaker
+    button on a particular message has asked for that message, and
+    refusing because a different setting is off is the defect this
+    release exists to fix — JARVIS declining to use the voice it has.
+    `tts_test` has always worked exactly this way, so there is still one
+    flag and not two (CLAUDE.md's Phase 3 rule).
+
+    The gate that matters is still here and still server-side: an
+    unavailable engine is refused with the engine's own reason and the
+    step that fixes it, and the endpoint requires the session token like
+    every other mutating route. Nothing about this lets a stale page
+    narrate on its own — it can only speak when a person presses a
+    button on it, and the same person can press stop.
+    """
+    if not tts_service.is_available():
+        from app.voice import engines
+
+        return {
+            "success": False,
+            "message": engines.unavailable_message(tts_service.voice_key),
+        }
+    result = tts_service.speak(req.text)
+    return {"success": result.success, "message": result.message}
+
+
+@router.get("/voice/speaking")
+def voice_speaking() -> dict:
+    """Whether audio is playing right now.
+
+    The speech service returns as soon as playback *starts*, so a page
+    showing a Stop button has no other way to know when to put it back —
+    and a Stop button left showing after the sound finished is a control
+    that lies about the state of the machine.
+    """
+    from app.voice import engines
+
+    try:
+        return {"speaking": bool(engines.is_speaking())}
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not read speech state.", exc_info=True)
+        return {"speaking": False}
 
 
 @router.post("/voice/stop", dependencies=[Depends(require_session_token)])

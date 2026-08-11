@@ -676,6 +676,52 @@ a:hover { color: var(--accent-hover); }
   padding: 0.1rem 0.1rem;
 }
 
+/* Read this answer aloud. Quiet until wanted — it sits under every
+   JARVIS message and must not compete with the message itself. */
+.msg-speak {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.25rem 0.6rem;
+  margin-top: 0.1rem;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.msg-speak:hover {
+  color: var(--accent);
+  border-color: rgba(0, 212, 255, 0.4);
+  background: var(--accent-soft);
+}
+.msg-speak:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.msg-speak.is-speaking {
+  color: var(--accent);
+  border-color: rgba(0, 212, 255, 0.5);
+  background: var(--accent-soft);
+}
+.msg-speak-glyph { font-size: 0.62rem; }
+
+/* The always-speak switch, alongside the provider label in the toolbar. */
+.chat-speak-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-left: auto;
+  margin-right: 0.6rem;
+}
+
 .chat-input-row {
   display: flex;
   gap: 0.5rem;

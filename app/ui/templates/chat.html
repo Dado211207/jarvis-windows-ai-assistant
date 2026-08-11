@@ -14,6 +14,14 @@
   <div class="card" style="padding: 1rem 1.1rem;">
     <div class="chat-toolbar">
       <span id="chat-provider" class="text-xs text-muted" aria-live="polite">Checking AI provider&hellip;</span>
+      {# The same saved setting as the Voice page toggle — one flag, read
+         and written through /voice/output, so the two can never disagree.
+         Here because "speak every reply" is a thing you change while
+         chatting, not a thing you go to another page for. #}
+      <label class="chat-speak-toggle" for="chat-speak-replies">
+        <input type="checkbox" id="chat-speak-replies" class="toggle-input">
+        <span id="chat-speak-replies-label">Speak replies</span>
+      </label>
       <button id="chat-reset" class="btn btn-ghost btn-sm" type="button">New conversation</button>
     </div>
 

@@ -176,7 +176,7 @@ let chatEmpty = true;
 
 function addMessage(role, text, toolUsed) {
   const list = $("chat-messages");
-  if (!list) return;
+  if (!list) return null;
 
   const empty = $("chat-empty");
   if (empty && chatEmpty) { empty.style.display = "none"; chatEmpty = false; }
@@ -195,6 +195,12 @@ function addMessage(role, text, toolUsed) {
   wrap.appendChild(roleEl);
   wrap.appendChild(bubble);
 
+  let speakBtn = null;
+  if (role === "assistant") {
+    speakBtn = makeSpeakButton(() => bubble.textContent);
+    wrap.appendChild(speakBtn);
+  }
+
   if (toolUsed) {
     const tool = document.createElement("div");
     tool.className = "msg-tool";
@@ -204,6 +210,7 @@ function addMessage(role, text, toolUsed) {
 
   list.appendChild(wrap);
   list.scrollTop = list.scrollHeight;
+  return speakBtn;
 }
 
 // A message bubble that grows as text streams in. Returns an appender so
@@ -228,6 +235,13 @@ function addStreamingMessage() {
 
   wrap.appendChild(roleEl);
   wrap.appendChild(bubble);
+
+  // Hidden until the answer is complete: a Listen button on half an
+  // answer would read half an answer.
+  const speakBtn = makeSpeakButton(() => bubble.textContent);
+  speakBtn.hidden = true;
+  wrap.appendChild(speakBtn);
+
   list.appendChild(wrap);
 
   let buffer = "";
@@ -245,19 +259,134 @@ function addStreamingMessage() {
     isEmpty() { return buffer.length === 0; },
     text() { return buffer; },
     remove() { wrap.remove(); },
+    finish() {
+      if (buffer.trim()) speakBtn.hidden = false;
+      return speakBtn;
+    },
   };
 }
 
-// The server decides whether to actually speak (see /voice/speak). Asking
-// every time rather than caching a flag here means a page left open
-// after speech was switched off elsewhere can't make JARVIS talk.
-const SPOKEN_REPLY_MAX_CHARS = 1000;  // matches MAX_SPEAK_LENGTH server-side
+// ── Speaking a reply ─────────────────────────────────────────────────────────
+//
+// The server decides whether to actually speak. Asking every time rather
+// than caching a flag here means a page left open after speech was
+// switched off elsewhere can't make JARVIS narrate on its own.
+//
+// Two endpoints, because they answer two different questions:
+//   /voice/speak       — read this new reply automatically. Gated on the
+//                        "Speak responses" setting, server-side.
+//   /voice/speak-once  — read *this* message, because I just pressed its
+//                        button. Not gated on that setting; pressing the
+//                        button is the request.
+//
+// One utterance at a time. Every path stops whatever is playing before
+// starting, so a reply arriving while an older one is being read does not
+// produce two voices talking over each other.
 
-async function speakReply(text) {
+const SPOKEN_REPLY_MAX_CHARS = 1000;  // matches MAX_SPEAK_LENGTH server-side
+const SPEECH_POLL_MS = 700;
+
+const SPEAK_GLYPH = "▶";   // ▶
+const STOP_GLYPH  = "■";   // ■
+
+let speakingButton = null;
+let speakingPoll = null;
+
+function paintSpeakButton(btn, speaking) {
+  if (!btn) return;
+  const glyph = btn.querySelector(".msg-speak-glyph");
+  const label = btn.querySelector(".msg-speak-label");
+  if (glyph) glyph.textContent = speaking ? STOP_GLYPH : SPEAK_GLYPH;
+  if (label) label.textContent = speaking ? "Stop" : "Listen";
+  btn.setAttribute("aria-label", speaking ? "Stop reading this answer aloud" : "Read this answer aloud");
+  btn.setAttribute("aria-pressed", speaking ? "true" : "false");
+  btn.classList.toggle("is-speaking", !!speaking);
+}
+
+function makeSpeakButton(getText) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "msg-speak";
+
+  const glyph = document.createElement("span");
+  glyph.className = "msg-speak-glyph";
+  glyph.setAttribute("aria-hidden", "true");
+
+  const label = document.createElement("span");
+  label.className = "msg-speak-label";
+
+  btn.appendChild(glyph);
+  btn.appendChild(label);
+  paintSpeakButton(btn, false);
+
+  btn.addEventListener("click", () => speakOnDemand(getText(), btn));
+  return btn;
+}
+
+function forgetSpeaking() {
+  if (speakingPoll) { clearInterval(speakingPoll); speakingPoll = null; }
+  if (speakingButton) paintSpeakButton(speakingButton, false);
+  speakingButton = null;
+}
+
+// Speech ends on its own and the server can only report that it *started*,
+// so the button that says Stop has to check whether it is still true.
+function watchSpeech(btn) {
+  forgetSpeaking();
+  if (!btn) return;
+  speakingButton = btn;
+  paintSpeakButton(btn, true);
+  speakingPoll = setInterval(async () => {
+    try {
+      const r = await API.get("/voice/speaking");
+      if (!r || !r.speaking) forgetSpeaking();
+    } catch (e) {
+      forgetSpeaking();   // an unanswerable question must not leave a stuck button
+    }
+  }, SPEECH_POLL_MS);
+}
+
+async function stopSpeech() {
+  const wasSpeaking = speakingButton !== null;
+  forgetSpeaking();
+  if (!wasSpeaking) return;
+  try {
+    await API.post("/voice/stop", {});
+  } catch (e) {
+    console.warn("could not stop speech", e);
+  }
+}
+
+// The speaker button on one message.
+async function speakOnDemand(text, btn) {
+  if (speakingButton === btn) { await stopSpeech(); return; }
+  await stopSpeech();
+
   const trimmed = (text || "").trim();
   if (!trimmed) return;
   try {
-    await API.post("/voice/speak", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
+    const r = await API.post("/voice/speak-once", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
+    if (r && r.success) {
+      watchSpeech(btn);
+      setChatStatus("");
+    } else {
+      // The engine's own reason and the step that fixes it — never a
+      // suggestion to go and find another program.
+      setChatStatus((r && r.message) || "JARVIS could not speak that.");
+    }
+  } catch (e) {
+    setChatStatus("Could not speak that: " + e.message);
+  }
+}
+
+// A new reply arriving, spoken only if the user asked for that.
+async function speakReply(text, btn) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return;
+  await stopSpeech();
+  try {
+    const r = await API.post("/voice/speak", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
+    if (r && r.success) watchSpeech(btn);
   } catch (e) {
     // Speech is an enhancement; a failure here must never disturb the
     // conversation the user is reading.
@@ -335,8 +464,8 @@ async function streamChat(text) {
         // read and decide on, not something to hear read out.
         addApprovalCard(data.pending_action_id, data);
       } else {
-        addMessage("assistant", data.message || "", data.tool_used || null);
-        speakReply(data.message || "");
+        const btn = addMessage("assistant", data.message || "", data.tool_used || null);
+        speakReply(data.message || "", btn);
       }
     } else if (evt.type === "delta") {
       if (!stream) stream = addStreamingMessage();
@@ -356,7 +485,8 @@ async function streamChat(text) {
       } else if (!sawError) {
         setChatStatus("");
       }
-      if (!sawError && stream && !stream.isEmpty()) speakReply(stream.text());
+      const btn = stream ? stream.finish() : null;
+      if (!sawError && stream && !stream.isEmpty()) speakReply(stream.text(), btn);
     }
   };
 
@@ -385,8 +515,8 @@ async function sendChatFallback(text) {
       addApprovalCard(data.pending_action_id, data);
     } else {
       const reply = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
-      addMessage("assistant", reply, data.tool_used || null);
-      speakReply(reply);
+      const btn = addMessage("assistant", reply, data.tool_used || null);
+      speakReply(reply, btn);
     }
   } catch (e) {
     addMessage("assistant", "Error: " + e.message, null);
@@ -409,6 +539,9 @@ async function resetConversation() {
     "This cannot be undone. Your action history and logs are not affected."
   );
   if (!confirmed) return;
+
+  // The button that would stop it is about to be removed from the page.
+  await stopSpeech();
 
   try {
     const r = await API.post("/conversation/reset", {});
@@ -550,7 +683,51 @@ function initChat() {
   });
 
   refreshChatProvider();
+  initSpeakRepliesToggle();
   initPushToTalk();
+}
+
+// The "Speak replies" switch in the chat toolbar. Reads and writes the
+// same saved setting as the Voice page toggle through /voice/output, so
+// the two controls can never disagree about the one flag.
+async function initSpeakRepliesToggle() {
+  const toggle = $("chat-speak-replies");
+  const label = $("chat-speak-replies-label");
+  if (!toggle) return;
+
+  const paint = status => {
+    toggle.checked = !!(status && status.tts_enabled);
+    if (!label) return;
+    if (status && !status.tts_available) {
+      // Honest rather than encouraging: the switch really can be on
+      // while nothing on this machine can make a sound.
+      label.textContent = "Speak replies (no voice installed)";
+    } else {
+      label.textContent = "Speak replies";
+    }
+  };
+
+  try {
+    paint(await API.get("/voice/status"));
+  } catch (e) {
+    toggle.disabled = true;
+    if (label) label.textContent = "Speak replies (unavailable)";
+    return;
+  }
+
+  toggle.addEventListener("change", async () => {
+    const wanted = toggle.checked;
+    try {
+      // The server returns the state actually in effect, not the
+      // requested one, so a setting that could not be saved shows as
+      // what it really is instead of flipping back on the next load.
+      paint(await API.post("/voice/output", { enabled: wanted }));
+      if (!wanted) await stopSpeech();
+    } catch (e) {
+      setChatStatus("Could not change that setting: " + e.message);
+      try { paint(await API.get("/voice/status")); } catch (ignored) { /* leave as-is */ }
+    }
+  });
 }
 
 // ── Push-to-talk (v0.2) ──────────────────────────────────────────────────────

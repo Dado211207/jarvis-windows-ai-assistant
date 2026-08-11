@@ -510,6 +510,112 @@ def test_an_approval_prompt_is_not_spoken(page, live_server):
     assert spoken == [], "an approval prompt must be read, not read aloud"
 
 
+def _speak_once_requests(pg):
+    seen = []
+    pg.on("request", lambda r: seen.append(r.url) if r.url.endswith("/voice/speak-once") else None)
+    return seen
+
+
+def _send_and_wait(pg, command="status"):
+    pg.fill("#chat-input", command)
+    pg.click("#chat-send")
+    pg.wait_for_selector(".msg-assistant .msg-speak:not([hidden])", timeout=8000)
+
+
+def test_every_answer_carries_its_own_listen_button(page, live_server):
+    """The owner's requirement after the release-candidate test: a
+    speaker control on each message, not one global switch."""
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+    _send_and_wait(page)
+
+    button = page.locator(".msg-assistant .msg-speak").first
+
+    assert button.get_attribute("aria-label") == "Read this answer aloud"
+    assert button.get_attribute("aria-pressed") == "false"
+    assert "Listen" in button.inner_text()
+
+
+def test_the_users_own_messages_have_no_listen_button(page, live_server):
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+    _send_and_wait(page)
+
+    assert page.locator(".msg-user .msg-speak").count() == 0
+
+
+def test_pressing_listen_asks_the_server_to_speak_that_message(page, live_server):
+    """The button works while "speak every reply" is off — pressing it is
+    the request. That refusal was the reported defect."""
+    from unittest.mock import MagicMock, patch
+
+    from app.voice.tts import tts_service
+
+    tts_service.set_output_enabled(False)
+    asked = _speak_once_requests(page)
+
+    with patch("pyttsx3.init", return_value=MagicMock()):
+        page.goto(url("/ui/chat"), wait_until="networkidle")
+        _send_and_wait(page)
+        page.locator(".msg-assistant .msg-speak").first.click()
+        page.wait_for_timeout(500)
+
+    assert asked, "pressing Listen never reached /voice/speak-once"
+
+
+def test_the_listen_button_is_keyboard_operable(page, live_server):
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+    _send_and_wait(page)
+
+    button = page.locator(".msg-assistant .msg-speak").first
+    button.focus()
+
+    assert page.evaluate("document.activeElement.classList.contains('msg-speak')") is True
+
+
+def test_the_button_says_stop_while_it_is_speaking(page, live_server):
+    """A control that does not report its own state is a control that
+    lies about the state of the machine."""
+    from unittest.mock import MagicMock, patch
+
+    from app.voice import engines
+
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+    _send_and_wait(page)
+
+    with patch("pyttsx3.init", return_value=MagicMock()), \
+         patch.object(engines, "speak", return_value=engines.SpeakOutcome(started=True, engine="kokoro", message="ok")), \
+         patch.object(engines, "is_speaking", return_value=True):
+        page.locator(".msg-assistant .msg-speak").first.click()
+        page.wait_for_selector('.msg-speak[aria-pressed="true"]', timeout=5000)
+
+        button = page.locator('.msg-speak[aria-pressed="true"]').first
+        assert button.get_attribute("aria-label") == "Stop reading this answer aloud"
+        assert "Stop" in button.inner_text()
+
+
+def test_the_chat_toggle_writes_the_same_saved_setting_as_the_voice_page(page, live_server):
+    from app.voice.tts import tts_service
+
+    tts_service.set_output_enabled(False)
+    try:
+        page.goto(url("/ui/chat"), wait_until="networkidle")
+        page.wait_for_function(
+            "document.getElementById('chat-speak-replies').checked === false", timeout=5000,
+        )
+        page.click("#chat-speak-replies")
+        page.wait_for_function(
+            "document.getElementById('chat-speak-replies').checked === true", timeout=5000,
+        )
+
+        assert tts_service.output_enabled is True
+
+        page.goto(url("/ui/voice"), wait_until="networkidle")
+        page.wait_for_function(
+            "document.getElementById('voice-output-toggle').checked === true", timeout=5000,
+        )
+    finally:
+        tts_service.set_output_enabled(False)
+
+
 def test_the_voice_page_toggle_reflects_the_server_state(page, live_server):
     from app.voice.tts import tts_service
 
