@@ -141,12 +141,34 @@ def test_the_gate_fails_safe_and_builds_when_the_range_is_unknown():
     assert script.count("relevant=true") >= 2, "expected explicit fail-safe branches that still build"
 
 
-def test_superseded_runs_are_cancelled():
+def test_superseded_builds_are_cancelled():
     """This job installs and uninstalls a real application; two of them
     racing on one runner is both wasteful and a source of spurious
     failures."""
+    installer = _jobs()["build-and-test-installer"]
+
+    assert installer["concurrency"]["cancel-in-progress"] is True
+
+
+def test_the_concurrency_group_is_on_the_job_not_the_workflow():
+    """At workflow level it cancelled builds that mattered.
+
+    Every push joins a workflow-level group, including a docs-only push
+    whose gate then correctly decides no build is needed — but the
+    cancellation happens first, so a docs commit pushed during a real
+    build killed that build and then skipped its own. Three installer
+    runs were lost that way, one of them the run that would first have
+    exercised the ten-cycle lifecycle test.
+
+    A skipped job never joins a group, so on the job it cannot happen.
+    """
     data = _parsed()
-    assert data["concurrency"]["cancel-in-progress"] is True
+
+    assert "concurrency" not in data, (
+        "a workflow-level group lets a run that skips the build cancel one that is "
+        "performing it"
+    )
+    assert "concurrency" in _jobs()["build-and-test-installer"]
 
 
 # ---------------------------------------------------------------------------
