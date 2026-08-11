@@ -95,8 +95,8 @@ def ollama_status(http_client=None) -> ProviderStatus:
         kind="local",
         available=False,
         detail=(
-            "No local Ollama server detected. Install Ollama and pull a model "
-            "to use local AI; JARVIS never downloads models for you."
+            "No local Ollama server detected. Set up local AI from Settings and "
+            "JARVIS will install it for you, after showing you what it downloads."
         ),
     )
 
@@ -126,8 +126,8 @@ def ollama_status(http_client=None) -> ProviderStatus:
             kind="local",
             available=False,
             detail=(
-                "Ollama is running but has no models installed. Pull one in Ollama "
-                "(for example `ollama pull llama3`) and re-check."
+                "Ollama is running but has no models installed. Download the "
+                "recommended one from Settings — nothing starts until you press it."
             ),
         )
 

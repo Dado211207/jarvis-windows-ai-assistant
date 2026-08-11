@@ -1994,9 +1994,49 @@ function _setSettingsKeyMessage(text, ok) {
 
 // ── Local AI ─────────────────────────────────────────────────────────────────
 //
-// Four states, four next steps. The buttons that appear are the ones that
+// Ten states, ten next steps. The buttons that appear are the ones that
 // apply right now — offering "Start Ollama" when nothing is installed is
 // how the old single-message version wasted people's time.
+//
+// The consent panel is shown before a download, never during or after:
+// its whole job is to be read while there is still a decision to make.
+
+const LOCAL_AI_POLL_MS = 1500;
+let localAIPoll = null;
+
+function renderLocalAIPlan(plan) {
+  setText("plan-what", "Ollama, then the " + plan.model + " model (" + plan.model_download + ")");
+  setText("plan-url", plan.url);
+  setText("plan-publisher", plan.publisher);
+  setText("plan-licence", plan.licence);
+  setText("plan-size", plan.approximate_size + " for Ollama, " + plan.model_download + " for the model");
+  setText("plan-verification", plan.verification);
+  setText("plan-ownership", plan.installs);
+
+  const disk = $("plan-disk");
+  if (disk) {
+    if (plan.enough_disk === false) {
+      disk.textContent = "There may not be enough free disk space for this. " + plan.hardware;
+      disk.className = "text-xs mt-2 text-err";
+    } else if (plan.enough_disk === null || plan.enough_disk === undefined) {
+      disk.textContent = "Free disk space could not be read on this computer. " + plan.hardware;
+      disk.className = "text-xs mt-2 text-warn";
+    } else {
+      disk.textContent = plan.hardware;
+      disk.className = "text-xs mt-2 text-muted";
+    }
+  }
+}
+
+async function refreshLocalAIPlan() {
+  const panel = $("local-ai-plan");
+  if (!panel) return;
+  try {
+    renderLocalAIPlan(await API.get("/local-ai/plan"));
+  } catch (e) {
+    console.warn("local ai plan unavailable", e);
+  }
+}
 
 function renderLocalAI(data) {
   setText("local-ai-headline", data.headline);
@@ -2005,20 +2045,42 @@ function renderLocalAI(data) {
 
   setText("local-ai-detail", data.detail);
   setText("local-ai-next", data.next_step);
+  setText("local-ai-hardware", data.hardware || "—");
   setText("local-ai-recommended", data.recommended_model + " (" + data.recommended_download + ")");
 
   let why = data.recommended_why;
   if (data.memory_gb) why += " This computer has about " + data.memory_gb + " GB of memory.";
   setText("local-ai-why", why);
 
-  const start = $("local-ai-start");
+  const needsSetup = data.status === "not_installed";
+  const needsModel = data.status === "running_no_models";
+  const failed = data.status === "failed";
+
+  const show = (id, visible) => { const el = $(id); if (el) el.hidden = !visible; };
+  show("local-ai-plan", (needsSetup || needsModel) && !data.busy);
+  show("local-ai-setup", needsSetup && !data.busy);
+  show("local-ai-pull", needsModel && !data.busy);
+  show("local-ai-start", data.can_start && !data.busy);
+  show("local-ai-retry", failed);
+  show("local-ai-cancel", data.busy);
+  show("local-ai-test", data.usable && !data.busy);
+  show("local-ai-progress-wrap", data.busy);
+  show("local-ai-download", !data.installed && !data.busy);
+
   const download = $("local-ai-download");
-  const test = $("local-ai-test");
-  if (start) start.hidden = !data.can_start;
-  if (test) test.hidden = !data.usable;
-  if (download) {
-    download.hidden = data.installed;
-    download.href = data.download_url;
+  if (download) download.href = data.download_url;
+
+  const bar = $("local-ai-progress-bar");
+  if (bar) bar.style.width = (data.percent || 0) + "%";
+  setText("local-ai-progress-text", data.busy ? data.detail : "");
+
+  // A five-minute download with no visible state is indistinguishable
+  // from a hang, so the page follows it rather than waiting to be asked.
+  if (data.busy && !localAIPoll) {
+    localAIPoll = setInterval(refreshLocalAI, LOCAL_AI_POLL_MS);
+  } else if (!data.busy && localAIPoll) {
+    clearInterval(localAIPoll);
+    localAIPoll = null;
   }
 }
 
@@ -2027,6 +2089,62 @@ async function refreshLocalAI() {
     renderLocalAI(await API.get("/local-ai/status"));
   } catch (e) {
     console.error("local ai status error", e);
+  }
+}
+
+// Downloading and installing somebody else's software. The plan panel is
+// on screen and has already said what this fetches, from where, and how
+// it is checked before it runs.
+async function setUpLocalAI() {
+  const button = $("local-ai-setup");
+  if (button) button.disabled = true;
+  _setLocalAIMessage("Starting…", "text-muted");
+  try {
+    const r = await API.post("/local-ai/install", {});
+    _setLocalAIMessage(r.message, r.started ? "text-ok" : "text-warn");
+    renderLocalAI(r.status);
+  } catch (e) {
+    _setLocalAIMessage("Local AI setup could not start. " + e.message, "text-err");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function pullLocalAIModel() {
+  const button = $("local-ai-pull");
+  if (button) button.disabled = true;
+  _setLocalAIMessage("Starting the download…", "text-muted");
+  try {
+    const r = await API.post("/local-ai/pull", { model: "" });
+    _setLocalAIMessage(r.message, r.started ? "text-ok" : "text-warn");
+    renderLocalAI(r.status);
+  } catch (e) {
+    _setLocalAIMessage("The download could not start. " + e.message, "text-err");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// One Cancel button for whichever job is running: the user is cancelling
+// "this", not choosing between two internal endpoints.
+async function cancelLocalAI() {
+  _setLocalAIMessage("Stopping…", "text-muted");
+  try {
+    await API.post("/local-ai/install/cancel", {});
+    await API.post("/local-ai/pull/cancel", {});
+  } catch (e) {
+    _setLocalAIMessage("Could not stop it: " + e.message, "text-err");
+  }
+  await refreshLocalAI();
+}
+
+// Retry after a failure. Which job failed decides what "again" means.
+async function retryLocalAI() {
+  const status = await API.get("/local-ai/status");
+  if (status.installed) {
+    await pullLocalAIModel();
+  } else {
+    await setUpLocalAI();
   }
 }
 
@@ -2073,9 +2191,18 @@ function initSettings() {
   const localStart = $("local-ai-start");
   const localTest = $("local-ai-test");
   const localRefresh = $("local-ai-refresh");
+  const localSetup = $("local-ai-setup");
+  const localPull = $("local-ai-pull");
+  const localCancel = $("local-ai-cancel");
+  const localRetry = $("local-ai-retry");
   if (localStart) localStart.addEventListener("click", startLocalAI);
   if (localTest) localTest.addEventListener("click", testLocalAI);
   if (localRefresh) localRefresh.addEventListener("click", refreshLocalAI);
+  if (localSetup) localSetup.addEventListener("click", setUpLocalAI);
+  if (localPull) localPull.addEventListener("click", pullLocalAIModel);
+  if (localCancel) localCancel.addEventListener("click", cancelLocalAI);
+  if (localRetry) localRetry.addEventListener("click", retryLocalAI);
+  refreshLocalAIPlan();
   refreshLocalAI();
 
   refreshSettingsProviders();

@@ -30,9 +30,33 @@ how Claude Code sessions should work on this codebase.
   `POST /providers/select` refuses a provider that is not available and
   an Ollama model the local instance does not report, and the refusal
   names what *is* installed.
-- **JARVIS never downloads an AI model.** `/api/pull` is never called
-  from anywhere in this codebase — enforced by a test that walks the AST
-  of every module under `app/`.
+- **JARVIS downloads an AI model only when a person presses the button,
+  and only from one module.** This rule used to read "JARVIS never
+  downloads an AI model"; the product's owner reversed it, deciding that
+  someone who wants local AI should be able to get it from a button
+  rather than a set of instructions. What replaced it:
+  `/api/pull` may be called from `app/core/local_ai_models.py` and
+  nowhere else, and `model_puller.start()` may be reached only from the
+  session-token-protected `POST /local-ai/pull` — both enforced by tests
+  that walk the AST of every module under `app/`. `GET /local-ai/plan`
+  names the source, publisher, licence, size and this machine's free
+  space *before* anything is fetched, and fetches nothing itself.
+  Nothing downloads on startup, on a status read, or as a side effect of
+  anything else.
+- **The Ollama runtime is installed only after its signature is
+  verified.** `app/core/local_ai_install.py` downloads Ollama's own
+  installer from a host-pinned HTTPS URL, refuses a redirect off that
+  host, verifies the Authenticode signature names Ollama
+  (`app/core/authenticode.py`), records the SHA-256, and deletes the file
+  rather than running it if any of that fails. There is no "continue
+  anyway". Ollama's installer runs visibly, never silently.
+- **JARVIS never takes ownership of an Ollama it did not install.** An
+  existing installation is used as it is and never reinstalled over;
+  whether JARVIS installed it is recorded (`ollama_installed_by_jarvis`)
+  so the uninstaller can tell the two cases apart.
+- **Anthropic chat never depends on local AI.** Local AI failing, being
+  skipped, or never being set up leaves the rest of the product exactly
+  as it was.
 - **Ollama is loopback-only.** There is deliberately no setting for a
   remote Ollama host; that would turn a local-first assistant into one
   that ships conversations to a machine configured once and forgotten.

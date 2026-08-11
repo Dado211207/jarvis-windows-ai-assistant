@@ -867,7 +867,16 @@ code, .mono {
 }
 .status-row:last-child { border-bottom: none; }
 .status-row-label { color: var(--text-muted); font-size: 0.8rem; }
-.status-row-value { font-weight: 500; }
+/* A value with no spaces in it — a download URL, a file path, a SHA-256 —
+   must break rather than push the page sideways. Caught on a 390 px
+   viewport by the browser suite's no-horizontal-overflow test the first
+   time a URL was put in one of these rows. */
+.status-row-value {
+  font-weight: 500;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
 
 /* ── Safety checklist ──────────────────────────────────────────────── */
 .checklist { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }

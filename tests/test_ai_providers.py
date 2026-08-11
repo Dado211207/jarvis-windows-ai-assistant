@@ -242,21 +242,33 @@ def test_ollama_refuses_to_generate_without_a_model():
     assert caught.value.category == ErrorCategory.PROVIDER_UNAVAILABLE
 
 
-def test_no_module_anywhere_can_trigger_a_model_download():
-    """Downloading gigabytes is the user's decision, made in Ollama.
+def test_only_one_module_can_trigger_a_model_download():
+    """Downloading gigabytes is still the user's decision — it is now a
+    decision they can act on from inside JARVIS.
 
-    Checked across the whole app rather than one file, and over real
-    string constants rather than raw text — the modules that promise not
-    to call /api/pull necessarily mention it in their docstrings, and a
+    This test used to assert that `/api/pull` appeared nowhere at all.
+    The product's owner has since decided that a person who wants local
+    AI should be able to get it from a button, so the rule it enforces
+    changed shape rather than disappearing: exactly one module may issue
+    a model download, and it is the one whose entire job is doing that
+    visibly and cancellably. A second call site somewhere else is how a
+    "download" ends up happening as a side effect of something a user
+    thought was a status check.
+
+    Checked over real string constants rather than raw text — the modules
+    that discuss this necessarily mention it in their docstrings, and a
     substring search cannot tell an explanation apart from a URL.
     """
     import ast
     from pathlib import Path
 
     app_dir = Path(__file__).resolve().parent.parent / "app"
+    allowed = "local_ai_models.py"
     offenders = []
 
     for path in app_dir.rglob("*.py"):
+        if path.name == allowed:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
 
         docstrings = set()
@@ -272,7 +284,38 @@ def test_no_module_anywhere_can_trigger_a_model_download():
                     and id(node) not in docstrings and "api/pull" in node.value:
                 offenders.append(f"{path.name}:{node.lineno}")
 
-    assert offenders == [], f"a model-download endpoint is referenced in {offenders}"
+    assert offenders == [], f"a model-download endpoint is referenced outside {allowed}: {offenders}"
+
+
+def test_a_model_download_only_ever_starts_from_a_user_action():
+    """The one caller is the POST endpoint a person presses.
+
+    A status read, a page render or a startup path that could reach
+    `model_puller.start()` would mean gigabytes beginning without anyone
+    asking, which is the part of the old rule that has not changed.
+    """
+    import ast
+    from pathlib import Path
+
+    app_dir = Path(__file__).resolve().parent.parent / "app"
+    callers = []
+
+    for path in app_dir.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr != "start":
+                continue
+            target = node.func.value
+            if isinstance(target, ast.Name) and target.id == "model_puller":
+                callers.append(path.name)
+            elif isinstance(target, ast.Attribute) and target.attr == "model_puller":
+                callers.append(path.name)
+
+    assert sorted(set(callers)) == ["local_ai_routes.py"], (
+        f"a model download can be started from {sorted(set(callers))}"
+    )
 
 
 def test_ollama_streams_chat_deltas():

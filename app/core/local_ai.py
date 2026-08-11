@@ -6,29 +6,37 @@ completely different situations — Ollama not installed at all, and Ollama
 installed but not currently running — produced the same sentence, and the
 fix it offered was a shell command.
 
-**What this module will not do, deliberately.** It never downloads a
-model and never installs the Ollama runtime. That is `CLAUDE.md`'s rule,
-it is enforced by a test that walks the AST of every module under `app/`,
-and `docs/THREAT_MODEL.md` explains why: a multi-gigabyte download
-started on someone's behalf is exactly the kind of large, slow,
-irreversible thing a local-first assistant should not do without being
-asked. The defect report asked for automatic installation; that request
-and this rule are in direct conflict, and the rule wins until its owner
-says otherwise.
+**This module used to refuse to install anything.** It said so at
+length, `CLAUDE.md` carried it as a non-negotiable rule, and a test
+walked the AST of every module under `app/` to enforce it. The owner has
+since decided the opposite: a person who wants local AI should be able
+to get it from a button rather than a set of instructions. That decision
+is implemented in `app/core/local_ai_install.py` (the runtime) and
+`app/core/local_ai_models.py` (the model), and the rule, the threat
+model and the tests are updated rather than quietly worked around.
 
-**What it does instead**, which covers most of the same ground:
+**What has not changed is that nothing happens unasked.** Every download
+is preceded by a screen naming the source, the publisher, the licence,
+the size and this machine's free space, and starts only when a person
+presses the button. Nothing is fetched in the background, on startup, or
+as a side effect of anything else.
 
-  * Tells the four states apart — not installed, installed but not
-    running, running with nothing installed, ready — because each has a
-    different next step and only one of them is a problem.
-  * **Starts Ollama when it is already installed.** Launching a program
-    the user chose to install is not downloading one, and "it is
-    installed but not running" is otherwise a dead end for someone who
-    does not know it is a background service.
-  * Recommends a model that suits *this* machine, computed from its
-    actual memory rather than a fixed suggestion.
-  * Reports Ready only after real generated text has come back, so the
-    word means something.
+**What this module owns** is the answer to "where is local AI up to?":
+
+  * The ten states, told apart because each has a different next step —
+    not installed, detected, installing, stopped, starting, a model
+    required, downloading it, verifying it, ready, and failed.
+  * **Starting Ollama when it is installed.** "Installed but not
+    running" is otherwise a dead end for someone who does not know it is
+    a background service.
+  * A model recommendation computed from this machine's real memory and
+    free disk (`app/core/machine.py`), not a fixed suggestion.
+  * Ready meaning real generated text has come back, so the word means
+    something.
+
+**Anthropic chat never depends on any of this.** Local AI failing, being
+skipped, or never being set up leaves the rest of the product exactly as
+it was.
 """
 
 import os
@@ -45,11 +53,24 @@ logger = get_logger("core.local_ai")
 
 OLLAMA_DOWNLOAD_URL = "https://ollama.com/download"
 
-# The states, in the order a user passes through them.
-NOT_INSTALLED = "not_installed"
-INSTALLED_NOT_RUNNING = "installed_not_running"
-RUNNING_NO_MODELS = "running_no_models"
-READY = "ready"
+# The ten states, in the order a user passes through them. Four of them
+# are transient — they exist because a five-minute download with no
+# visible state is indistinguishable from a hang.
+NOT_INSTALLED = "not_installed"          # 1. nothing here yet
+DETECTED = "detected"                    # 2. Ollama found, still being checked
+INSTALLING = "installing"                # 3. its installer is running
+INSTALLED_NOT_RUNNING = "installed_not_running"   # 4. runtime stopped
+STARTING = "starting"                    # 5. being started
+RUNNING_NO_MODELS = "running_no_models"  # 6. a model is required
+DOWNLOADING_MODEL = "downloading_model"  # 7. pulling one
+VERIFYING = "verifying"                  # 8. checking it is intact / that it answers
+READY = "ready"                          # 9. proven by real generated text
+FAILED = "failed"                        # 10. something went wrong, with the reason
+
+ALL_STATES = (
+    NOT_INSTALLED, DETECTED, INSTALLING, INSTALLED_NOT_RUNNING, STARTING,
+    RUNNING_NO_MODELS, DOWNLOADING_MODEL, VERIFYING, READY, FAILED,
+)
 
 # How long to wait for a freshly started Ollama to answer.
 START_TIMEOUT_SECONDS = 20.0
@@ -101,16 +122,17 @@ _MODELS_BY_MEMORY = (
 def total_memory_gb() -> Optional[float]:
     """Physical memory in GB, or None if it cannot be determined.
 
+    Delegates to app/core/machine.py so there is one place that reads
+    this machine's hardware. Two readers eventually disagree, and the one
+    that decides which model to recommend disagreeing with the one shown
+    on the consent screen would be a particularly confusing way to fail.
+
     None rather than a guess: a recommendation built on a made-up number
     is worse than saying the machine could not be measured.
     """
-    try:
-        import psutil
+    from app.core import machine
 
-        return psutil.virtual_memory().total / (1024 ** 3)
-    except Exception:  # noqa: BLE001
-        logger.debug("Could not read total system memory.", exc_info=True)
-        return None
+    return machine.memory_gb()
 
 
 def recommend_model(memory_gb: Optional[float] = None) -> ModelSuggestion:
@@ -232,10 +254,82 @@ class LocalAIState:
     can_start: bool = False
     download_url: str = OLLAMA_DOWNLOAD_URL
     verified: bool = False
+    # What the machine has, so the consent screen shows a person what
+    # they are spending rather than only what they are getting.
+    hardware: str = ""
+    free_disk_gb: Optional[float] = None
+    # Progress for the two transient states, 0 when neither is running.
+    percent: int = 0
+    # Whether JARVIS put Ollama here. Recorded for the uninstaller, which
+    # must never remove software somebody else installed.
+    installed_by_jarvis: bool = False
 
     @property
     def usable(self) -> bool:
         return self.status == READY
+
+    @property
+    def busy(self) -> bool:
+        return self.status in (INSTALLING, STARTING, DOWNLOADING_MODEL, VERIFYING)
+
+
+def _in_progress(common: dict) -> Optional[LocalAIState]:
+    """The transient states, read from the two background jobs.
+
+    Checked before anything is probed: while Ollama's installer is on
+    screen, "not installed" is a true statement and a useless one.
+    """
+    from app.core import local_ai_install, local_ai_models
+
+    install = local_ai_install.ollama_installer.state()
+    if install.running:
+        headline = {
+            local_ai_install.DOWNLOADING: "Downloading Ollama…",
+            local_ai_install.VERIFYING: "Checking the download is genuine…",
+            local_ai_install.INSTALLING: "Installing Ollama…",
+            local_ai_install.STARTING: "Starting Ollama…",
+        }.get(install.status, "Setting up local AI…")
+        return LocalAIState(
+            status=STARTING if install.status == local_ai_install.STARTING else INSTALLING,
+            headline=headline,
+            detail=install.message,
+            next_step="This can take a few minutes. You can carry on using JARVIS meanwhile.",
+            percent=install.percent,
+            can_start=False,
+            **common,
+        )
+    if install.status == local_ai_install.ERROR:
+        return LocalAIState(
+            status=FAILED,
+            headline="Local AI setup did not finish.",
+            detail=install.message,
+            next_step="Press Try again, or install Ollama yourself and press Re-check.",
+            can_start=False,
+            **common,
+        )
+
+    pull = local_ai_models.model_puller.state()
+    if pull.running:
+        return LocalAIState(
+            status=DOWNLOADING_MODEL if pull.status == local_ai_models.DOWNLOADING else VERIFYING,
+            headline=f"Downloading {pull.model}…" if pull.status == local_ai_models.DOWNLOADING
+                     else f"Checking {pull.model} is intact…",
+            detail=pull.message,
+            next_step="You can cancel; what has already downloaded is kept.",
+            percent=pull.percent,
+            can_start=False,
+            **common,
+        )
+    if pull.status == local_ai_models.ERROR:
+        return LocalAIState(
+            status=FAILED,
+            headline="The model download did not finish.",
+            detail=pull.message,
+            next_step="Press Retry — it continues from what already downloaded.",
+            can_start=False,
+            **common,
+        )
+    return None
 
 
 def describe(http_client=None) -> LocalAIState:
@@ -246,15 +340,17 @@ def describe(http_client=None) -> LocalAIState:
     would be wrong exactly when somebody is trying to work out why it
     stopped working.
     """
+    from app.core import machine as machine_info
+    from app.core.local_ai_install import installed_by_jarvis
     from app.core.providers import ollama_status, selected_ollama_model
 
-    memory = total_memory_gb()
+    hardware = machine_info.inspect()
+    memory = hardware.memory_gb
     suggestion = recommend_model(memory)
     installed = is_installed()
-    status = ollama_status(http_client=http_client)
 
     common = {
-        "models": list(status.models),
+        "models": [],
         "selected_model": selected_ollama_model(),
         "recommended_model": suggestion.name,
         "recommended_download": suggestion.approximate_download,
@@ -262,7 +358,17 @@ def describe(http_client=None) -> LocalAIState:
         "memory_gb": round(memory, 1) if memory is not None else None,
         "installed": installed,
         "download_url": OLLAMA_DOWNLOAD_URL,
+        "hardware": machine_info.describe(hardware),
+        "free_disk_gb": round(hardware.free_disk_gb, 1) if hardware.free_disk_gb is not None else None,
+        "installed_by_jarvis": installed_by_jarvis(),
     }
+
+    in_progress = _in_progress(common)
+    if in_progress is not None:
+        return in_progress
+
+    status = ollama_status(http_client=http_client)
+    common["models"] = list(status.models)
 
     if status.available:
         return LocalAIState(
@@ -284,12 +390,12 @@ def describe(http_client=None) -> LocalAIState:
             headline="Ollama is running, but has no models yet.",
             detail=(
                 "A model is the part that actually does the thinking, and none is "
-                "installed. JARVIS does not download models for you — that is "
-                "deliberate, so nothing multi-gigabyte ever starts without you "
-                "asking for it."
+                f"installed. The recommended one for this computer is "
+                f"{suggestion.name}, {suggestion.approximate_download}. "
+                "Nothing downloads until you say so."
             ),
             next_step=(
-                f"In Ollama, install {suggestion.name}. {suggestion.why}"
+                f"Press Download {suggestion.name}. {suggestion.why}"
             ),
             can_start=False,
             **common,
@@ -302,6 +408,12 @@ def describe(http_client=None) -> LocalAIState:
             detail=(
                 "Ollama runs quietly in the background and is not started at the "
                 "moment, so local AI has nothing to talk to."
+                + (
+                    ""
+                    if common["installed_by_jarvis"]
+                    else " It was already on this computer before JARVIS, and JARVIS "
+                         "has not changed anything about it."
+                )
             ),
             next_step="Press Start Ollama and JARVIS will launch it for you.",
             can_start=True,
@@ -313,12 +425,14 @@ def describe(http_client=None) -> LocalAIState:
         headline="Local AI is not set up on this computer.",
         detail=(
             "Local AI runs entirely on your own machine, with no account and no "
-            "internet connection once it is set up. It needs a free program "
-            "called Ollama, which JARVIS does not install for you."
+            "internet connection once it is set up. It needs a free program called "
+            "Ollama. JARVIS can download and install it for you, showing you the "
+            "source, the publisher and the size first — nothing is fetched until you "
+            "press the button."
         ),
         next_step=(
-            f"Install Ollama, then add the {suggestion.name} model "
-            f"({suggestion.approximate_download}). {suggestion.why}"
+            f"Press Set up local AI. JARVIS installs Ollama, then downloads "
+            f"{suggestion.name} ({suggestion.approximate_download}). {suggestion.why}"
         ),
         can_start=False,
         **common,

@@ -66,6 +66,11 @@ STORABLE_KEYS = (
     # an environment variable cannot be edited by someone who installed
     # a .exe.
     "voice_key", "voice_speed",
+    # Whether JARVIS is the thing that put Ollama on this machine. Not a
+    # setting anyone changes: a fact the uninstaller needs, because
+    # removing software somebody else installed — because JARVIS happened
+    # to be uninstalled — is the wrong answer every time.
+    "ollama_installed_by_jarvis",
 )
 
 # What a name is allowed to be. Deliberately generous about content and

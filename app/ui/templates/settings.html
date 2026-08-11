@@ -50,15 +50,16 @@
   </div>
 
   {#
-    Local AI. Four states with four different next steps — "not
-    installed", "installed but not running", "running with no model" and
-    "ready" used to produce one identical message, which is why the
-    reported defect was that local AI "does not work" with nothing to do
-    about it.
+    Local AI. Ten states with ten different next steps — "not installed",
+    "installed but not running", "running with no model" and "ready" used
+    to produce one identical message, which is why the reported defect
+    was that local AI "does not work" with nothing to do about it.
 
-    JARVIS deliberately does not install Ollama or download a model. That
-    boundary is stated on the page rather than hidden, because a missing
-    action a user cannot explain looks like a bug.
+    JARVIS now installs Ollama and downloads a model, on the product
+    owner's explicit decision, and never without consent: the plan panel
+    below names the source, the publisher, the licence, the size and this
+    machine's free space, and nothing is fetched until the button under
+    it is pressed.
   #}
   <div class="card mb-4" id="local-ai-card">
     <h2 class="card-title">Local AI</h2>
@@ -79,22 +80,50 @@
     </div>
 
     <div class="status-row mt-3">
+      <span class="status-row-label">This computer</span>
+      <span id="local-ai-hardware" class="status-row-value"></span>
+    </div>
+
+    <div class="status-row mt-3">
       <span class="status-row-label">Suggested model for this computer</span>
       <span id="local-ai-recommended" class="status-row-value font-mono"></span>
     </div>
     <p id="local-ai-why" class="text-xs text-muted mt-2"></p>
 
+    {# The consent panel. Shown before anything is downloaded, never after. #}
+    <div id="local-ai-plan" class="mt-3" hidden>
+      <div class="status-row"><span class="status-row-label">Downloads</span><span id="plan-what" class="status-row-value"></span></div>
+      <div class="status-row"><span class="status-row-label">From</span><span id="plan-url" class="status-row-value font-mono"></span></div>
+      <div class="status-row"><span class="status-row-label">Publisher</span><span id="plan-publisher" class="status-row-value"></span></div>
+      <div class="status-row"><span class="status-row-label">Licence</span><span id="plan-licence" class="status-row-value"></span></div>
+      <div class="status-row"><span class="status-row-label">Size</span><span id="plan-size" class="status-row-value"></span></div>
+      <div class="status-row"><span class="status-row-label">Before it runs</span><span id="plan-verification" class="status-row-value"></span></div>
+      <p id="plan-disk" class="text-xs mt-2"></p>
+      <p id="plan-ownership" class="text-xs text-muted mt-2"></p>
+    </div>
+
+    <div class="mt-3" id="local-ai-progress-wrap" hidden>
+      <div class="progress-bar"><div id="local-ai-progress-bar" class="progress-fill" style="width:0%"></div></div>
+      <p id="local-ai-progress-text" class="text-xs text-muted mt-2" aria-live="polite"></p>
+    </div>
+
     <div class="btn-row mt-3">
+      <button id="local-ai-setup" class="btn btn-primary" type="button" hidden>Set up local AI</button>
       <button id="local-ai-start" class="btn btn-primary" type="button" hidden>Start Ollama</button>
-      <a id="local-ai-download" class="btn btn-ghost" href="#" target="_blank" rel="noopener noreferrer" hidden>Get Ollama</a>
+      <button id="local-ai-pull" class="btn btn-primary" type="button" hidden>Download model</button>
+      <button id="local-ai-retry" class="btn btn-primary" type="button" hidden>Try again</button>
+      <button id="local-ai-cancel" class="btn btn-danger" type="button" hidden>Cancel</button>
+      <a id="local-ai-download" class="btn btn-ghost" href="#" target="_blank" rel="noopener noreferrer" hidden>Get Ollama yourself</a>
       <button id="local-ai-test" class="btn btn-primary" type="button" hidden>Test local AI</button>
       <button id="local-ai-refresh" class="btn btn-ghost" type="button">Re-check</button>
     </div>
     <p id="local-ai-message" class="text-xs mt-2" aria-live="polite"></p>
 
     <p class="text-xs text-muted mt-3">
-      JARVIS does not install Ollama or download models for you. That is deliberate:
-      a multi-gigabyte download should only ever start because you asked for it.
+      Nothing here downloads until you press a button, and the panel above tells you
+      what it would fetch first. Ollama is separate software with its own publisher
+      and licence; JARVIS never removes an Ollama it did not install.
+      Setting this up is optional — chat with Claude keeps working either way.
     </p>
   </div>
 

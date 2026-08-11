@@ -277,8 +277,11 @@ def test_the_settings_page_offers_the_picker(client, element_id):
     assert f'id="{element_id}"' in client.get("/ui/settings").text
 
 
-def test_the_settings_page_states_that_models_are_never_downloaded(client):
-    assert "never downloads" in client.get("/ui/settings").text
+def test_the_settings_page_states_that_nothing_downloads_unasked(client):
+    """JARVIS downloads a model now, on the owner's decision. What has to
+    stay true — and stay visible on the page — is that it never happens
+    without being asked."""
+    assert "Nothing here downloads until you press a button" in client.get("/ui/settings").text
 
 
 def test_the_picker_javascript_disables_undetected_providers():

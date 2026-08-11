@@ -230,9 +230,13 @@ def test_a_timeout_says_so_rather_than_reporting_a_generic_failure():
 # ---------------------------------------------------------------------------
 
 def test_this_module_never_pulls_a_model():
-    """CLAUDE.md, non-negotiable: /api/pull is never called. Asserted
-    here as well as by the repository-wide AST test, because this is the
-    module most likely to grow one by accident."""
+    """Downloading belongs to app/core/local_ai_models.py, not here.
+
+    This module answers "where is local AI up to?" and is read on every
+    status poll and every page render. A download issued from a describe()
+    path would be gigabytes starting because somebody opened a page.
+    Asserted here as well as by the repository-wide AST test, because
+    this is the module most likely to grow one by accident."""
     import ast
     from pathlib import Path
 
@@ -324,12 +328,15 @@ def test_the_settings_page_carries_the_local_ai_controls(client):
         assert element in html, f"the Settings page is missing {element}"
 
 
-def test_the_settings_page_states_the_boundary_rather_than_hiding_it(client):
-    """A missing action a user cannot explain looks like a bug. The page
-    says JARVIS will not download models, and why."""
+def test_the_settings_page_states_that_nothing_downloads_unasked(client):
+    """The boundary moved but did not disappear. JARVIS now installs
+    Ollama and downloads a model; the page has to say that neither
+    happens until a button is pressed, and that Ollama is somebody
+    else's software which JARVIS does not remove."""
     html = client.get("/ui/settings").text.lower()
 
-    assert "does not install ollama or download models" in html
+    assert "nothing here downloads until you press a button" in html
+    assert "never removes an ollama it did not install" in html
 
 
 def test_the_installer_never_claims_to_include_local_ai():
