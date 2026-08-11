@@ -231,7 +231,17 @@ lazily), and terminating that accumulated set on every exit path. Three
 regression tests cover it; all three were confirmed to fail against the
 previous code.
 
-### The installer built from `5fe04ce`
+### The installer built from `87fa49f` (final)
+
+Run [`31478481754`](https://github.com/Dado211207/jarvis-windows-ai-assistant/actions/runs/31478481754)
+— every step green, and the first run in which the new WebView2 setup
+code was compiled by Inno Setup at all. Artifact
+`JARVIS-Windows-Installer`, id `9096596700`, 98,873,132 bytes,
+zip digest `sha256:d1b6e1389ef95d3e15919e588220891d187c7ee0513a09bd50eaae12777de3b1`.
+The `.exe`'s own digest ships beside it as `.sha256`; see the final
+report for why it is not quoted.
+
+### The installer built from `5fe04ce` (earlier)
 
 | | |
 |---|---|

@@ -146,10 +146,47 @@ module graph, and enforced against the real installed tree in CI.
 
 ---
 
+## The installer
+
+Built from `87fa49f`, run
+[`31478481754`](https://github.com/Dado211207/jarvis-windows-ai-assistant/actions/runs/31478481754)
+— **every step green**, including the first compile of the new WebView2
+setup code.
+
+| | |
+|---|---|
+| Filename | `JARVIS-Setup-v0.2.0-rc1-x64.exe` |
+| Version reported by the running app | `0.2.0-rc1`, asserted against `app.__version__` |
+| Artifact | `JARVIS-Windows-Installer`, id `9096596700`, 98,873,132 bytes (zip) |
+| Artifact digest (the zip) | `sha256:d1b6e1389ef95d3e15919e588220891d187c7ee0513a09bd50eaae12777de3b1` |
+| Download | https://github.com/Dado211207/jarvis-windows-ai-assistant/actions/runs/31478481754/artifacts/9096596700 |
+| Test logs | `JARVIS-Installer-Test-Logs`, id `9096594096` |
+
+**The `.exe`'s own SHA-256 is not quoted here on purpose.** The build
+computes it and writes it beside the installer as
+`JARVIS-Setup-v0.2.0-rc1-x64.exe.sha256`, which ships inside that
+artifact. The line that prints it sits in a part of the job log this
+session could not reach, and a digest copied from anywhere other than
+the artifact verifies nothing. Read it from the `.sha256` file after
+extracting, and check it against the `.exe`:
+
+```powershell
+Get-FileHash .\JARVIS-Setup-v0.2.0-rc1-x64.exe -Algorithm SHA256
+Get-Content .\JARVIS-Setup-v0.2.0-rc1-x64.exe.sha256
+```
+
+The build is unsigned, so SmartScreen will warn. That is expected and is
+not worked around: no certificate exists, and faking one would be worse
+than the warning.
+
+---
+
 ## What CI actually proved
 
 Run [`31393740442`](https://github.com/Dado211207/jarvis-windows-ai-assistant/actions/runs/31393740442),
-commit `5fe04ce`, every step green, ending `ALL CLEAN-INSTALL CHECKS PASSED`:
+commit `5fe04ce`, every step green, ending `ALL CLEAN-INSTALL CHECKS PASSED`
+— and re-run in full on the final commit `87fa49f`
+([`31478481754`](https://github.com/Dado211207/jarvis-windows-ai-assistant/actions/runs/31478481754)):
 
 * **Ten cold start/quit cycles** against the real installed application.
   Each asserted the desktop reported ready, the process was gone,
