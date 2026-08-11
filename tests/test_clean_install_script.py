@@ -214,6 +214,7 @@ def test_main_calls_every_phase_in_the_only_order_that_works():
     phase_calls = [n for n in call_names if n.startswith("phase_")]
     assert phase_calls == [
         "phase_a_install_launch_and_stop",
+        "phase_f_installed_runtime_selftest",
         "phase_d_repeated_start_and_quit",
         "phase_e_repeated_restart",
         "phase_b_uninstall_preserves_data_by_default",

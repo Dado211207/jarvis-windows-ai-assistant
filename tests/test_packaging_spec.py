@@ -249,3 +249,68 @@ def test_the_pronunciation_lexicon_is_bundled():
 
     assert "kokoro" in source and "data" in source
     assert "app/voice/kokoro/data" in source
+
+
+# ---------------------------------------------------------------------------
+# A hard dependency must never be collected "optionally"
+# ---------------------------------------------------------------------------
+
+# faster-whisper 1.2.0's own declared runtime requirements, read from its
+# published metadata rather than guessed:
+#   ctranslate2, huggingface-hub, tokenizers, onnxruntime, av, tqdm
+#
+# Every one is imported at package-import time — `faster_whisper/__init__`
+# pulls in `faster_whisper.audio`, which imports `av` — so any of them
+# missing makes `import faster_whisper` raise ImportError inside the
+# frozen build.
+FASTER_WHISPER_HARD_DEPENDENCIES = (
+    "ctranslate2", "huggingface_hub", "tokenizers", "onnxruntime", "av", "tqdm",
+)
+
+
+def _spec_literal(name: str):
+    import ast
+
+    tree = ast.parse(_read(SPEC_PATH))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            if node.targets[0].id == name:
+                return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found in the spec")
+
+
+def test_every_hard_dependency_of_the_speech_engine_is_required_not_optional():
+    """The defect this exists for: the shipped release candidate had no
+    speech input at all.
+
+    `av`, `tokenizers` and `huggingface_hub` sat in the spec's *optional*
+    list. When collection of one is skipped, the spec prints a warning
+    and the build succeeds — producing an installer whose very first
+    `import faster_whisper` raises ImportError, which the product
+    reported to the user as "The local speech engine isn't available in
+    this installation", suggesting they reinstall the identical artifact.
+
+    Optional must mean "absence changes no capability the product
+    claims". None of these qualify.
+    """
+    required = set(_spec_literal("_REQUIRED_PACKAGES"))
+    optional = set(_spec_literal("_OPTIONAL_PACKAGES"))
+
+    missing = [dep for dep in FASTER_WHISPER_HARD_DEPENDENCIES if dep not in required]
+    assert not missing, (
+        f"hard dependencies of faster-whisper are not in _REQUIRED_PACKAGES: {missing}. "
+        "A build that silently skips one of these ships an app with no speech input."
+    )
+
+    wrongly_optional = [dep for dep in FASTER_WHISPER_HARD_DEPENDENCIES if dep in optional]
+    assert not wrongly_optional, (
+        f"hard dependencies must not be optional: {wrongly_optional}"
+    )
+
+
+def test_a_required_package_that_cannot_be_collected_stops_the_build():
+    """The mechanism that makes the list above mean something."""
+    content = _read(SPEC_PATH)
+
+    assert "raise SystemExit" in content
+    assert "_REQUIRED_PACKAGES" in content

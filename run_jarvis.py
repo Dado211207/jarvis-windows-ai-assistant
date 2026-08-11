@@ -39,6 +39,14 @@ def _run() -> None:
         # it by hand is harmless rather than confusing.
         from app.launcher.window_main import main as window_main
         sys.exit(window_main(argv))
+    elif "--selftest" in argv:
+        # Asks the *installed* executable what it can actually do. The
+        # release candidate shipped with no speech input while every
+        # source-tree check passed, because a source-tree import proves
+        # only that the build machine has the package. See
+        # app/launcher/selftest.py.
+        from app.launcher.selftest import run as selftest_run
+        sys.exit(selftest_run(argv))
     elif "--cli" in argv:
         from app.main import main
         main()

@@ -17,9 +17,14 @@ thing no amount of source-level testing (tests/test_packaging_spec.py,
 tests/test_installer_script.py) can prove: that the real installer really
 produces a real, independently-runnable Windows application.
 
-Five phases, in the order they have to run:
+Six phases, in the order they have to run:
   A. Install, verify layout, launch the real exe, verify it serves real
      traffic, verify single-instance behavior, stop it gracefully.
+  F. Ask the installed JARVIS.exe to prove its own runtime — every
+     capability the product claims must actually load inside the frozen
+     process. A source-tree import proves only that the build machine
+     had the package; it is what let a release candidate ship with no
+     speech input while every test passed.
   D. Start and gracefully stop that same installed application ten times,
      checking after each one that the process is gone, the port is
      released and no JARVIS-started WebView2 process was left behind.
@@ -583,6 +588,59 @@ def phase_d_repeated_start_and_quit(log_dir: Path) -> None:
     print(f"OK: {LIFECYCLE_CYCLES} consecutive start/quit cycles left nothing behind")
 
 
+SELFTEST_TIMEOUT_SECONDS = 120.0
+
+
+def phase_f_installed_runtime_selftest(log_dir: Path) -> None:
+    """Ask the installed executable what it can actually do.
+
+    This is the check whose absence shipped a release candidate with no
+    speech input at all. Every automated test passed at the time, because
+    every one of them imported `faster_whisper` in the *source tree*,
+    where it is installed by pip and imports fine. In the frozen build it
+    raised ImportError — a hard dependency had been declared optional in
+    the PyInstaller spec, its collection was skipped with a printed
+    warning nobody read, and the product told the user to reinstall the
+    identical artifact.
+
+    So this runs the real `JARVIS.exe`, in its installed location, and
+    fails the build if any capability the product claims cannot load.
+    """
+    exe_path = expected_install_dir() / "JARVIS.exe"
+    if not exe_path.is_file():
+        _fail(f"Expected {exe_path} to exist before the runtime self-test.")
+
+    _step("Phase F: Ask the installed JARVIS.exe to prove its own runtime")
+    result = subprocess.run(
+        [str(exe_path), "--selftest"],
+        capture_output=True, text=True, timeout=SELFTEST_TIMEOUT_SECONDS,
+        cwd=str(expected_install_dir()),
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    print(output.strip())
+
+    log_path = log_dir / "selftest.log"
+    try:
+        log_path.write_text(output, encoding="utf-8")
+    except OSError:
+        pass
+
+    if result.returncode != 0:
+        _fail(
+            "The installed application could not load every runtime it claims to have "
+            f"(exit code {result.returncode}). Full output above; also saved to {log_path}.\n"
+            "This is the packaged product failing, not the source tree — do not 'fix' it "
+            "by relaxing this check."
+        )
+
+    if "SELF-TEST PASSED" not in output:
+        _fail(
+            "The self-test exited 0 but did not report a pass. Treating an ambiguous "
+            "result as success is how the previous broken build shipped."
+        )
+    print("OK: every required runtime loaded inside the installed executable")
+
+
 RESTART_CYCLES = 10
 
 
@@ -750,9 +808,12 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     phase_a_install_launch_and_stop(installer, log_dir)
-    # Before uninstalling: the same artifact, started and stopped ten
-    # times. One clean shutdown is a happy path; ten is evidence nothing
-    # accumulates.
+    # Before anything else: does the thing that was installed actually
+    # contain what it claims? This is the check whose absence shipped a
+    # release candidate with no speech input.
+    phase_f_installed_runtime_selftest(log_dir)
+    # Then the same artifact, started and stopped ten times. One clean
+    # shutdown is a happy path; ten is evidence nothing accumulates.
     phase_d_repeated_start_and_quit(log_dir)
     phase_e_repeated_restart(log_dir)
     phase_b_uninstall_preserves_data_by_default(log_dir)

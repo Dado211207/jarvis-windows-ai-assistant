@@ -105,18 +105,32 @@ binaries = []
 _REQUIRED_PACKAGES = (
     "pydantic_settings", "anthropic", "pyttsx3", "webview", "pythonnet", "clr_loader",
     "faster_whisper", "ctranslate2", "onnxruntime", "numpy",
+    # faster-whisper's own declared hard dependencies. These were in the
+    # optional list, and that is why the shipped release candidate had no
+    # speech input at all: `av` is imported by faster_whisper.audio at
+    # package import time, so when its collection was skipped the
+    # installed app's very first `import faster_whisper` raised
+    # ImportError — reported to the user as "The local speech engine
+    # isn't available in this installation", with reinstalling the same
+    # artifact as the suggested fix.
+    #
+    # Read from faster-whisper 1.2.0's own metadata, not guessed:
+    #   ctranslate2, huggingface-hub, tokenizers, onnxruntime, av, tqdm.
+    # Every one is required at import time, so every one belongs here
+    # where a failure to collect stops the build instead of printing
+    # "skipping" and producing a broken product.
+    "av", "tokenizers", "huggingface_hub", "tqdm",
 )
-# Transitive dependencies of faster-whisper whose exact set varies by
-# version. Collected when present, skipped when not — a build must not
-# fail because a package the current faster-whisper does not happen to
-# depend on is absent, and it must not silently miss one that is.
+# Genuinely optional: absence changes no capability the product claims.
+# Nothing whose absence breaks an advertised feature may live here — see
+# the note above for what that cost last time.
 #
 # winsdk is optional on purpose: it is the WinRT projection behind the
 # second speech tier, and a build that cannot collect it should produce
 # an application whose Windows-natural-voice tier reports itself
 # unavailable — the same thing it does on a machine without it — rather
 # than no application at all.
-_OPTIONAL_PACKAGES = ("tokenizers", "av", "huggingface_hub", "winsdk")
+_OPTIONAL_PACKAGES = ("winsdk",)
 
 # Nothing named after a copyleft speech engine may reach the installed
 # tree, and collect_all() will put it there by default if left alone:
