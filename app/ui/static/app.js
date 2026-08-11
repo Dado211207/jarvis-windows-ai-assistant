@@ -1815,7 +1815,92 @@ function _setSettingsKeyMessage(text, ok) {
   el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
 }
 
+// ── Local AI ─────────────────────────────────────────────────────────────────
+//
+// Four states, four next steps. The buttons that appear are the ones that
+// apply right now — offering "Start Ollama" when nothing is installed is
+// how the old single-message version wasted people's time.
+
+function renderLocalAI(data) {
+  setText("local-ai-headline", data.headline);
+  const headline = $("local-ai-headline");
+  if (headline) headline.className = "status-row-value " + (data.usable ? "text-ok" : "text-warn");
+
+  setText("local-ai-detail", data.detail);
+  setText("local-ai-next", data.next_step);
+  setText("local-ai-recommended", data.recommended_model + " (" + data.recommended_download + ")");
+
+  let why = data.recommended_why;
+  if (data.memory_gb) why += " This computer has about " + data.memory_gb + " GB of memory.";
+  setText("local-ai-why", why);
+
+  const start = $("local-ai-start");
+  const download = $("local-ai-download");
+  const test = $("local-ai-test");
+  if (start) start.hidden = !data.can_start;
+  if (test) test.hidden = !data.usable;
+  if (download) {
+    download.hidden = data.installed;
+    download.href = data.download_url;
+  }
+}
+
+async function refreshLocalAI() {
+  try {
+    renderLocalAI(await API.get("/local-ai/status"));
+  } catch (e) {
+    console.error("local ai status error", e);
+  }
+}
+
+function _setLocalAIMessage(text, kind) {
+  const el = $("local-ai-message");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "text-xs mt-2 " + (kind || "text-muted");
+}
+
+async function startLocalAI() {
+  const button = $("local-ai-start");
+  if (button) button.disabled = true;
+  _setLocalAIMessage("Starting Ollama…", "text-muted");
+  try {
+    const r = await API.post("/local-ai/start", {});
+    _setLocalAIMessage(r.message, r.started ? "text-ok" : "text-warn");
+    renderLocalAI(r.status);
+  } catch (e) {
+    _setLocalAIMessage("Ollama could not be started. " + e.message, "text-err");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function testLocalAI() {
+  const button = $("local-ai-test");
+  if (button) button.disabled = true;
+  // Honest about the wait: the first answer after installing a model can
+  // take a while, and a silent button looks broken.
+  _setLocalAIMessage("Asking the model to answer… the first one can be slow.", "text-muted");
+  try {
+    const r = await API.post("/local-ai/verify", {});
+    _setLocalAIMessage(r.message, r.ok ? "text-ok" : "text-warn");
+    await refreshLocalAI();
+  } catch (e) {
+    _setLocalAIMessage("The test could not be completed. " + e.message, "text-err");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function initSettings() {
+  const localStart = $("local-ai-start");
+  const localTest = $("local-ai-test");
+  const localRefresh = $("local-ai-refresh");
+  if (localStart) localStart.addEventListener("click", startLocalAI);
+  if (localTest) localTest.addEventListener("click", testLocalAI);
+  if (localRefresh) localRefresh.addEventListener("click", refreshLocalAI);
+  refreshLocalAI();
+
   refreshSettingsProviders();
   refreshSettingsKeyStatus();
   refreshSettingsStartup();

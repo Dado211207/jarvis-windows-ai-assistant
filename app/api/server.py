@@ -78,6 +78,9 @@ def create_app() -> FastAPI:
     from app.api.voice_routes import router as voice_router
     app.include_router(voice_router)
 
+    from app.api.local_ai_routes import router as local_ai_router
+    app.include_router(local_ai_router)
+
     from app.api.chat import router as chat_router
     app.include_router(chat_router)
 

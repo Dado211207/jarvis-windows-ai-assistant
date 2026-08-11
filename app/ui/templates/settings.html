@@ -49,6 +49,55 @@
     </p>
   </div>
 
+  {#
+    Local AI. Four states with four different next steps — "not
+    installed", "installed but not running", "running with no model" and
+    "ready" used to produce one identical message, which is why the
+    reported defect was that local AI "does not work" with nothing to do
+    about it.
+
+    JARVIS deliberately does not install Ollama or download a model. That
+    boundary is stated on the page rather than hidden, because a missing
+    action a user cannot explain looks like a bug.
+  #}
+  <div class="card mb-4" id="local-ai-card">
+    <h2 class="card-title">Local AI</h2>
+    <p class="text-xs text-muted mt-2">
+      Runs entirely on this computer. No account, no API key, and nothing you type
+      leaves the machine.
+    </p>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label">Status</span>
+      <span id="local-ai-headline" class="status-row-value loading">&#8230;</span>
+    </div>
+    <p id="local-ai-detail" class="text-xs text-muted mt-2"></p>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label">Next step</span>
+      <span id="local-ai-next" class="status-row-value"></span>
+    </div>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label">Suggested model for this computer</span>
+      <span id="local-ai-recommended" class="status-row-value font-mono"></span>
+    </div>
+    <p id="local-ai-why" class="text-xs text-muted mt-2"></p>
+
+    <div class="btn-row mt-3">
+      <button id="local-ai-start" class="btn btn-primary" type="button" hidden>Start Ollama</button>
+      <a id="local-ai-download" class="btn btn-ghost" href="#" target="_blank" rel="noopener noreferrer" hidden>Get Ollama</a>
+      <button id="local-ai-test" class="btn btn-primary" type="button" hidden>Test local AI</button>
+      <button id="local-ai-refresh" class="btn btn-ghost" type="button">Re-check</button>
+    </div>
+    <p id="local-ai-message" class="text-xs mt-2" aria-live="polite"></p>
+
+    <p class="text-xs text-muted mt-3">
+      JARVIS does not install Ollama or download models for you. That is deliberate:
+      a multi-gigabyte download should only ever start because you asked for it.
+    </p>
+  </div>
+
   <div class="card mb-4">
     <h2 class="card-title">Anthropic API key</h2>
     <p class="text-xs text-muted mt-2">
