@@ -330,3 +330,34 @@ def test_the_settings_page_states_the_boundary_rather_than_hiding_it(client):
     html = client.get("/ui/settings").text.lower()
 
     assert "does not install ollama or download models" in html
+
+
+def test_the_installer_never_claims_to_include_local_ai():
+    """Local AI is optional and is not shipped. The installer must not
+    imply otherwise — a promise made at install time is the one a user
+    remembers when the feature turns out to need a separate download."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    installer = (repo / "packaging" / "jarvis.iss").read_text(encoding="utf-8").lower()
+
+    for claim in ("ollama", "local ai", "local llm", "language model"):
+        assert claim not in installer, (
+            f"the installer text mentions {claim!r}; it must not imply local AI is included"
+        )
+
+
+def test_nothing_bundles_ollama_with_the_application():
+    """It is a separate program the user installs. If it ever appeared in
+    a requirements file or the PyInstaller spec, the boundary the Local
+    AI page describes would be a false statement."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    for name in ("requirements.txt", "requirements-windows.txt", "requirements-voice.txt",
+                 "packaging/jarvis.spec"):
+        path = repo / name
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8").lower()
+        assert "ollama" not in text, f"{name} must not bundle or require Ollama"

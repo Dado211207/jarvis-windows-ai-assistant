@@ -65,9 +65,20 @@ download a model**. `CLAUDE.md` forbids exactly that, in a rule marked
 non-negotiable, enforced by a test that walks the AST of every module
 under `app/` and restated in `docs/THREAT_MODEL.md`.
 
-That conflict was raised rather than resolved silently. Instructed to
-apply the safest choice consistent with existing instructions, the rule
-stands: **JARVIS does not install Ollama and does not download models.**
+That conflict was raised rather than resolved silently, and **the owner
+has since accepted the boundary explicitly**: JARVIS does not silently
+install Ollama and does not download an LLM. Local AI stays optional;
+the requirement is that the UI is completely honest and usable within
+that limit. All six accepted conditions are implemented and tested:
+
+| Accepted requirement | Where |
+|---|---|
+| Identify not installed / not running / missing a model / genuinely ready | `local_ai.describe()`, four states |
+| Direct official download link and concise setup instructions | `download_url` + per-state `next_step` |
+| Offer Start Ollama **only** when it is already installed | `can_start`, refused server-side when absent |
+| Suggest a model based on measured system memory | `recommend_model()` from `psutil` |
+| Never show Ready until a real local prompt returns generated text | `verify_with_real_inference()` |
+| Do not claim the installer includes local AI | asserted against `jarvis.iss` and every requirements file |
 
 Everything else in the defect was built:
 
@@ -235,27 +246,54 @@ assertion was weakened or skipped to obtain a pass.
 
 ---
 
-## Manual acceptance checklist
+## The physical-machine checklist
 
-Install from the artifact, then:
+These are the only items left, and every one of them needs the real
+hardware. Nothing below has been performed by any automated run.
 
-1. Setup completes without showing a terminal, a Python path or a
-   localhost URL.
-2. First run asks for a name and an Anthropic API key, and nothing else.
-   A wrong key is rejected with a reason that names the problem.
-3. JARVIS opens in its own window, not a browser tab.
-4. Tray → Restart returns to a working window; Task Manager shows one
-   JARVIS and no orphaned `msedgewebview2.exe`.
-5. Tray → Quit leaves no `JARVIS.exe` and no `msedgewebview2.exe`, and
-   the app starts again immediately afterwards.
-6. Voice page → install the neural voice; progress, then Test voice
-   speaks in a British male voice that does not sound robotic.
-7. Voice page → teach it your name, hear it, save it, and confirm a
-   reply pronounces it correctly.
-8. Settings → Local AI reports the true state of Ollama on the machine
-   and its next step is one you can act on without a terminal.
-9. Uninstall from Settings → Apps. Data survives. Reinstall and confirm
-   your settings are still there. Uninstall again choosing to delete
-   data, and confirm `%LOCALAPPDATA%\JARVIS` is gone.
-10. **Hold the microphone button on the Chat page and speak.** This is
-    the one item on this list that no automated run has ever covered.
+1. **Upgrade directly over the older RC already installed**, without
+   uninstalling it first.
+2. Confirm the **native JARVIS window opens** and no unwanted browser tab
+   opens with it.
+3. Confirm a **second launch brings the existing window forward** rather
+   than starting anything new.
+4. Test the **physical microphone** and push-to-talk transcription.
+5. Test **Kokoro speech**: `bm_george`, Test Voice, Stop, and interrupting
+   one reply with another.
+6. Select and test an available **Windows natural voice** fallback.
+7. Test **Restart** from both the UI and the tray.
+8. Test **Quit** from both the UI and the tray, then confirm no JARVIS,
+   WebView2 or port-owning process remains.
+9. Confirm **existing settings and data survive the upgrade**.
+10. Test **normal uninstall**, preserving data.
+11. **Reinstall**, then test the explicit **full data-removal uninstall**.
+12. If anything fails, capture the exact logs and process state:
+    `%LOCALAPPDATA%\JARVIS\data\logs\jarvis.log`,
+    `%LOCALAPPDATA%\JARVIS\boot_trace.log`, and
+    `Get-Process | Where-Object { $_.Name -match 'JARVIS|msedgewebview2' }`.
+
+**This release is not complete until that list has been performed on the
+real machine.** Nothing in this document should be read as saying
+otherwise.
+
+---
+
+## Uninstall behaviour, stated exactly
+
+| Action | User data at `%LOCALAPPDATA%\JARVIS` |
+|---|---|
+| Uninstall, interactive | Kept. The prompt defaults to **No**. |
+| Uninstall, silent, no flag | Kept. |
+| Uninstall with `/DELETEDATA=yes` | Deleted, including the database, logs, and any downloaded speech or voice model. |
+| Reinstall / upgrade over an existing install | Kept. The install directory (`%LOCALAPPDATA%\Programs\JARVIS`) and the data directory are separate trees, so replacing one cannot touch the other. |
+
+All four are exercised by the automated acceptance test on every
+installer build.
+
+## Signing
+
+**The installer is unsigned, and Windows SmartScreen will warn.** Expect
+*"Windows protected your PC"* → **More info** → **Run anyway**. No code
+signing certificate exists for this project; none was faked, and
+SmartScreen was not worked around. Verify the download by hash instead —
+the `.sha256` file ships beside the `.exe`.
