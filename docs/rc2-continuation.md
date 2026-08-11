@@ -10,9 +10,16 @@ unmerged, private repository.
 
 ---
 
-## One decision is needed before RC2-F can be built
+## The local-AI decision, and how it was resolved
 
-**Local AI (reported defect 4) is blocked on a conflict, not on effort.**
+**Resolved: the rule stands.** Instructed to apply the safest choice
+consistent with the existing instructions, RC2-F was built *without*
+auto-installing Ollama and *without* downloading models. The conflict
+and the options are kept below because reversing the decision later
+should be a deliberate act with the reasoning in front of whoever makes
+it.
+
+**Local AI (reported defect 4) conflicted with a standing rule.**
 
 The defect asks that JARVIS "auto-install the runtime, select a
 hardware-appropriate model, and download it with progress, cancel, retry
@@ -254,8 +261,8 @@ data by default, reinstall over preserved data, and uninstall with
 
 | Item | State |
 |---|---|
-| **RC2-F Local AI** | Blocked on the decision above. Nothing written. |
-| **RC2-A WebView2 bootstrapping in the installer** | The native-window and second-launch behaviour is fixed and confirmed by the owner. The installer does not yet bundle or bootstrap the WebView2 runtime, and there is no repair action. |
+| **RC2-F Local AI** | Built within the rule (`57cf0a3`): four states, start-an-installed-Ollama, a model chosen from this machine's memory, and Ready only after real generated text. Auto-install and model download remain deliberately absent — see the decision section above, which is now a record of what was decided rather than a question. |
+| **RC2-A WebView2 bootstrapping in the installer** | Done (`beb0282`). Setup detects the runtime against the same registry key the app uses and installs it via Microsoft's bootstrapper when absent, from `PrepareToInstall` so silent installs take the same path. A failure never aborts the install. **The download branch is not exercised by CI** — runners already have the runtime. |
 | **RC2-D push-to-talk on real hardware** | The engine ships and the chain is fixed; verified via mocked adapters and browser E2E with a fake media device. **Never verified against a physical microphone.** Do not claim otherwise. |
 | **RC2-G upgrade path** | Reinstall-over-existing and both uninstall modes are covered by phases B and C. Upgrading from an *older installed version* is not exercised. |
 | **`bm_george` as default** | Samples for all four voices were produced and sent to the owner. The default stays `bm_george` **until the owner says otherwise** — the choice is theirs to confirm by ear, and has not been confirmed yet. |
