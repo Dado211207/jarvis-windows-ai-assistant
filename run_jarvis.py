@@ -47,6 +47,13 @@ def _run() -> None:
         # app/launcher/selftest.py.
         from app.launcher.selftest import run as selftest_run
         sys.exit(selftest_run(argv))
+    elif "--uninstall-cleanup" in argv:
+        # Called by the uninstaller, before the files go. Removes what
+        # the *application* created and the installer has never heard of
+        # — the sign-in shortcut, and (only with --purge-data) the stored
+        # API key and the data folder. See app/launcher/uninstall.py.
+        from app.launcher.uninstall import run as uninstall_run
+        sys.exit(uninstall_run(argv))
     elif "--cli" in argv:
         from app.main import main
         main()

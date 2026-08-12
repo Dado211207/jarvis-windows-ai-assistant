@@ -122,6 +122,40 @@ def expected_start_menu_shortcut() -> Path:
     return Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "JARVIS" / "JARVIS.lnk"
 
 
+def expected_startup_shortcut() -> Path:
+    """Matches app/launcher/startup_shortcut.py::shortcut_path()."""
+    return (
+        Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu"
+        / "Programs" / "Startup" / "JARVIS.lnk"
+    )
+
+
+def _webview2_present() -> bool:
+    """Whether the shared WebView2 runtime is still registered.
+
+    Read from the registry, both the per-machine and per-user locations
+    Microsoft documents, because an uninstaller that removes a shared
+    component because one of its users left is a defect worth failing a
+    release over.
+    """
+    import winreg
+
+    key = r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    user_key = r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    for root, path in (
+        (winreg.HKEY_LOCAL_MACHINE, key),
+        (winreg.HKEY_CURRENT_USER, user_key),
+    ):
+        try:
+            with winreg.OpenKey(root, path) as handle:
+                version, _ = winreg.QueryValueEx(handle, "pv")
+                if str(version).strip() not in ("", "0.0.0.0"):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
 def find_installer() -> Path:
     matches = glob.glob(INSTALLER_GLOB)
     if not matches:
@@ -747,6 +781,29 @@ def phase_b_uninstall_preserves_data_by_default(log_dir: Path) -> None:
         _fail(f"Expected {db_path} to still exist after an uninstall with no /DELETEDATA flag (data must be preserved by default).")
     print(f"OK: {db_path} preserved")
 
+    _step("Phase B.5: Verify the sign-in shortcut was removed even so")
+    # Removed on every uninstall, not only a complete one: it points at
+    # an executable that no longer exists, so leaving it means Windows
+    # tries to launch a deleted file at every sign-in.
+    startup_shortcut = expected_startup_shortcut()
+    if startup_shortcut.exists():
+        _fail(
+            f"Expected {startup_shortcut} to be removed by uninstall — it points at an "
+            "executable that no longer exists."
+        )
+    print("OK: sign-in shortcut removed")
+
+    _step("Phase B.6: Verify shared Windows components were NOT removed")
+    # An uninstaller that removes a shared component because one of its
+    # users left is a bug in that uninstaller. WebView2 is the one this
+    # installer can install, so it is the one worth checking.
+    if not _webview2_present():
+        _fail(
+            "The WebView2 runtime is gone after uninstalling JARVIS. Shared Windows "
+            "components must never be removed."
+        )
+    print("OK: WebView2 runtime left alone")
+
 
 def phase_c_reinstall_then_explicit_data_removal(installer: Path, log_dir: Path) -> None:
     _step("Phase C.1: Reinstall over the preserved data directory")
@@ -771,6 +828,23 @@ def phase_c_reinstall_then_explicit_data_removal(installer: Path, log_dir: Path)
     if expected_data_dir().exists():
         _fail(f"Expected {expected_data_dir()} to be removed after an uninstall with /DELETEDATA=yes.")
     print(f"OK: {expected_data_dir()} removed")
+
+    _step("Phase C.5: Verify shared Windows components survived a complete removal too")
+    if not _webview2_present():
+        _fail(
+            "The WebView2 runtime is gone after a complete uninstall. 'Everything JARVIS "
+            "owns' never includes a shared Windows component."
+        )
+    print("OK: WebView2 runtime left alone")
+
+    _step("Phase C.6: Verify the notes folder was left alone")
+    # Documents somebody wrote. Uninstalling a program is not consent to
+    # delete what was written with it, and this is the only phase where
+    # a bug in that reasoning would be destructive.
+    notes = Path.home() / "Documents" / "JARVIS_Notes"
+    if notes.exists() and not notes.is_dir():
+        _fail(f"{notes} is no longer a directory after uninstall.")
+    print("OK: notes folder untouched")
 
 
 # ---------------------------------------------------------------------------

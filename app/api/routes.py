@@ -372,6 +372,15 @@ class STTDiagnosticsResponse(BaseModel):
     model_ready: bool
     model_detail: str
     model_path: str
+    # One of app/voice/input_state.py's ten states, plus what to do about
+    # it. Six accurate rows and no diagnosis is what the release
+    # candidate shipped; this is the row that says which situation the
+    # machine is actually in.
+    state: str = ""
+    headline: str = ""
+    next_step: str = ""
+    percent: int = 0
+    last_failure: str = ""
 
 
 class SetSTTEnabledRequest(BaseModel):
@@ -387,12 +396,14 @@ def voice_stt_status() -> STTStatusResponse:
 
 @router.get("/voice/diagnostics", response_model=STTDiagnosticsResponse)
 def voice_diagnostics() -> STTDiagnosticsResponse:
+    from app.voice import input_state
     from app.voice.stt import input_enabled, stt_service
 
     available, reason = stt_service.is_available()
     runtime_ready, runtime_detail = stt_service.runtime_status()
     model_ready, model_detail = stt_service.model_status()
     path = stt_service.model_path()
+    overall = input_state.describe()
     return STTDiagnosticsResponse(
         enabled=input_enabled(),
         available=available,
@@ -405,6 +416,11 @@ def voice_diagnostics() -> STTDiagnosticsResponse:
         # *where* JARVIS is looking, which is the difference between "no
         # model" and "a model somewhere else".
         model_path=str(path) if path is not None else "",
+        state=overall.state,
+        headline=overall.headline,
+        next_step=overall.next_step,
+        percent=overall.percent,
+        last_failure=input_state.last_failure.message(),
     )
 
 
@@ -461,6 +477,16 @@ async def voice_transcribe(audio: UploadFile = File(...)) -> TranscribeResponse:
         runtime.try_transition(RuntimeState.TRANSCRIBING, reason="push-to-talk transcription")
         result = stt_service.transcribe(tmp_path, timeout_seconds=float(settings.jarvis_stt_timeout_seconds))
         runtime.try_transition(RuntimeState.STANDBY, reason="transcription complete")
+
+        # The diagnostics panel needs to know the last attempt failed, or
+        # push-to-talk looks like a button that simply does nothing. The
+        # *message* only — never the audio, never the transcript.
+        from app.voice.input_state import last_failure
+
+        if result.success:
+            last_failure.clear()
+        else:
+            last_failure.record(result.message)
 
         logger.info("Push-to-talk transcription: success=%s chars=%d", result.success, len(result.text))
         return TranscribeResponse(success=result.success, text=result.text, message=result.message)

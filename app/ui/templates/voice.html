@@ -157,6 +157,25 @@
   #}
   <div class="card mb-4" id="voice-diagnostics-card">
     <h2 class="card-title">Voice diagnostics</h2>
+
+    {# One state, out of the ten in app/voice/input_state.py, and what to
+       do about it. Six accurate rows and no diagnosis is what the
+       release candidate shipped: everything below was correct and the
+       only advice on offer was to reinstall, which would not have
+       helped. This row is the answer; the rows below are the working. #}
+    <div class="status-row mt-3">
+      <span class="status-row-label">Voice input</span>
+      <span id="diag-state" class="status-row-value loading">&#8230;</span>
+    </div>
+    <p id="diag-state-detail" class="text-xs text-muted mt-2"></p>
+    <div class="status-row mt-3">
+      <span class="status-row-label">What to do</span>
+      <span id="diag-next-step" class="status-row-value"></span>
+    </div>
+    <div class="mt-3" id="diag-progress-wrap" hidden>
+      <div class="progress-bar"><div id="diag-progress-bar" class="progress-fill" style="width:0%"></div></div>
+    </div>
+
     <div class="mt-3">
       <div class="status-row">
         <span class="status-row-label">Microphone permission</span>
@@ -193,7 +212,7 @@
 
     <div class="btn-row mt-3">
       <button id="diag-test-mic" class="btn btn-primary" type="button">Test microphone</button>
-      <button id="diag-refresh" class="btn btn-ghost" type="button">Refresh</button>
+      <button id="diag-refresh" class="btn btn-ghost" type="button">Run diagnostics again</button>
     </div>
 
     <div class="mt-3">

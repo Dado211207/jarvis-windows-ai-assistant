@@ -1280,9 +1280,75 @@ function _setDiag(id, text, tone) {
   el.className = `status-row-value${tone ? " " + tone : ""}`;
 }
 
+// The ten states from app/voice/input_state.py, in plain words. Three of
+// them — the microphone permission ones and "no input device" — can only
+// be known in the browser, so they are decided here and overlaid on the
+// server's answer: a refused microphone matters more than a model that
+// is present and unused.
+const VOICE_INPUT_LABELS = {
+  disabled: "Switched off",
+  permission_not_requested: "Microphone not allowed yet",
+  permission_denied: "Microphone permission denied",
+  no_input_device: "No microphone found",
+  runtime_missing: "Speech engine missing",
+  model_missing: "Speech model not downloaded",
+  downloading: "Downloading the speech model",
+  verifying: "Checking the speech model",
+  ready: "Ready",
+  transcription_failed: "The last recording failed",
+};
+
+let browserVoiceState = null;   // set by the permission/device checks below
+
+function renderVoiceInputState(server) {
+  // The browser's own findings win: being unable to hear is a more
+  // immediate problem than anything on disk.
+  const state = browserVoiceState || (server && server.state) || "";
+  const ready = state === "ready";
+  const busy = state === "downloading" || state === "verifying";
+
+  _setDiag("diag-state", VOICE_INPUT_LABELS[state] || "Unknown",
+           ready ? "text-ok" : (busy ? "text-muted" : "text-warn"));
+
+  const detail = $("diag-state-detail");
+  if (detail) {
+    detail.textContent = browserVoiceState
+      ? BROWSER_STATE_DETAIL[browserVoiceState] || ""
+      : ((server && server.last_failure) || (server && server.reason) || "");
+  }
+  setText("diag-next-step", browserVoiceState
+    ? BROWSER_STATE_NEXT[browserVoiceState] || ""
+    : ((server && server.next_step) || ""));
+
+  const wrap = $("diag-progress-wrap");
+  if (wrap) wrap.hidden = !busy;
+  const bar = $("diag-progress-bar");
+  if (bar) bar.style.width = ((server && server.percent) || 0) + "%";
+}
+
+const BROWSER_STATE_DETAIL = {
+  permission_not_requested:
+    "Windows and this window have not been asked for the microphone yet. Nothing is listening.",
+  permission_denied:
+    "The microphone was refused for JARVIS, so no recording can start.",
+  no_input_device:
+    "No microphone is connected to this computer, or Windows is not reporting one.",
+};
+
+const BROWSER_STATE_NEXT = {
+  permission_not_requested:
+    "Press Test microphone — Windows will ask once, and you can say no.",
+  permission_denied:
+    "Allow the microphone for JARVIS in Windows privacy settings, then press Run diagnostics again.",
+  no_input_device:
+    "Plug in a microphone or headset and press Run diagnostics again. Typing works normally either way.",
+};
+
 async function refreshVoiceDiagnostics() {
+  let diagnostics = null;
   try {
     const r = await API.get("/voice/diagnostics");
+    diagnostics = r;
     _setDiag("diag-runtime", r.runtime_ready ? "Installed" : "Not installed",
              r.runtime_ready ? "text-ok" : "text-err");
     const runtimeEl = $("diag-runtime");
@@ -1306,8 +1372,10 @@ async function refreshVoiceDiagnostics() {
     _setDiag("diag-model", "Unknown");
   }
 
+  browserVoiceState = null;
   await refreshMicrophonePermission();
   await refreshInputDevices();
+  renderVoiceInputState(diagnostics);
 }
 
 async function refreshMicrophonePermission() {
@@ -1324,6 +1392,8 @@ async function refreshMicrophonePermission() {
     const label = { granted: "Granted", denied: "Denied", prompt: "Not asked yet" }[status.state] || status.state;
     _setDiag("diag-mic-permission", label,
              status.state === "granted" ? "text-ok" : (status.state === "denied" ? "text-err" : "text-muted"));
+    if (status.state === "denied") browserVoiceState = "permission_denied";
+    else if (status.state === "prompt") browserVoiceState = "permission_not_requested";
   } catch (e) {
     _setDiag("diag-mic-permission", "Unknown until tested", "text-muted");
   }
@@ -1341,6 +1411,8 @@ async function refreshInputDevices() {
     const inputs = devices.filter(d => d.kind === "audioinput");
     if (!inputs.length) {
       _setDiag("diag-mic-device", "No microphone detected", "text-err");
+      // Overrides a permission state: there is nothing to grant access to.
+      browserVoiceState = "no_input_device";
       return;
     }
     // Labels are empty until permission has been granted at least once —

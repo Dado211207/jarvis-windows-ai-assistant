@@ -155,6 +155,12 @@ Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: st
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+// Carried between the two uninstall steps: the choice is made while
+// {app}\JARVIS.exe still exists (usUninstall), and the data directory is
+// swept after the files have gone (usPostUninstall).
+var
+  UninstallCompleteRemoval: Boolean;
+
 // ---------------------------------------------------------------------------
 // WebView2: install it if it is missing, rather than letting the app
 // discover that at first launch.
@@ -267,42 +273,94 @@ begin
   Result := ExpandConstant('{localappdata}\JARVIS');
 end;
 
+// Runs the application's own cleanup, before its files are removed.
+//
+// Inno removes what Inno installed. It has never heard of the sign-in
+// shortcut the *application* writes when somebody switches that on in
+// Settings, and it does not know how the API key was stored — only
+// app/core/credentials.py knows that. An installer guessing at a
+// Windows Credential Manager target name is how an uninstall leaves a
+// secret behind while reporting success. So the application is asked
+// to remove its own things. See app/launcher/uninstall.py and
+// app/core/ownership.py, which is the manifest of what "everything
+// JARVIS owns" actually means.
+//
+// A failure here is logged and ignored on purpose: the files are going
+// regardless, and aborting halfway would leave a half-removed
+// installation, which is worse than an orphaned shortcut.
+procedure RunApplicationCleanup(PurgeData: Boolean);
+var
+  Exe: String;
+  Params: String;
+  ResultCode: Integer;
+begin
+  Exe := ExpandConstant('{app}\{#MyAppExeName}');
+  if not FileExists(Exe) then
+    Exit;
+
+  Params := '--uninstall-cleanup';
+  if PurgeData then
+    Params := Params + ' --purge-data';
+
+  if not Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('JARVIS cleanup could not be started; continuing with uninstall.');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
   Answer: Integer;
   ShouldDelete: Boolean;
 begin
+  if CurUninstallStep = usUninstall then
+  begin
+    // Asked here, while {app}\JARVIS.exe still exists, and answered
+    // before anything is deleted. The prompt is the one place a person
+    // gets to choose between "uninstall" and "uninstall and forget me",
+    // so it has to say exactly what each one means.
+    ShouldDelete := False;
+    DataDir := GetJarvisDataDir();
+
+    if UninstallSilent() then
+    begin
+      // A silent uninstall (e.g. CI's automated clean-install test)
+      // never shows a blocking dialog. Data is preserved unless
+      // explicitly opted into removal via an explicit /DELETEDATA=yes
+      // command-line flag — the same "unchecked/no by default" rule
+      // as the interactive prompt below, just expressed as a flag a
+      // human never has to type by accident.
+      ShouldDelete := (CompareText(ExpandConstant('{param:DELETEDATA|no}'), 'yes') = 0);
+    end
+    else if DirExists(DataDir) then
+    begin
+      Answer := MsgBox(
+        'Remove everything JARVIS owns?' + #13#10 + #13#10 +
+        'Choosing No uninstalls the application and keeps your settings, chat history, ' +
+        'saved API key and any voice or speech model you downloaded, at:' + #13#10 +
+        DataDir + #13#10 + #13#10 +
+        'Choosing Yes also deletes all of that, permanently, and removes your API key ' +
+        'from Windows Credential Manager. This cannot be undone.' + #13#10 + #13#10 +
+        'Either way, JARVIS never removes shared Windows components such as WebView2 ' +
+        'or the Visual C++ Runtime, never removes Ollama or its models, and never ' +
+        'touches your notes in Documents\JARVIS_Notes.',
+        mbConfirmation, MB_YESNO or MB_DEFBUTTON2
+      );
+      ShouldDelete := (Answer = IDYES);
+    end;
+
+    RunApplicationCleanup(ShouldDelete);
+    UninstallCompleteRemoval := ShouldDelete;
+  end;
+
   if CurUninstallStep = usPostUninstall then
   begin
+    // A belt-and-braces sweep of the data directory. The application's
+    // own cleanup above is the one that knows about the credential
+    // store; this catches the case where the executable was already
+    // gone (a partially removed installation) and there was nothing to
+    // run.
     DataDir := GetJarvisDataDir();
-    if DirExists(DataDir) then
-    begin
-      ShouldDelete := False;
-      if UninstallSilent() then
-      begin
-        // A silent uninstall (e.g. CI's automated clean-install test)
-        // never shows a blocking dialog. Data is preserved unless
-        // explicitly opted into removal via an explicit /DELETEDATA=yes
-        // command-line flag — the same "unchecked/no by default" rule
-        // as the interactive prompt below, just expressed as a flag a
-        // human never has to type by accident.
-        ShouldDelete := (CompareText(ExpandConstant('{param:DELETEDATA|no}'), 'yes') = 0);
-      end
-      else
-      begin
-        Answer := MsgBox(
-          'JARVIS has been uninstalled.' + #13#10 + #13#10 +
-          'Your JARVIS data (local database, logs, and any downloaded speech model) is still on this computer, at:' + #13#10 +
-          DataDir + #13#10 + #13#10 +
-          'Do you also want to permanently delete this data? This cannot be undone.',
-          mbConfirmation, MB_YESNO or MB_DEFBUTTON2
-        );
-        ShouldDelete := (Answer = IDYES);
-      end;
-
-      if ShouldDelete then
-        DelTree(DataDir, True, True, True);
-    end;
+    if UninstallCompleteRemoval and DirExists(DataDir) then
+      DelTree(DataDir, True, True, True);
   end;
 end;

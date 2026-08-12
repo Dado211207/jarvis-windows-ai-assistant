@@ -616,6 +616,37 @@ def test_the_chat_toggle_writes_the_same_saved_setting_as_the_voice_page(page, l
         tts_service.set_output_enabled(False)
 
 
+def test_voice_diagnostics_shows_one_state_and_something_to_do(page, live_server):
+    """The release candidate showed six accurate rows and, as advice, a
+    reinstall that would not have helped. The panel now leads with which
+    of the ten situations this machine is in."""
+    page.goto(url("/ui/voice"), wait_until="networkidle")
+    page.wait_for_function(
+        "document.getElementById('diag-state').textContent.trim() !== '…'", timeout=8000,
+    )
+
+    state = page.text_content("#diag-state").strip()
+    next_step = page.text_content("#diag-next-step").strip()
+
+    assert state and state != "Unknown", f"the panel reported {state!r}"
+    assert next_step, "a diagnosis with nothing to do about it is what was reported"
+
+
+def test_the_diagnostics_button_says_what_it_does(page, live_server):
+    page.goto(url("/ui/voice"), wait_until="networkidle")
+
+    assert page.text_content("#diag-refresh").strip() == "Run diagnostics again"
+
+
+def test_the_voice_diagnostics_heading_is_spelled_correctly(page, live_server):
+    """Reported from the physical machine as "oice diagnostics". Rendered
+    in a real browser here so the answer is what a person sees, not what
+    the template says."""
+    page.goto(url("/ui/voice"), wait_until="networkidle")
+
+    assert "Voice diagnostics" in page.text_content("#voice-diagnostics-card")
+
+
 def test_the_voice_page_toggle_reflects_the_server_state(page, live_server):
     from app.voice.tts import tts_service
 

@@ -342,16 +342,37 @@ def test_the_settings_page_states_that_nothing_downloads_unasked(client):
 def test_the_installer_never_claims_to_include_local_ai():
     """Local AI is optional and is not shipped. The installer must not
     imply otherwise — a promise made at install time is the one a user
-    remembers when the feature turns out to need a separate download."""
+    remembers when the feature turns out to need a separate download.
+
+    Scoped to everything before the uninstall handler, because the
+    uninstall prompt now mentions Ollama on purpose: to say it is *not*
+    removed. Naming what an uninstaller leaves alone is the opposite of
+    claiming it was included, and the next test pins that.
+    """
     from pathlib import Path
 
     repo = Path(__file__).resolve().parent.parent
     installer = (repo / "packaging" / "jarvis.iss").read_text(encoding="utf-8").lower()
+    install_time = installer.split("procedure runapplicationcleanup", 1)[0]
 
     for claim in ("ollama", "local ai", "local llm", "language model"):
-        assert claim not in installer, (
+        assert claim not in install_time, (
             f"the installer text mentions {claim!r}; it must not imply local AI is included"
         )
+
+
+def test_the_uninstaller_promises_not_to_remove_ollama():
+    """The other side of the same boundary. JARVIS may install Ollama
+    now, and it still never removes it: that would be deciding, on
+    somebody's behalf, that they no longer want local AI because they no
+    longer want JARVIS."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    installer = (repo / "packaging" / "jarvis.iss").read_text(encoding="utf-8")
+    uninstall_text = installer.split("procedure RunApplicationCleanup", 1)[1]
+
+    assert "never removes Ollama or its models" in uninstall_text
 
 
 def test_nothing_bundles_ollama_with_the_application():
