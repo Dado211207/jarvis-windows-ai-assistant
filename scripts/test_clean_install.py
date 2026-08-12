@@ -62,6 +62,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from app.config import settings  # noqa: E402
 
 INSTALLER_GLOB = str(REPO_ROOT / "packaging" / "dist" / "installer" / "JARVIS-Setup-*.exe")
+BASE_URL = f"http://{settings.jarvis_host}:{settings.jarvis_port}"
 HEALTH_URL = f"http://{settings.jarvis_host}:{settings.jarvis_port}/health"
 SETUP_PAGE_URL = f"http://{settings.jarvis_host}:{settings.jarvis_port}/ui/setup"
 STATIC_ASSET_URL = f"http://{settings.jarvis_host}:{settings.jarvis_port}/ui/static/style.css"
@@ -624,6 +625,16 @@ def phase_d_repeated_start_and_quit(log_dir: Path) -> None:
 
 SELFTEST_TIMEOUT_SECONDS = 120.0
 
+# The deep pass loads two real models and runs real inference on a CPU
+# runner. Generous because the work is genuinely slow, not because
+# anything is being waited out — every step it performs has its own
+# failure message.
+DEEP_SELFTEST_TIMEOUT_SECONDS = 900.0
+
+# Downloading the two models through the app's own screens.
+MODEL_INSTALL_TIMEOUT_SECONDS = 900.0
+MODEL_POLL_SECONDS = 3.0
+
 
 def phase_f_installed_runtime_selftest(log_dir: Path) -> None:
     """Ask the installed executable what it can actually do.
@@ -645,15 +656,24 @@ def phase_f_installed_runtime_selftest(log_dir: Path) -> None:
         _fail(f"Expected {exe_path} to exist before the runtime self-test.")
 
     _step("Phase F: Ask the installed JARVIS.exe to prove its own runtime")
+    _run_selftest(exe_path, log_dir, deep=False)
+
+
+def _run_selftest(exe_path: Path, log_dir: Path, deep: bool) -> None:
+    args = [str(exe_path), "--selftest"] + (["--deep"] if deep else [])
+    timeout = DEEP_SELFTEST_TIMEOUT_SECONDS if deep else SELFTEST_TIMEOUT_SECONDS
     result = subprocess.run(
-        [str(exe_path), "--selftest"],
-        capture_output=True, text=True, timeout=SELFTEST_TIMEOUT_SECONDS,
+        args,
+        capture_output=True, text=True, timeout=timeout,
         cwd=str(expected_install_dir()),
     )
+    _report_selftest(result, log_dir / ("selftest-deep.log" if deep else "selftest.log"))
+
+
+def _report_selftest(result, log_path: Path) -> None:
     output = (result.stdout or "") + (result.stderr or "")
     print(output.strip())
 
-    log_path = log_dir / "selftest.log"
     try:
         log_path.write_text(output, encoding="utf-8")
     except OSError:
@@ -673,6 +693,105 @@ def phase_f_installed_runtime_selftest(log_dir: Path) -> None:
             "result as success is how the previous broken build shipped."
         )
     print("OK: every required runtime loaded inside the installed executable")
+
+
+def phase_g_real_voice_through_the_installed_product(log_dir: Path) -> None:
+    """Speak a sentence and read it back, in the artifact the user gets.
+
+    Every voice test before this one measured a stage: the text
+    normaliser, the grapheme-to-phoneme conversion, the ONNX session
+    loading. All of those can pass while the product makes no sound, and
+    all of them ran in the source tree, where the packaging fault that
+    shipped a release candidate with no speech input was invisible.
+
+    So: install both models through the installed application's own
+    download screens — the same endpoints a person's button press
+    reaches, with the same consent previews — then ask the installed
+    executable to synthesise real audio with the real neural model and
+    transcribe it back with the real speech recogniser. A pass means the
+    whole chain works end to end in the packaged product.
+
+    Deliberately not mocked at any point, and deliberately not gated on
+    anything: if the models cannot be installed from inside the app, that
+    is the defect, not a reason to skip.
+    """
+    import httpx
+
+    exe_path = expected_install_dir() / "JARVIS.exe"
+    if not exe_path.is_file():
+        _fail(f"Expected {exe_path} to exist before the voice chain test.")
+
+    _step("Phase G.1: Launch the installed app to drive its own download screens")
+    proc = subprocess.Popen([str(exe_path)], cwd=str(expected_install_dir()))
+    try:
+        wait_for_health(proc)
+
+        client = httpx.Client(base_url=BASE_URL, timeout=30.0)
+        client.get("/health")  # mints the session cookie
+        token = client.cookies.get("jarvis_session")
+        if not token:
+            _fail("The installed app did not issue a session token; the download endpoints are protected by it.")
+        client.headers["X-JARVIS-Session-Token"] = token
+
+        _step("Phase G.2: Install the neural voice through /voice/install")
+        preview = client.get("/voice/install-preview").json()
+        print(
+            f"  will download {preview.get('download_bytes')} bytes of "
+            f"{preview.get('voice_name')} from {preview.get('source')} ({preview.get('licence')})"
+        )
+        client.post("/voice/install", json={})
+        _wait_for_installer(client, "/voice/install-status", "the neural voice")
+
+        _step("Phase G.3: Install the speech model through the onboarding endpoint")
+        client.post("/onboarding/speech-model/install", json={})
+        _wait_for_installer(client, "/onboarding/speech-model/install-status", "the speech model")
+
+        _step("Phase G.4: Confirm the app itself now reports voice input ready")
+        diagnostics = client.get("/voice/diagnostics").json()
+        if not diagnostics.get("runtime_ready") or not diagnostics.get("model_ready"):
+            _fail(
+                "After installing both models the app still reports voice input as not "
+                f"ready: {diagnostics.get('state')} — {diagnostics.get('headline')}"
+            )
+        print(f"OK: {diagnostics.get('headline')}")
+        client.close()
+    finally:
+        subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
+        wait_for_pid_exit(proc.pid)
+        if proc.poll() is None:
+            proc.kill()
+    wait_for_health_to_stop()
+
+    _step("Phase G.5: Synthesise real audio and transcribe it back, inside JARVIS.exe")
+    _run_selftest(exe_path, log_dir, deep=True)
+    print("OK: the installed executable produced real audio and read it back")
+
+
+def _wait_for_installer(client, status_path: str, what: str) -> None:
+    """Poll one of the app's installer endpoints until it settles.
+
+    Reports the failure the app reported rather than a timeout: "the
+    download failed because the checksum did not match" and "we waited
+    long enough" are different problems.
+    """
+    deadline = time.monotonic() + MODEL_INSTALL_TIMEOUT_SECONDS
+    last = ""
+    while time.monotonic() < deadline:
+        body = client.get(status_path).json()
+        status = str(body.get("status", ""))
+        message = str(body.get("message", ""))
+        if message and message != last:
+            print(f"  {status}: {message}")
+            last = message
+        if status == "complete":
+            return
+        if status in ("error", "cancelled"):
+            _fail(f"Installing {what} through the installed app failed: {message}")
+        time.sleep(MODEL_POLL_SECONDS)
+    _fail(
+        f"Installing {what} did not finish within {MODEL_INSTALL_TIMEOUT_SECONDS}s "
+        f"(last message: {last!r})."
+    )
 
 
 RESTART_CYCLES = 10
@@ -886,6 +1005,10 @@ def main() -> None:
     # contain what it claims? This is the check whose absence shipped a
     # release candidate with no speech input.
     phase_f_installed_runtime_selftest(log_dir)
+    # Then the part no import check can answer: does it make a sound, and
+    # can it hear one? Both models are installed through the app's own
+    # download screens first, so this also proves those screens work.
+    phase_g_real_voice_through_the_installed_product(log_dir)
     # Then the same artifact, started and stopped ten times. One clean
     # shutdown is a happy path; ten is evidence nothing accumulates.
     phase_d_repeated_start_and_quit(log_dir)

@@ -204,6 +204,8 @@ def test_main_calls_every_phase_in_the_only_order_that_works():
     The lifecycle loop needs an installed application, so it has to run
     after the install phase and before the uninstall phases — running it
     last would mean starting an application that had just been removed.
+    The voice-chain phase downloads two models into the data directory,
+    so it has to run before the phase that deletes that directory.
     """
     tree = ast.parse(_read())
     main_fn = _find_function(tree, "main")
@@ -215,6 +217,7 @@ def test_main_calls_every_phase_in_the_only_order_that_works():
     assert phase_calls == [
         "phase_a_install_launch_and_stop",
         "phase_f_installed_runtime_selftest",
+        "phase_g_real_voice_through_the_installed_product",
         "phase_d_repeated_start_and_quit",
         "phase_e_repeated_restart",
         "phase_b_uninstall_preserves_data_by_default",

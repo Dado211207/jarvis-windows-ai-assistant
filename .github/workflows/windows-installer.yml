@@ -150,9 +150,24 @@ jobs:
         shell: pwsh
         # Runs against the real installer produced above: silent install,
         # launch the real JARVIS.exe (not repository Python), real
-        # /health + dashboard HTTP traffic, single-instance check,
-        # graceful stop, silent uninstall (data preserved by default),
-        # reinstall, silent uninstall with explicit /DELETEDATA=yes.
+        # /health + dashboard HTTP traffic, single-instance check, the
+        # installed executable's own runtime self-test, the full voice
+        # chain (both models downloaded through the app's own screens,
+        # then real audio synthesised and transcribed back *inside* the
+        # installed .exe), ten start/stop cycles, ten restarts, graceful
+        # stop, silent uninstall (data preserved by default), reinstall,
+        # silent uninstall with explicit /DELETEDATA=yes.
+        #
+        # Deliberately carries no `if:` of its own. The path gate above
+        # decides whether this job runs at all; once it does, every
+        # installed-product check runs. A condition here would let the
+        # expensive half of a build be skipped while the build still
+        # reported success, which is how a release candidate ships with a
+        # capability nobody exercised.
+        #
+        # Long because it downloads two models and runs real inference on
+        # a CPU runner. Bounded so a hang fails rather than burns an hour.
+        timeout-minutes: 45
         run: python scripts\test_clean_install.py
 
       - name: Upload installer-test logs (always, for debugging)

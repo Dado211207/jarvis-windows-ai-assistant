@@ -81,6 +81,51 @@ how Claude Code sessions should work on this codebase.
   the starting default. The reverse gives a control that silently does
   nothing on a machine where the variable happens to be set.
 
+## Capability-honesty rules (non-negotiable)
+
+These exist because the installed release candidate, asked "answer me
+with your voice", replied that it had no text-to-speech and recommended
+Windows Narrator, NaturalReader and Google Docs. Nothing was broken
+except the prompt.
+
+- **The model is told what this installation can do, per request.**
+  `app/core/capabilities.py` snapshots the real state — active speech
+  engine and voice, the Speak-responses setting, push-to-talk, local AI,
+  desktop actions — and `build_system_prompt()` appends it. Never cached:
+  a voice that finished installing two minutes ago is one the model has
+  to know it has. Never a hardcoded list.
+- **JARVIS never recommends another program for something it does
+  itself.** SYSTEM_PROMPT rule 8 names the three it actually offered.
+- **A request to speak is a deterministic route, not a judgement call.**
+  "answer me with your voice", "say that again", "read this aloud" and
+  their neighbours reach `speak_last_reply` (`app/voice/speak_reply.py`).
+- **An explicit one-off utterance is not gated on the always-speak
+  switch.** `output_enabled` answers "speak every reply automatically";
+  `/voice/speak` is gated on it and `/voice/speak-once` deliberately is
+  not, exactly as `tts_test` has always behaved. Still one flag, not two.
+- **One utterance at a time.** Every path stops what is playing before
+  starting.
+- **An unavailable capability reports the cause and the step that fixes
+  it.** "Voice input — Not set up" over six accurate rows and a
+  reinstall suggestion that would not have helped is the failure this
+  replaces; `app/voice/input_state.py` holds the ten states.
+
+## Uninstall rules (non-negotiable)
+
+- **`app/core/ownership.py` is the manifest.** "Remove everything JARVIS
+  owns" is only a promise if there is a list, and the list distinguishes
+  what setup installed from what the application created while running.
+- **The application removes its own things**, via
+  `JARVIS.exe --uninstall-cleanup`, because only it knows how the API key
+  was stored. An installer guessing at a Credential Manager target name
+  is how an uninstall leaves a secret behind while reporting success.
+- **Data and credentials survive an ordinary uninstall.** `--purge-data`
+  is a choice, never an inference. The sign-in shortcut goes either way:
+  it points at an executable that is about to stop existing.
+- **Shared Windows components are never removed** (WebView2, the Visual
+  C++ runtime), nor Ollama and its models — even when JARVIS installed
+  it — nor anything in `Documents\JARVIS_Notes`.
+
 ## Phase 3 TTS rules (non-negotiable)
 
 - **Output only.** Phase 3 TTS is text-to-speech output. No microphone input,

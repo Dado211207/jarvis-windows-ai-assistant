@@ -230,6 +230,43 @@ def test_the_gate_treats_pinned_bytes_as_packaging_relevant():
         assert path in workflow, f"{path} must make the installer job run"
 
 
+def test_the_installed_product_checks_are_never_gated_within_a_build():
+    """The path gate decides whether the job runs. Once it does, every
+    installed-product check runs.
+
+    A condition on this step would let the expensive half of a build be
+    skipped while the build still reported success — which is how a
+    release candidate ships with a capability nobody exercised.
+    """
+    import yaml
+
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["build-and-test-installer"]["steps"]
+    clean_install = next(
+        step for step in steps if "clean-install" in str(step.get("name", "")).lower()
+    )
+
+    assert "if" not in clean_install, (
+        "the clean-install acceptance test must not be conditional inside a build"
+    )
+    assert "test_clean_install.py" in clean_install["run"]
+
+
+def test_the_voice_chain_step_has_a_bounded_but_realistic_budget():
+    """It downloads two models and runs real inference on a CPU runner.
+    Long enough to finish, bounded so a hang fails rather than burning an
+    hour of runner time."""
+    import yaml
+
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["build-and-test-installer"]["steps"]
+    clean_install = next(
+        step for step in steps if "clean-install" in str(step.get("name", "")).lower()
+    )
+
+    assert clean_install.get("timeout-minutes", 0) >= 30
+
+
 def test_the_installed_bytes_are_verified_against_the_repository():
     """Checked in the installed tree, not the repository: every step
     between them can alter a file, and git's line-ending translation

@@ -18,8 +18,21 @@ It proves nothing about the thing the user runs. This asks the actual
 `.exe`.
 
 Deliberately reports rather than repairs: it is a diagnostic, and one
-that changed state would be a worse diagnostic. Nothing here touches the
-network, loads a model, or opens an audio device.
+that changed state would be a worse diagnostic. Nothing in the default
+run touches the network, loads a model, or opens an audio device.
+
+**`--deep` goes one step further, and is the one that matters.** Loading
+`onnxruntime` proves the runtime is bundled; it does not prove the voice
+makes a sound. The deep pass runs the real model in the frozen process:
+it synthesises a sentence to a real WAV and checks the samples are not
+silence, then feeds that WAV to the real speech recogniser and checks the
+words come back. Both models have to be installed first, which the
+clean-install test does through the installed app's own download screens
+— so what the deep pass verifies is the whole chain a user would use,
+end to end, in the artifact they were sent.
+
+Without `--deep` those two checks are skipped and say so. A skipped check
+is never reported as a pass.
 """
 
 import json
@@ -134,6 +147,115 @@ def _check_windows_natural_voices() -> str:
     return f"{len(winrt_voices.list_voices())} Windows voice(s)"
 
 
+# ---------------------------------------------------------------------------
+# The deep checks: the real model, in the frozen process, making a real
+# sound and reading it back.
+# ---------------------------------------------------------------------------
+
+# What the voice is asked to say. Short enough to synthesise in a second
+# or two, and made of words a small speech model transcribes reliably —
+# the check is that the chain works, not that the model is clever.
+DEEP_PHRASE = "The system is online and ready."
+DEEP_EXPECTED_WORDS = ("system", "online", "ready")
+
+# A synthesised sentence of this length is silence or a stub, not speech.
+_MIN_SECONDS = 0.4
+# float32 samples: a peak below this is an audible nothing.
+_MIN_PEAK = 0.01
+
+
+def _synthesise_to_wav(path) -> tuple:
+    """Run the real Kokoro model and write a real WAV. Returns
+    (seconds, peak, bytes_written)."""
+    from app.voice import audio
+    from app.voice.kokoro import assets, engine, install
+
+    voice_key = assets.DEFAULT_VOICE_KEY
+    if not install.is_installed(voice_key):
+        raise RuntimeError(
+            "the neural voice model is not installed on this machine, so no audio "
+            "could be produced (install it from the Voice page first)"
+        )
+
+    samples = engine.engine.synthesise_all(DEEP_PHRASE, voice_key)
+    count = int(getattr(samples, "size", 0))
+    if count == 0:
+        raise RuntimeError("the model produced no samples at all")
+
+    seconds = count / float(engine.SAMPLE_RATE)
+    peak = float(abs(samples).max())
+    audio.write_wav(path, samples, engine.SAMPLE_RATE)
+    written = path.stat().st_size
+    return seconds, peak, written
+
+
+def _check_neural_speech_produces_audio() -> str:
+    """A real WAV from the real model, in this process.
+
+    The check the release candidate never had: every voice test up to
+    this point measured the text normaliser and the grapheme-to-phoneme
+    stage, both of which can be perfect while the thing that makes the
+    sound does nothing.
+    """
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="jarvis_selftest_") as directory:
+        wav = Path(directory) / "selftest.wav"
+        seconds, peak, written = _synthesise_to_wav(wav)
+
+        if seconds < _MIN_SECONDS:
+            raise RuntimeError(f"only {seconds:.2f}s of audio was produced")
+        if peak < _MIN_PEAK:
+            raise RuntimeError(f"the audio is silent (peak amplitude {peak:.5f})")
+        if written < 1024:
+            raise RuntimeError(f"the WAV file is {written} bytes, which is not audio")
+
+        return f"{seconds:.2f}s, peak {peak:.3f}, {written} bytes of WAV"
+
+
+def _check_transcription_of_real_audio() -> str:
+    """Speak a sentence, then listen to it — both models, one pipeline.
+
+    Uses the audio this build just generated rather than a fixture
+    committed to the repository, so a passing result means the two halves
+    of the voice system work *together* in the installed artifact.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from app.voice.stt import stt_service
+
+    runtime_ready, runtime_detail = stt_service.runtime_status()
+    if not runtime_ready:
+        raise RuntimeError(runtime_detail)
+    model_ready, model_detail = stt_service.model_status()
+    if not model_ready:
+        raise RuntimeError(model_detail)
+
+    with tempfile.TemporaryDirectory(prefix="jarvis_selftest_") as directory:
+        wav = Path(directory) / "selftest.wav"
+        _synthesise_to_wav(wav)
+
+        result = stt_service.transcribe(wav, timeout_seconds=180.0)
+        if not result.success:
+            raise RuntimeError(result.message)
+
+        heard = result.text.lower()
+        missing = [word for word in DEEP_EXPECTED_WORDS if word not in heard]
+        if missing:
+            raise RuntimeError(
+                f"transcribed {result.text!r}, which is missing {', '.join(missing)}"
+            )
+        return f"heard {result.text.strip()!r}"
+
+
+_DEEP_CHECKS = (
+    ("Neural voice produces real audio", True, _check_neural_speech_produces_audio),
+    ("Real audio is transcribed back", True, _check_transcription_of_real_audio),
+)
+
+
 # required=True means "the product claims this capability unconditionally".
 # The two optional entries are genuinely optional: the classic speech tier
 # is a last resort, and Windows natural voices depend on the machine.
@@ -152,11 +274,18 @@ _CHECKS = (
 
 
 def run(argv: Optional[List[str]] = None) -> int:
-    results = [_probe(name, required, check) for name, required, check in _CHECKS]
+    deep = "--deep" in (argv or [])
+
+    checks = list(_CHECKS)
+    if deep:
+        checks += list(_DEEP_CHECKS)
+
+    results = [_probe(name, required, check) for name, required, check in checks]
     blocking = [result for result in results if result.blocking]
 
     frozen = getattr(sys, "frozen", False)
-    print(f"JARVIS self-test  (frozen={frozen}, {platform.system()} {platform.machine()})")
+    mode = "deep" if deep else "imports only"
+    print(f"JARVIS self-test  ({mode}, frozen={frozen}, {platform.system()} {platform.machine()})")
     print("-" * 72)
     for result in results:
         if result.ok:
@@ -166,12 +295,19 @@ def run(argv: Optional[List[str]] = None) -> int:
         else:
             mark = "absent  "
         print(f"  {mark} {result.name}: {result.detail}")
+    if not deep:
+        # Named rather than omitted: a check nobody ran must never be
+        # mistaken later for a check that passed.
+        for name, _required, _check in _DEEP_CHECKS:
+            print(f"  skipped  {name}: not run (pass --deep, with both models installed)")
     print("-" * 72)
 
     summary = {
         "frozen": bool(frozen),
+        "deep": deep,
         "ok": not blocking,
         "capabilities": [asdict(result) for result in results],
+        "skipped": [] if deep else [name for name, _r, _c in _DEEP_CHECKS],
     }
     print("SELFTEST_JSON " + json.dumps(summary, separators=(",", ":")))
 

@@ -127,3 +127,85 @@ def test_the_clean_install_test_runs_the_selftest_against_the_installed_exe():
     assert "SELF-TEST PASSED" in script, (
         "an exit code alone is not enough — an ambiguous pass must be treated as failure"
     )
+
+
+# ---------------------------------------------------------------------------
+# The deep pass: real audio out, real words back
+# ---------------------------------------------------------------------------
+
+def test_the_deep_checks_run_the_real_model_not_a_stage_of_it():
+    """Every voice test before this one measured the text normaliser or
+    the grapheme-to-phoneme conversion. Both can be perfect while the
+    part that makes the sound does nothing."""
+    import inspect
+
+    source = inspect.getsource(selftest._check_neural_speech_produces_audio)
+
+    assert "_synthesise_to_wav" in source
+    assert "silent" in source, "silence must be caught, not counted as audio"
+
+
+def test_silence_is_a_failure_not_a_pass():
+    assert selftest._MIN_PEAK > 0
+    assert selftest._MIN_SECONDS > 0
+
+
+def test_the_transcription_check_reads_back_what_this_build_just_spoke():
+    """Using a fixture committed to the repository would prove the
+    recogniser works. Using the audio this build just generated proves
+    the two halves work together in the installed artifact."""
+    import inspect
+
+    source = inspect.getsource(selftest._check_transcription_of_real_audio)
+
+    assert "_synthesise_to_wav" in source
+    assert "transcribe" in source
+
+
+def test_both_deep_checks_are_required_when_they_run():
+    for _name, required, _check in selftest._DEEP_CHECKS:
+        assert required is True
+
+
+def test_the_deep_checks_are_not_run_by_default_and_say_so():
+    """A check nobody ran must never be mistaken later for a check that
+    passed."""
+    completed = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "run_jarvis.py"), "--selftest"],
+        capture_output=True, text=True, timeout=180,
+    )
+    payload = json.loads(completed.stdout.split("SELFTEST_JSON ", 1)[1].splitlines()[0])
+
+    assert payload["deep"] is False
+    assert len(payload["skipped"]) == len(selftest._DEEP_CHECKS)
+    assert "skipped" in completed.stdout
+
+
+def test_the_neural_voice_really_produces_audio_here():
+    """Run for real, in this process, against the real Kokoro model.
+
+    Skipped only when the model is not installed on the machine running
+    the tests — a genuine absence, not a failure being converted into
+    one. The same check runs against the installed .exe in CI, where the
+    model is downloaded first through the app's own screens.
+    """
+    from app.voice.kokoro import assets, install
+
+    if not install.is_installed(assets.DEFAULT_VOICE_KEY):
+        pytest.skip("the neural voice model is not installed on this machine")
+
+    detail = selftest._check_neural_speech_produces_audio()
+
+    assert "peak" in detail
+    assert "bytes of WAV" in detail
+
+
+def test_the_clean_install_test_runs_the_deep_pass_against_the_installed_exe():
+    """The whole point: the audio has to be produced by the artifact the
+    user was sent, not by the source tree."""
+    script = (REPO_ROOT / "scripts" / "test_clean_install.py").read_text(encoding="utf-8")
+
+    assert "phase_g_real_voice_through_the_installed_product" in script
+    assert "deep=True" in script
+    assert "/voice/install" in script, "the models must be installed through the app's own screens"
+    assert "/onboarding/speech-model/install" in script
