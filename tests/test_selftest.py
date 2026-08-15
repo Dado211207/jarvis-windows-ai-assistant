@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from app.launcher import selftest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -198,6 +200,34 @@ def test_the_neural_voice_really_produces_audio_here():
 
     assert "peak" in detail
     assert "bytes of WAV" in detail
+
+
+def test_no_test_module_uses_pytest_without_importing_it():
+    """A guard for the defect that produced this test's own CI failure.
+
+    `test_the_neural_voice_really_produces_audio_here` calls
+    `pytest.skip()` when the neural voice model is absent. On the
+    development machine the model is installed, so that branch never
+    ran; on a clean runner it ran and raised `NameError: name 'pytest'
+    is not defined` instead of skipping — turning a legitimate skip into
+    a red suite and a failed installer build.
+
+    The general shape is what matters: a branch only reachable in an
+    environment nobody develops in. This is the cheapest possible check
+    for the specific instance of it, run across every test module rather
+    than only the one that was caught.
+    """
+    import re
+
+    offenders = []
+    for path in sorted((REPO_ROOT / "tests").glob("test_*.py")):
+        source = path.read_text(encoding="utf-8")
+        uses = re.search(r"^\s*(?!#).*\bpytest\.", source, re.MULTILINE)
+        imports = re.search(r"^\s*(?:import pytest\b|from pytest import)", source, re.MULTILINE)
+        if uses and not imports:
+            offenders.append(path.name)
+
+    assert offenders == [], f"these modules use pytest.* without importing it: {offenders}"
 
 
 def test_the_clean_install_test_runs_the_deep_pass_against_the_installed_exe():
