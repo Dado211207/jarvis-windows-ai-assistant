@@ -265,6 +265,13 @@ def test_the_pronunciation_lexicon_is_bundled():
 # frozen build.
 FASTER_WHISPER_HARD_DEPENDENCIES = (
     "ctranslate2", "huggingface_hub", "tokenizers", "onnxruntime", "av", "tqdm",
+    # Transitive, and proven necessary by a real frozen build rather than
+    # read off a metadata file: with the six above bundled, the installed
+    # JARVIS.exe still reported
+    #   "Speech recognition (faster-whisper): No module named 'requests'".
+    # huggingface_hub reaches requests by a route PyInstaller's static
+    # analysis does not follow, so nothing pulled it into the graph.
+    "requests",
 )
 
 

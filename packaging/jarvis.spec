@@ -120,6 +120,24 @@ _REQUIRED_PACKAGES = (
     # where a failure to collect stops the build instead of printing
     # "skipping" and producing a broken product.
     "av", "tokenizers", "huggingface_hub", "tqdm",
+    # And one level deeper again, proven the same way. With the six above
+    # bundled, the frozen build still could not import faster_whisper:
+    #
+    #   FAILED  Speech recognition (faster-whisper): No module named 'requests'
+    #
+    # huggingface_hub reaches `requests` through a path PyInstaller's
+    # static analysis does not follow, so nothing in the module graph
+    # pulled it in. It is a hard dependency of a hard dependency, which
+    # makes it exactly as load-bearing as the direct ones — the installed
+    # app is equally unable to transcribe without it.
+    #
+    # Its own dependencies (certifi, charset_normalizer, idna, urllib3)
+    # are reached by ordinary analysis once `requests` itself is in the
+    # graph, and are deliberately not listed: a name here that does not
+    # need to be would be guesswork, and the frozen self-test names
+    # anything still missing rather than leaving it to be discovered by
+    # a user.
+    "requests",
 )
 # Genuinely optional: absence changes no capability the product claims.
 # Nothing whose absence breaks an advertised feature may live here — see
