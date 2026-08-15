@@ -53,13 +53,55 @@ def test_fake_adapter_model_status_matches_availability():
 
 # --- STTService resolution + override ---
 
-def test_service_is_unavailable_by_default_without_faster_whisper():
+def test_service_is_unavailable_when_the_speech_runtime_is_missing():
+    """The runtime's absence is pinned, not inherited from the machine.
+
+    This test used to assert `available is False` on the strength of two
+    claims in its own comment, both wrong: that faster-whisper is "not
+    installed in this environment", and that "even if it were,
+    JARVIS_STT_ENABLED defaults to false" — it defaults to True
+    (app/config.py). It passed only because `import faster_whisper`
+    happened to fail everywhere it had ever run.
+
+    The Windows machine that builds the installer does have
+    faster-whisper, and the moment its own missing dependency was fixed
+    the import started working and this assertion became false. The
+    product was more capable and the test called it a regression.
+    """
     service = STTService()
-    available, reason = service.is_available()
-    # In this environment faster-whisper is genuinely not installed, and
-    # even if it were, JARVIS_STT_ENABLED defaults to false.
+    with patch.object(
+        FasterWhisperAdapter, "runtime_status",
+        return_value=(False, "The local speech engine isn't available in this installation."),
+    ):
+        available, reason = service.is_available()
+
     assert available is False
     assert reason
+
+
+def test_service_is_available_when_the_runtime_loads_and_input_is_on():
+    """The other half, which nothing covered — and which is the state
+    the installed product is actually in once its dependencies are all
+    bundled."""
+    service = STTService()
+    with patch.object(FasterWhisperAdapter, "runtime_status", return_value=(True, "ready")), \
+         patch("app.voice.stt.input_enabled", return_value=True):
+        available, _reason = service.is_available()
+
+    assert available is True
+
+
+def test_the_on_off_switch_wins_over_a_working_runtime():
+    """Whether the feature is offered is policy about the product, not a
+    property of the engine — so a perfectly good runtime must still
+    report unavailable while the switch is off."""
+    service = STTService()
+    with patch.object(FasterWhisperAdapter, "runtime_status", return_value=(True, "ready")), \
+         patch("app.voice.stt.input_enabled", return_value=False):
+        available, reason = service.is_available()
+
+    assert available is False
+    assert "turned off" in reason
 
 
 def test_service_transcribe_returns_the_unavailable_reason_as_message():
@@ -85,11 +127,20 @@ def test_service_override_makes_a_fake_adapter_authoritative():
 
 
 def test_service_override_none_restores_the_real_adapter():
+    """Asserts restoration directly rather than through a side effect.
+
+    This used to check `available is False`, using "the real adapter
+    cannot work here" as a proxy for "the fake is gone". That proxy
+    stopped holding on a machine where the real adapter *can* work, so
+    the answer now comes from the real adapter and is compared against a
+    value only the real adapter could produce."""
     service = STTService()
     service.set_adapter_override(FakeSTTAdapter())
     service.set_adapter_override(None)
-    available, _reason = service.is_available()
-    assert available is False  # back to the real (unconfigured) adapter
+
+    sentinel = (False, "answer from the real adapter, not the fake")
+    with patch.object(FasterWhisperAdapter, "runtime_status", return_value=sentinel):
+        assert service.is_available() == sentinel
 
 
 def test_service_model_status_delegates_to_the_active_adapter():
