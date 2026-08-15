@@ -197,7 +197,41 @@ def _forbidden_module(name):
     return any(marker == leaf for marker in _FORBIDDEN_FILE_MARKERS)
 
 
+def _is_installed(name):
+    """Whether *name* can actually be found in this build environment.
+
+    Asked before collecting, because `collect_all()` does not fail for a
+    package that is not there: it logs "skipping data collection for
+    module X as it is not a package" and returns three empty lists. The
+    guard below used to be a try/except around it, which meant it could
+    never fire — and a required package that was simply not installed
+    was silently dropped, producing an installer whose only symptom was
+    a ModuleNotFoundError on somebody's machine.
+
+    That is exactly how `requests` was left out of a build that reported
+    success: nothing raised, nothing failed, and the packaged app could
+    not import faster_whisper.
+    """
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 for _pkg in _REQUIRED_PACKAGES + _OPTIONAL_PACKAGES:
+    if not _is_installed(_pkg):
+        if _pkg in _REQUIRED_PACKAGES:
+            raise SystemExit(
+                f"packaging/jarvis.spec: required package {_pkg!r} is not installed in "
+                "this build environment, so it cannot be bundled. The installer must "
+                "not be built without it — a JARVIS.exe missing one of these is broken "
+                "in a way that only shows up at runtime, on somebody else's computer. "
+                "Add it to requirements-windows.txt."
+            )
+        print(f"packaging/jarvis.spec: optional package {_pkg!r} not present; skipping.")
+        continue
     try:
         _pkg_datas, _pkg_binaries, _pkg_hiddenimports = collect_all(_pkg)
     except Exception as _exc:  # noqa: BLE001

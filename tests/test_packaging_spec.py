@@ -321,3 +321,67 @@ def test_a_required_package_that_cannot_be_collected_stops_the_build():
 
     assert "raise SystemExit" in content
     assert "_REQUIRED_PACKAGES" in content
+
+
+def test_a_required_package_that_is_not_installed_stops_the_build():
+    """The guard above was unable to fire, and a real build proved it.
+
+    `collect_all()` does not raise for a package that is not installed —
+    it logs "skipping data collection ... as it is not a package" and
+    returns three empty lists. A try/except around it therefore caught
+    nothing, so a required package that was simply absent was dropped
+    silently and the build reported success. The installed product's
+    only symptom was a ModuleNotFoundError on somebody else's computer.
+
+    Presence has to be checked before collection, not inferred from the
+    absence of an exception.
+    """
+    content = _read(SPEC_PATH)
+
+    assert "find_spec" in content, (
+        "the spec must check a required package is actually installed; "
+        "collect_all() succeeding proves nothing"
+    )
+    assert "is not installed in" in content
+
+
+def test_the_presence_check_is_what_guards_the_required_list():
+    """Ordering matters: checked before collect_all(), or the silent
+    path is still reachable."""
+    content = _read(SPEC_PATH)
+    loop = content.split("for _pkg in _REQUIRED_PACKAGES", 1)[1]
+
+    assert loop.index("_is_installed(_pkg)") < loop.index("collect_all(_pkg)")
+
+
+def test_every_required_package_is_declared_in_a_requirements_file():
+    """A package the spec insists on bundling has to be one the build
+    environment is actually told to install. `requests` was neither —
+    it was reached only by pip's resolution of a transitive dependency,
+    until a build environment turned up without it."""
+    requirements = "\n".join(
+        (REPO_ROOT / name).read_text(encoding="utf-8")
+        for name in ("requirements.txt", "requirements-windows.txt")
+    ).lower()
+
+    # Import name -> distribution name, where they differ.
+    distributions = {"faster_whisper": "faster-whisper", "huggingface_hub": "huggingface-hub"}
+    # faster-whisper's own pinned dependencies, guaranteed present by
+    # pip resolving `faster-whisper==1.2.0`. Left implicit deliberately:
+    # pinning them here would let this file and faster-whisper's metadata
+    # disagree about versions. The spec's find_spec() guard fails the
+    # build if any of them is nevertheless absent, so a wrong assumption
+    # here surfaces at build time rather than on a user's machine.
+    transitively_declared = {"ctranslate2", "tokenizers", "onnxruntime", "av", "tqdm", "numpy"}
+
+    missing = []
+    for package in _spec_literal("_REQUIRED_PACKAGES"):
+        if package in transitively_declared:
+            continue
+        name = distributions.get(package, package).replace("_", "-")
+        if name not in requirements:
+            missing.append(package)
+
+    assert not missing, (
+        f"required by the spec but not declared in any requirements file: {missing}"
+    )

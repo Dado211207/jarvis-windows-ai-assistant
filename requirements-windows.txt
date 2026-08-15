@@ -48,9 +48,26 @@
 #     *optional* package by the PyInstaller spec — if it cannot be
 #     bundled the tier reports itself unavailable, which is exactly what
 #     it already does on a machine that lacks it.
+#   - requests: declared here rather than left to pip's resolution of
+#     faster-whisper -> huggingface_hub. The packaged app reported
+#     "Speech recognition (faster-whisper): No module named 'requests'"
+#     from a build that had otherwise succeeded, because the package was
+#     not present in the build environment for PyInstaller to bundle.
+#     A dependency the installed product cannot start without is one
+#     this file should name, not one to hope a transitive resolution
+#     keeps providing.
 pywin32==312
 keyring==25.7.0
 winsdk==1.0.0b10
 pywebview==6.2.1
 pythonnet==3.1.0
 faster-whisper==1.2.0
+requests>=2.31.0
+# Reached only through faster-whisper and pythonnet respectively, and
+# both are things the installed product cannot start without: the first
+# is imported by faster_whisper at package-import time, the second is
+# how pythonnet loads the CLR for the native window. Named here for the
+# same reason as requests — a build environment that resolves them
+# differently should fail loudly at pip, not quietly at PyInstaller.
+huggingface-hub>=0.13
+clr-loader>=0.2.6
