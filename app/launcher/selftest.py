@@ -41,6 +41,8 @@ import sys
 from dataclasses import asdict, dataclass
 from typing import Callable, List, Optional
 
+from app.launcher.safe_output import say
+
 
 @dataclass
 class CapabilityResult:
@@ -285,8 +287,8 @@ def run(argv: Optional[List[str]] = None) -> int:
 
     frozen = getattr(sys, "frozen", False)
     mode = "deep" if deep else "imports only"
-    print(f"JARVIS self-test  ({mode}, frozen={frozen}, {platform.system()} {platform.machine()})")
-    print("-" * 72)
+    say(f"JARVIS self-test  ({mode}, frozen={frozen}, {platform.system()} {platform.machine()})")
+    say("-" * 72)
     for result in results:
         if result.ok:
             mark = "OK      "
@@ -294,13 +296,13 @@ def run(argv: Optional[List[str]] = None) -> int:
             mark = "FAILED  "
         else:
             mark = "absent  "
-        print(f"  {mark} {result.name}: {result.detail}")
+        say(f"  {mark} {result.name}: {result.detail}")
     if not deep:
         # Named rather than omitted: a check nobody ran must never be
         # mistaken later for a check that passed.
         for name, _required, _check in _DEEP_CHECKS:
-            print(f"  skipped  {name}: not run (pass --deep, with both models installed)")
-    print("-" * 72)
+            say(f"  skipped  {name}: not run (pass --deep, with both models installed)")
+    say("-" * 72)
 
     summary = {
         "frozen": bool(frozen),
@@ -309,16 +311,16 @@ def run(argv: Optional[List[str]] = None) -> int:
         "capabilities": [asdict(result) for result in results],
         "skipped": [] if deep else [name for name, _r, _c in _DEEP_CHECKS],
     }
-    print("SELFTEST_JSON " + json.dumps(summary, separators=(",", ":")))
+    say("SELFTEST_JSON " + json.dumps(summary, separators=(",", ":")))
 
     if blocking:
-        print(
+        say(
             f"\nSELF-TEST FAILED: {len(blocking)} required capability/capabilities could not "
             "load in this build.",
         )
         for result in blocking:
-            print(f"  - {result.name}: [{result.error_type}] {result.detail}")
+            say(f"  - {result.name}: [{result.error_type}] {result.detail}")
         return 1
 
-    print("\nSELF-TEST PASSED: every required capability loaded.")
+    say("\nSELF-TEST PASSED: every required capability loaded.")
     return 0

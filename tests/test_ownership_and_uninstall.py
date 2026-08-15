@@ -303,3 +303,81 @@ def test_the_script_checks_the_startup_shortcut_at_the_documented_path():
 
     assert "expected_startup_shortcut" in script
     assert '"Startup" / "JARVIS.lnk"' in script
+
+
+# ---------------------------------------------------------------------------
+# It must not hang the uninstaller
+# ---------------------------------------------------------------------------
+
+def test_cleanup_exits_cleanly_with_no_stdout_at_all():
+    """The condition Inno's Exec creates, and the one that hung a real
+    silent uninstall for two minutes.
+
+    JARVIS.exe is built --windowed, so it has no console; launched with
+    Exec(..., SW_HIDE, ewWaitUntilTerminated) its sys.stdout is None and
+    a bare print() raises. PyInstaller's windowed bootloader turns that
+    into a modal dialog nobody can see, so the process never exits and
+    the uninstaller waits behind it:
+
+        === Phase B.1: Silent uninstall (no /DELETEDATA flag) ===
+        FAILED: unins000.exe did not finish within 120.0s
+        Terminate orphan process: pid (8760) (JARVIS)
+
+    The same code prints fine wherever something supplies a pipe, which
+    is why every test that captured output passed.
+    """
+    import sys
+
+    from app.launcher import uninstall
+
+    saved = sys.stdout
+    sys.stdout = None
+    try:
+        assert uninstall.run([]) == 0
+    finally:
+        sys.stdout = saved
+
+
+def test_the_selftest_also_survives_having_no_stdout():
+    """Same executable, same bootloader, same hazard — it escapes today
+    only because the clean-install script hands it a pipe."""
+    import sys
+
+    from app.launcher import selftest
+
+    saved = sys.stdout
+    sys.stdout = None
+    try:
+        selftest.run([])       # must not raise
+    finally:
+        sys.stdout = saved
+
+
+def test_no_launcher_subcommand_writes_with_a_bare_print():
+    """The generalisable form. Any entry point the installed .exe can be
+    launched into without a console has to route output through
+    app/launcher/safe_output.py."""
+    import re
+
+    for name in ("uninstall.py", "selftest.py", "safe_output.py"):
+        source = (REPO_ROOT / "app" / "launcher" / name).read_text(encoding="utf-8")
+        offenders = re.findall(r"(?m)^\s*print\(", source)
+        assert not offenders, f"app/launcher/{name} uses a bare print(): {offenders}"
+
+
+def test_the_cleanup_still_reports_when_something_is_listening():
+    """Hardening output must not silence it — the clean-install test
+    parses this."""
+    import io
+    import sys
+
+    from app.launcher import uninstall
+
+    buffer = io.StringIO()
+    saved, sys.stdout = sys.stdout, buffer
+    try:
+        uninstall.run([])
+    finally:
+        sys.stdout = saved
+
+    assert uninstall.MARKER in buffer.getvalue()

@@ -25,30 +25,52 @@ rather than to abort halfway and leave a half-removed installation.
 """
 
 import json
-import sys
 from typing import List
+
+from app.launcher.safe_output import flush, say
 
 MARKER = "UNINSTALL_JSON "
 
 
 def run(argv: List[str]) -> int:
-    from app.core.ownership import remove
+    """Remove what the application created, then exit. Always 0.
 
+    **Nothing in here may raise, and nothing may block.** The uninstaller
+    launches this with `Exec(..., SW_HIDE, ewWaitUntilTerminated)` and
+    waits for it, in a build with no console: an unhandled exception
+    becomes a modal dialog nobody can see, and the uninstall hangs behind
+    it until something kills the process. That is exactly what happened
+    the first time this ran on a real Windows machine — the progress
+    output below, harmless everywhere that supplies a pipe, wrote to a
+    `None` stdout and stopped a silent uninstall dead for two minutes.
+
+    Hence safe_output for every line, and a catch-all around the work:
+    an uninstall cleanup that fails should say so and let the uninstall
+    continue, because the files are going regardless and a half-removed
+    installation is worse than an orphaned shortcut.
+    """
     purge = "--purge-data" in argv
 
-    report = remove(purge_data=purge)
+    try:
+        from app.core.ownership import remove
 
-    print("JARVIS uninstall cleanup")
+        report = remove(purge_data=purge)
+    except BaseException as exc:  # noqa: BLE001 — must never reach the bootloader
+        say(f"JARVIS uninstall cleanup could not run: {exc!r}")
+        flush()
+        return 0
+
+    say("JARVIS uninstall cleanup")
     for line in report.removed:
-        print(f"  removed:     {line}")
+        say(f"  removed:     {line}")
     for line in report.not_present:
-        print(f"  not present: {line}")
+        say(f"  not present: {line}")
     for line in report.failed:
-        print(f"  FAILED:      {line}")
+        say(f"  FAILED:      {line}")
     for line in report.kept:
-        print(f"  kept:        {line}")
+        say(f"  kept:        {line}")
 
     payload = dict(report.as_dict(), purge_data=purge)
-    print(MARKER + json.dumps(payload))
-    sys.stdout.flush()
+    say(MARKER + json.dumps(payload))
+    flush()
     return 0
