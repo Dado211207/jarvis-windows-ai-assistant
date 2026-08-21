@@ -1122,11 +1122,16 @@ class DiagnosticsResponse(BaseModel):
 # There is deliberately no automatic update check. JARVIS makes no
 # network request of its own accord — the only outbound traffic in the
 # whole application is a chat message to a provider the user configured.
-# A background version poll would break that, and it could not work
-# anyway: this project is private, so an unauthenticated GitHub API call
-# would simply 404. "Check for updates" therefore opens the releases page
-# in the user's browser and lets them compare versions themselves, which
-# is honest about what it does rather than implying a check happened.
+# A background version poll would break that, and no amount of care with
+# the request would put the traffic back.
+#
+# (This used to add that a poll could not work anyway, the repository
+# being private. It is public now, so that half is simply wrong — and it
+# was never the reason. The reason is the sentence above.)
+#
+# "Check for updates" therefore opens the releases page in the user's
+# browser and lets them compare versions themselves, which is honest
+# about what it does rather than implying a check happened.
 # ---------------------------------------------------------------------------
 
 class AboutResponse(BaseModel):
