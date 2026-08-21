@@ -1128,6 +1128,178 @@ def phase_c_reinstall_then_explicit_data_removal(installer: Path, log_dir: Path)
 
 
 # ---------------------------------------------------------------------------
+# Phase H: upgrading from the v0.1 ZIP
+# ---------------------------------------------------------------------------
+
+# Where a v0.1 ZIP install's database is placed for this test.
+#
+# Not invented: v0.1's app/config.py declared
+# `jarvis_db_path: str = "data/jarvis.db"` — a path relative to the
+# process working directory — and the ZIP shipped a JARVIS\ folder whose
+# JARVIS.exe made that folder the working directory. Downloads is one of
+# the two places a downloaded ZIP is extracted when nobody chooses
+# anywhere, and it is one of the candidates
+# app/core/legacy_migration.py::legacy_db_candidates() actually checks.
+#
+# This phase therefore exercises the real candidate list, not the
+# JARVIS_LEGACY_DB override, which would prove only that a path passed
+# in can be read.
+LEGACY_MEMORIES = (
+    "v0.1 memory one: I take my coffee black",
+    "v0.1 memory two: the spare key is with the neighbour",
+)
+LEGACY_CONVERSATION = "a conversation from the old version"
+
+
+def legacy_zip_db_path() -> Path:
+    return Path.home() / "Downloads" / "JARVIS" / "data" / "jarvis.db"
+
+
+def _create_legacy_v01_database(path: Path) -> None:
+    """A database shaped the way v0.1 left one: memories and
+    conversations, and none of the tables added since."""
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                tags TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        for content in LEGACY_MEMORIES:
+            conn.execute("INSERT INTO memories (content) VALUES (?)", (content,))
+        conn.execute(
+            "INSERT INTO conversations (role, content) VALUES ('user', ?)",
+            (LEGACY_CONVERSATION,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _memories_in(path: Path) -> list:
+    import sqlite3
+
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        return [row[0] for row in conn.execute("SELECT content FROM memories ORDER BY id")]
+    finally:
+        conn.close()
+
+
+def phase_h_upgrade_from_a_v01_zip_install(installer: Path, log_dir: Path) -> None:
+    """Install over a v0.1 ZIP install's data and prove it comes across.
+
+    Runs last, after phase C has removed the application and its data, so
+    it starts from a genuinely clean machine — which is the only state in
+    which the migration is supposed to fire at all.
+
+    Cleans up only what it created: the legacy folder is removed at the
+    end if this phase made it, and left alone if it was already there.
+    """
+    legacy = legacy_zip_db_path()
+    created_legacy_root = not legacy.parent.parent.exists()
+
+    if legacy.exists():
+        print(f"SKIPPED: {legacy} already exists; this phase will not touch a real one.")
+        return
+
+    _step("Phase H.1: Create a v0.1 ZIP install's database in a real legacy location")
+    _create_legacy_v01_database(legacy)
+    legacy_bytes_before = legacy.read_bytes()
+    print(f"OK: {legacy} ({len(legacy_bytes_before)} bytes, {len(LEGACY_MEMORIES)} memories)")
+
+    try:
+        _step("Phase H.2: Install the packaged application over it")
+        run_silent(installer, log_dir / "install-3.log")
+        exe_path = expected_install_dir() / "JARVIS.exe"
+        if not exe_path.is_file():
+            _fail(f"Expected {exe_path} after reinstalling for the upgrade test.")
+
+        _step("Phase H.3: Launch it and let the migration run")
+        proc = subprocess.Popen([str(exe_path)], cwd=str(expected_install_dir()))
+        try:
+            wait_for_health(proc)
+            wait_for_desktop_ready()
+        finally:
+            subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
+            wait_for_pid_exit(proc.pid)
+            wait_for_health_to_stop()
+            _wait_for_port_release()
+
+        _step("Phase H.4: Verify the v0.1 records arrived in the AppData database")
+        destination = expected_db_path()
+        if not destination.is_file():
+            _fail(f"No database at {destination} after the first launch.")
+        migrated = _memories_in(destination)
+        if migrated != list(LEGACY_MEMORIES):
+            _fail(
+                "The v0.1 memories did not come across.\n"
+                f"  Expected: {list(LEGACY_MEMORIES)}\n"
+                f"  Found:    {migrated}"
+            )
+        print(f"OK: {len(migrated)} v0.1 memories present in {destination}")
+
+        _step("Phase H.5: Restart and confirm nothing was duplicated")
+        proc = subprocess.Popen([str(exe_path)], cwd=str(expected_install_dir()))
+        try:
+            wait_for_health(proc)
+            wait_for_desktop_ready()
+        finally:
+            subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
+            wait_for_pid_exit(proc.pid)
+            wait_for_health_to_stop()
+            _wait_for_port_release()
+
+        after_restart = _memories_in(destination)
+        if after_restart != list(LEGACY_MEMORIES):
+            _fail(
+                "A second launch changed the migrated data — the migration is not idempotent.\n"
+                f"  After first launch:  {migrated}\n"
+                f"  After second launch: {after_restart}"
+            )
+        print("OK: a second launch duplicated nothing")
+
+        _step("Phase H.6: Confirm the original v0.1 file was never modified")
+        if not legacy.is_file():
+            _fail(f"The legacy database at {legacy} was removed. It must never be.")
+        if legacy.read_bytes() != legacy_bytes_before:
+            _fail(f"The legacy database at {legacy} was modified. It must only ever be read.")
+        print("OK: the v0.1 database is byte-for-byte as it was")
+
+        _step("Phase H.7: Uninstall and remove the data this phase created")
+        run_silent(find_uninstaller(), log_dir / "uninstall-3.log", extra_args=["/DELETEDATA=yes"])
+        if not wait_for_path_removed(expected_install_dir()):
+            _fail(f"{expected_install_dir()} was still present after the upgrade-test uninstall.")
+        print("OK: removed")
+    finally:
+        # Only ever what this phase made.
+        import shutil
+
+        try:
+            if created_legacy_root:
+                shutil.rmtree(legacy.parent.parent, ignore_errors=True)
+            else:
+                legacy.unlink(missing_ok=True)
+                legacy.parent.rmdir()
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
 
@@ -1184,6 +1356,9 @@ def main() -> None:
 
     phase_b_uninstall_preserves_data_by_default(log_dir)
     phase_c_reinstall_then_explicit_data_removal(installer, log_dir)
+    # Last, because it is the only phase that needs a machine with no
+    # JARVIS data on it — which is exactly what phase C leaves behind.
+    phase_h_upgrade_from_a_v01_zip_install(installer, log_dir)
 
     print("\nALL CLEAN-INSTALL CHECKS PASSED")
 

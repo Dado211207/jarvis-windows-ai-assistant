@@ -47,6 +47,24 @@ class Database:
     # --- memories ---
 
     def add_memory(self, content: str, tags: Optional[str] = None) -> int:
+        """Insert one memory row.
+
+        **The only place a memory row is ever created**, which is why the
+        secret check is repeated here. `app/core/memory.py` checks first
+        and returns a readable refusal; this raises. A caller that forgot
+        to check gets an exception rather than quietly writing a
+        credential to disk — the guarantee belongs at the insert, not at
+        each of the callers that might one day exist.
+
+        Raises SecretRejected, which carries the *kind* of secret and
+        never the value.
+        """
+        from app.core.secret_guard import SecretRejected, find_secret
+
+        label = find_secret(content) or find_secret(tags or "")
+        if label:
+            raise SecretRejected(label)
+
         conn = self._get_conn()
         cur = conn.execute(
             "INSERT INTO memories (content, tags) VALUES (?, ?)",

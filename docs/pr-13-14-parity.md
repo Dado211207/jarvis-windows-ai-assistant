@@ -17,24 +17,29 @@ Neither PR is merged or closed by this pass.
 
 ## Parity table
 
+> **Updated.** The two gaps this audit found — the secret guard and the
+> v0.1 data migration — have since been implemented. The table and the
+> sections below reflect that; the original findings are kept because
+> what was missing, and why it mattered, is the useful part of an audit.
+
 | Capability | Status in #15 | Detail |
 |---|---|---|
 | Persistent settings | **Implemented differently, and narrower** | See below |
 | Personality / preferences memory | **Implemented differently** | See below |
-| Secret guard | **Missing** | See below |
+| Secret guard | **Now present** | `app/core/secret_guard.py`, see below |
 | Installer | **Supersedes fully** | `packaging/jarvis.iss` replaces `installer/JARVIS.iss` |
 | Onboarding | **Supersedes fully** | `app/core/onboarding.py` + `/ui/setup` |
 | DPAPI / keyring credential storage | **Supersedes fully** | `app/core/credentials.py` |
 | AppData paths | **Supersedes fully** | `app/core/app_paths.py` replaces `app/core/paths.py` |
-| Data migration from an alpha install | **Missing** | See below |
+| Data migration from an alpha install | **Now present** | `app/core/legacy_migration.py`, see below |
 | Diagnostics | **Supersedes fully** | `app/core/diagnostics.py`, eight sections |
 | Startup-with-Windows option | **Supersedes fully** | `app/launcher/startup_shortcut.py` |
 | Uninstall data preservation / removal | **Supersedes fully** | `app/core/ownership.py` + the `.iss` `usUninstall` hook |
-| Windows installer smoke testing | **Supersedes fully** | `scripts/test_clean_install.py`, seven phases |
+| Windows installer smoke testing | **Supersedes fully** | `scripts/test_clean_install.py`, eight phases |
 
 ---
 
-## The three that are not simple wins
+## The four that needed more than a yes or no
 
 ### Persistent settings — narrower on purpose, and narrower than intended
 
@@ -91,47 +96,79 @@ natural phrasings — `remember that I prefer dark roast` is not a route in
 gating that #13 does not have: while privacy mode is on, a memory write
 is refused rather than performed quietly.
 
-### Secret guard — genuinely missing
+### Secret guard — was missing, now ported
 
-PR #13's `app/core/secret_guard.py` scans **every value written to
-settings or memory** and refuses to persist anything shaped like a
-credential: `sk-ant-`, `sk-`, GitHub, Netlify, AWS, Google and Slack
-tokens, private keys, bearer tokens, and `password=`/`token=`/`secret=`
-assignments.
+**The finding.** PR #13's `secret_guard.py` scans every value written to
+settings or memory and refuses anything credential-shaped. PR #15 had no
+equivalent: `add_memory()` stored what it was given, so `memory add my
+key is sk-ant-…` was persisted verbatim, in plain text, in a file that
+lives on the user's disk until they delete it.
 
-PR #15 has no equivalent. `app/core/memory.py::add_memory()` stores what
-it is given.
+`app/core/redaction.py` was not the answer and still is not: it redacts
+**tool inputs** headed for a log line, the `action_lifecycle` audit trail
+or a WebSocket event, and never runs on the memory write path. Both
+exist; neither replaces the other.
 
-`app/core/redaction.py` is a different mechanism for a different problem
-— it redacts **tool inputs** before they reach a log line, the
-`action_lifecycle` audit trail or a WebSocket event. It does not run on
-the memory write path.
+**What was done.** `app/core/secret_guard.py`, adapted rather than
+cherry-picked. Enforced in two places: `app/core/memory.py::add_memory()`
+returns a readable refusal, and `db/database.py::Database.add_memory()` —
+the only place a memory row is ever inserted — raises `SecretRejected`,
+so a caller that forgets to check cannot quietly write a credential. A
+test greps `app/` and `db/` to prove that insert is still the only one.
 
-So in #15, someone who types `memory add my key is sk-ant-...` gets
-exactly that stored in the database in plaintext. `preferences.py`
-refuses to store a credential, but only because its allowlist has no key
-that could hold one — not because it inspects values.
+**One deliberate change from #13.** That version rejected any sentence
+merely *containing* a credential noun, so "remind me to change my
+password on Friday" could not be saved. The trade-off was stated and
+defensible, but it makes the feature annoying in the common case where
+no secret is present. The port splits the decision: a credential-shaped
+string is always refused; a credential noun *with a value attached* is
+refused; a bare mention is allowed. The residual risk — a sentence that
+conveys a credential with no assignment structure at all — is stated in
+the module docstring rather than papered over.
 
-**This is a real gap, and #13 has the better answer.** It is recorded
-here rather than fixed, because this pass is finishing the v0.2 release
-candidate and not adding to it.
+**The value is never echoed.** `find_secret()` returns a label, never
+the matched text, and so does `SecretRejected`. A guard that quotes what
+it caught puts the secret in the API response, the event stream and the
+log.
 
-### Data migration — genuinely missing
+### Data migration — was missing, now ported
 
-PR #14's `app/core/migration.py` performs a one-time migration of an
-alpha-era ZIP install's `data\jarvis.db` into the new AppData layout:
-never overwrites an existing destination, never deletes the legacy
-source, backs it up first, atomic copy, integrity-checked before and
-after. 222 lines of tests.
+**The finding.** PR #14's `migration.py` carries an alpha-era ZIP
+install's `data\jarvis.db` into the AppData layout. PR #15 had nothing
+equivalent — `db/migrations.py` is schema creation only — so someone
+upgrading from the v0.1 ZIP got a fresh empty database while their old
+one sat in the ZIP folder, untouched but unread.
 
-PR #15 has nothing equivalent. `db/migrations.py` is schema creation
-only. Someone who used a v0.1 alpha ZIP and then installs v0.2 gets a
-fresh, empty database; their old one is still sitting in the ZIP folder,
-untouched but unread.
+**What was done.** `app/core/legacy_migration.py`, called from
+`brain.initialise()` immediately before `create_tables()`, because once
+an empty database exists at the destination there is nothing left to
+migrate into.
 
-How much this matters depends on whether anyone actually ran the alpha
-ZIP long enough to accumulate memories worth keeping. It is a smaller
-gap than the secret guard, but it is a gap, and #14 has the answer.
+**Two deliberate changes from #14.**
+
+1. **#14 looked in the wrong place.** Its `legacy_db_candidates()`
+   returned `installed_program_dir() / "data" / "jarvis.db"` — the *v0.2
+   install directory*, which is not where a v0.1 ZIP was ever extracted,
+   so in the real upgrade case it would have found nothing. The honest
+   answer is that v0.1 declared `jarvis_db_path = "data/jarvis.db"`,
+   relative to the working directory, and the ZIP could be extracted
+   anywhere. This port checks a bounded list of the locations v0.1's own
+   QUICKSTART named plus the default extraction folders, and accepts
+   `JARVIS_LEGACY_DB` for anyone whose copy is elsewhere. No globbing, no
+   `os.walk`, no disk scan — enforced by a test.
+2. **#14 skipped on the destination merely existing.** That means it
+   would refuse in the ordinary case, because `create_tables()` creates
+   the destination on first launch. This port distinguishes an empty
+   schema (safe to replace) from a database with rows in it (never
+   touched).
+
+Everything else is #14's design, which was sound: read-only source, a
+backup first, copy-to-temp-then-rename, integrity checked before and
+after, current schema applied afterwards, and a marker so the decision is
+made once. One addition: the whole entry point is wrapped so it cannot
+raise, because it runs on the startup path of a windowed build with no
+console, where an unhandled exception becomes a modal dialog nobody can
+dismiss.
 
 ---
 
@@ -152,15 +189,31 @@ gap than the secret guard, but it is a gap, and #14 has the answer.
 
 ## Recommendation
 
-If PR #15 merges, #13 and #14 should be closed as superseded — **but not
-silently**, and not before the two gaps above are tracked as their own
-work:
+Both gaps this audit found are now closed, so **PR #15 can be described
+as fully superseding #13 and #14** — with one caveat, stated rather than
+buried.
 
-1. **The secret guard.** Port `app/core/secret_guard.py` and apply it to
-   the memory write path. This is the one worth doing.
-2. **Alpha data migration.** Port `app/core/migration.py`, or decide
-   explicitly that v0.1 alpha data is not worth carrying and say so in
-   the release notes.
+**The caveat.** #13's presentation and personality settings — assistant
+name, language, response style, tone, theme, compact mode, default page,
+pinned commands — genuinely do not exist in #15, and are not planned. If
+"superseded" is meant to imply "nothing is lost", that is the list of
+things that are. They are a deliberate exclusion, not an oversight: v0.2
+is an infrastructure and packaging milestone, and those are v0.3 product
+features that can be built on top of `preferences.py` whenever they are
+wanted.
 
-Closing them without recording those would lose two implemented,
-tested features that nothing in #15 replaces.
+Everything else #13 and #14 do is present here, or present in a form
+that is stronger:
+
+- the secret guard, now enforced at the single insert as well as at the
+  handler, and calibrated to stop refusing ordinary sentences;
+- the v0.1 migration, now looking where a v0.1 install actually is and
+  distinguishing an empty destination from somebody's data;
+- the installer, onboarding, credential storage, AppData paths,
+  diagnostics, startup shortcut, uninstall behaviour and packaged
+  acceptance testing, each superseded outright.
+
+**So: close #13 and #14 as superseded once #15 is merged** — not before,
+and with the exclusion above written into whatever closes them, so the
+decision to drop those eight settings is recorded as a decision rather
+than lost as an accident.

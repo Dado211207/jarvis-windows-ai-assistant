@@ -31,9 +31,9 @@ from app.voice.kokoro.normalise import (
 # ---------------------------------------------------------------------------
 
 def test_a_windows_path_is_read_the_way_a_person_reads_it():
-    spoken = normalise(r"Open C:\Users\Dado\Documents\report.pdf")
+    spoken = normalise(r"Open C:\Users\TestUser\Documents\report.pdf")
 
-    assert spoken == "Open C drive, Users, Dado, Documents, report dot pdf"
+    assert spoken == "Open C drive, Users, TestUser, Documents, report dot pdf"
     assert "\\" not in spoken
 
 

@@ -10,7 +10,8 @@ most: file paths, acronyms, version numbers, URLs, dates.
 So the fallback is not a phonemizer. It is *rewriting the text into words
 that are already in the dictionary*, which is both licence-clean and, for
 this content, more correct than letter-to-sound guessing would be:
-"C:\\Users\\Dado" read phonetically is noise, while "C drive, Users, Dado"
+"C:\\Users\\TestUser" read phonetically is noise, while "C drive, Users,
+TestUser"
 is what a person would say.
 
 Everything here is pure string work — no model, no network, no
@@ -153,7 +154,7 @@ def expand_times(text: str) -> str:
 
 
 def expand_windows_paths(text: str) -> str:
-    """`C:\\Users\\Dado\\Documents` -> `C drive, Users, Dado, Documents`.
+    """`C:\\Users\\TestUser\\Documents` -> `C drive, Users, TestUser, Documents`.
 
     Read as a path, the way someone would say it out loud, rather than
     as a string of unpronounceable characters.

@@ -41,6 +41,13 @@ class Brain:
         if self._ready:
             return
 
+        # Before create_tables(), and that ordering is the whole point:
+        # once an empty database exists at the destination there is
+        # nothing left to carry a v0.1 install's data into. A no-op in
+        # dev mode, and never able to raise — see the module docstring.
+        from app.core.legacy_migration import migrate_if_needed
+        migrate_if_needed()
+
         from db.migrations import create_tables
         create_tables()
 

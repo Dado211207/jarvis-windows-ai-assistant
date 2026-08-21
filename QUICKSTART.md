@@ -25,6 +25,19 @@ window to the front rather than starting a second one.
 
 ---
 
+## Step 1b — Coming from the v0.1 ZIP?
+
+Your old memories and history come across automatically on first launch,
+if JARVIS can find them. Your original file is only ever read — never
+moved, changed or deleted.
+
+It looks in a short fixed list of locations (the old ZIP had no fixed
+install path), and does nothing at all if this installation already has
+data in it. Full detail, including how to point it at a database
+elsewhere: **[`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md)**.
+
+---
+
 ## Step 2 — First run
 
 Two questions, once:
@@ -124,8 +137,11 @@ never removed by JARVIS's uninstaller, even if JARVIS installed it.
 
 - **Privacy mode** (tray menu or Settings) stops conversation history
   being replayed to the provider — each message goes alone.
-- **Memory** is explicit. JARVIS saves what you ask it to save, and the
-  Memory page shows all of it with per-item delete.
+- **Memory is explicit, and refuses secrets.** JARVIS saves what you ask
+  it to save — except a password, API key or token, which it declines and
+  does not store. The check runs before the write, so the value never
+  reaches the database at all. The Memory page shows everything that was
+  saved, with per-item delete.
 - **Diagnostics** copies a sanitised report you can safely paste
   somewhere — every field is a boolean, a count or a path.
 - The local server binds to `127.0.0.1` only. Other devices on your

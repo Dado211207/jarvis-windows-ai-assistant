@@ -27,7 +27,25 @@ class AddMemoryInput(BaseModel):
 
 
 def add_memory(content: str, tags: str = "") -> dict:
+    """Save one memory, unless it carries a credential.
+
+    The secret check runs **before** the write and before privacy mode is
+    even considered, so the value never reaches the database on any
+    path. What comes back names the kind of secret and never the secret
+    — this message is rendered in the UI, returned by the API and
+    written to the log.
+    """
     from app.core.privacy import privacy_mode
+    from app.core.secret_guard import find_secret, refusal_message
+
+    # Tags are user-supplied and stored verbatim too, so they are checked
+    # with the same rule rather than trusted for being short.
+    label = find_secret(content) or find_secret(tags)
+    if label:
+        # The label, never the content: a log line is one of the places
+        # this guard exists to keep a secret out of.
+        logger.info("Memory write refused: the content matched %s.", label)
+        return {"success": False, "message": refusal_message(label), "data": None}
 
     if privacy_mode.active:
         logger.info("Memory write rejected: privacy mode is active.")

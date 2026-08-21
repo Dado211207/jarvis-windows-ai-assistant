@@ -81,6 +81,23 @@ most recent successful run.
 5. If they differ, **stop**. Do not run the file. Delete it and download
    it again.
 
+> ### A checksum belongs to one build, not to a version
+>
+> **Never check an installer against a hash from a different run.** Inno
+> Setup embeds a build timestamp, so two builds of the *same commit*
+> produce two different files with two different SHA-256 values. That is
+> expected and is not a sign of tampering.
+>
+> The only correct comparison is the `.sha256` file that came out of the
+> **same artifact** as the `.exe` you are holding. A hash written down
+> from an earlier build, quoted in a chat message, or copied from another
+> run's log will not match, and treating that mismatch as tampering — or
+> worse, treating a match against a stale hash as proof — both get the
+> reasoning backwards.
+>
+> These builds are **not bit-reproducible**, and nothing here claims they
+> are.
+
 ### SmartScreen
 
 The installer is unsigned, so Windows shows *"Windows protected your
@@ -116,6 +133,72 @@ want it:
 
 Nothing downloads on startup, on a status check, or as a side effect of
 anything else.
+
+---
+
+## Upgrading from the v0.1 ZIP
+
+If you used the old ZIP distribution, JARVIS tries to bring its database
+— memories, chat history, the action log — into the new location on
+first launch.
+
+**What it does.** It looks for a v0.1 `data\jarvis.db`, validates it,
+takes a backup, copies it into `%LOCALAPPDATA%\JARVIS\data\`, and applies
+the current schema on top. Your original file is **only ever read**: it
+is never moved, changed or deleted, even after a successful import. The
+decision is recorded, so this happens once and a second launch cannot
+duplicate anything.
+
+**Where it looks.** v0.1 stored its database at `data\jarvis.db`
+*relative to wherever you ran `JARVIS.exe` from*, so there is no single
+path to check. JARVIS looks at a short, fixed list — no disk scanning:
+
+| Location | Why |
+|---|---|
+| `%LOCALAPPDATA%\Programs\JARVIS\data\jarvis.db` | You installed over an extracted ZIP |
+| `C:\JARVIS\JARVIS\data\jarvis.db` and `C:\JARVIS\data\jarvis.db` | The location v0.1's own QUICKSTART named |
+| `%USERPROFILE%\Downloads\JARVIS\data\jarvis.db` | Where a downloaded ZIP lands by default |
+| `%USERPROFILE%\Desktop\JARVIS\data\jarvis.db` | ditto |
+| `%USERPROFILE%\Documents\JARVIS\data\jarvis.db` | ditto |
+
+**If yours is somewhere else**, set `JARVIS_LEGACY_DB` to the full path
+of the old `jarvis.db` before the first launch. That is checked ahead of
+everything in the table.
+
+**When it does not run — all of these leave both files untouched:**
+
+- No v0.1 database in any of those places, and `JARVIS_LEGACY_DB` unset.
+- **You already have data in this installation.** An import would have to
+  either overwrite it or merge two histories; JARVIS does neither, and
+  says so in the log.
+- The old file is corrupt, truncated, or is some other program's
+  database. It is left exactly as it is and JARVIS starts empty.
+- It already ran once. The decision is remembered either way.
+- You are running from source. This is a packaged-build behaviour only.
+
+A failure here never stops JARVIS starting — the worst case is the empty
+database you would have had anyway, and the old file still sitting where
+it was.
+
+---
+
+## What JARVIS will not remember
+
+Ask it to remember something that contains a password, an API key or a
+token and it refuses, explains why, and **stores nothing**. The check
+runs before the write, so the value never reaches the database — there is
+nothing to purge afterwards, and nothing to find in the file.
+
+The message names the *kind* of secret it spotted and never the value
+itself, because that message is shown on screen and written to the log.
+
+Ordinary sentences are unaffected: "remind me to change my password on
+Friday" is stored, because there is no secret in it. What gets refused is
+a credential-shaped string, or a credential noun with a value attached
+("`api_key = …`", "my password is …").
+
+Your Anthropic key is not affected by any of this — it goes in Settings,
+which puts it in the Windows Credential Manager.
 
 ---
 

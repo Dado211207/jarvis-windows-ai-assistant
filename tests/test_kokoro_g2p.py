@@ -139,7 +139,7 @@ def test_make_non_rhotic_is_positional_not_a_blanket_deletion():
 @pytest.mark.parametrize("text", [
     "Dado", "Dragan", "JARVIS", "Anthropic", "Kokoro", "API", "URL",
     "CPU", "GPU", "Windows", "PowerShell",
-    r"C:\Users\Dado\Documents\report.pdf",
+    r"C:\Users\TestUser\Documents\report.pdf",
     "2026-08-09", "14:30", "0.2.0",
     "Really? Yes, of course; obviously!",
 ])

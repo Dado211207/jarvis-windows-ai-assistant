@@ -194,6 +194,7 @@ def test_all_three_phases_are_defined():
         "phase_a_install_launch_and_stop",
         "phase_b_uninstall_preserves_data_by_default",
         "phase_c_reinstall_then_explicit_data_removal",
+        "phase_h_upgrade_from_a_v01_zip_install",
     ):
         assert expected in defined
 
@@ -206,6 +207,10 @@ def test_main_calls_every_phase_in_the_only_order_that_works():
     last would mean starting an application that had just been removed.
     The voice-chain phase downloads two models into the data directory,
     so it has to run before the phase that deletes that directory.
+
+    The upgrade phase is last for the opposite reason: the v0.1 migration
+    only fires on a machine with no JARVIS data, which is precisely the
+    state phase C leaves behind.
     """
     tree = ast.parse(_read())
     main_fn = _find_function(tree, "main")
@@ -222,7 +227,38 @@ def test_main_calls_every_phase_in_the_only_order_that_works():
         "phase_e_repeated_restart",
         "phase_b_uninstall_preserves_data_by_default",
         "phase_c_reinstall_then_explicit_data_removal",
+        "phase_h_upgrade_from_a_v01_zip_install",
     ]
+
+
+def test_the_upgrade_phase_uses_a_real_candidate_location_not_the_override():
+    """`JARVIS_LEGACY_DB` would prove only that a path handed in can be
+    read. The point of the packaged test is that the application finds a
+    v0.1 install on its own."""
+    code = _code_only()
+
+    assert "legacy_zip_db_path" in code
+    assert "JARVIS_LEGACY_DB" not in code, "the packaged test must not use the override"
+    assert "Downloads" in code
+
+
+def test_the_upgrade_phase_proves_idempotence_and_preservation():
+    tree = ast.parse(_read())
+    body = ast.unparse(_find_function(tree, "phase_h_upgrade_from_a_v01_zip_install"))
+
+    assert "read_bytes" in body, "the legacy file must be compared byte-for-byte"
+    assert body.count("wait_for_desktop_ready") >= 2, "a restart must be part of the phase"
+    assert "duplicated" in body or "idempotent" in body
+
+
+def test_the_upgrade_phase_cleans_up_only_what_it_created():
+    """Removing a real v0.1 install that happened to be on the machine
+    would be the worst possible outcome of a test about preserving it."""
+    tree = ast.parse(_read())
+    body = ast.unparse(_find_function(tree, "phase_h_upgrade_from_a_v01_zip_install"))
+
+    assert "created_legacy_root" in body
+    assert "already exists" in body, "an existing legacy install must be left alone"
 
 
 def test_restart_is_exercised_enough_times_and_proves_replacement():

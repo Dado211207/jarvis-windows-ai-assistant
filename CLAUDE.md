@@ -110,6 +110,57 @@ except the prompt.
   reinstall suggestion that would not have helped is the failure this
   replaces; `app/voice/input_state.py` holds the ten states.
 
+## Memory secret rules (non-negotiable)
+
+These exist because `memory add my key is sk-ant-…` stored the key
+verbatim, in plaintext, in a file that lives on the user's disk until
+they delete it.
+
+- **The check runs before the write, never after.** `app/core/secret_guard.py`
+  is consulted in `app/core/memory.py::add_memory()` *and* again in
+  `db/database.py::Database.add_memory()`, which is the only place a
+  memory row is ever inserted. The value must never reach the database,
+  so there is never anything to purge.
+- **A second INSERT INTO memories anywhere else is a defect**, enforced
+  by a test that greps `app/` and `db/` for one.
+- **The detected value is never echoed.** `find_secret()` returns a
+  label ("an Anthropic API key"), never the matched text, and
+  `SecretRejected` carries the same label. A guard that quotes what it
+  caught puts the secret in the API response, the event stream and the
+  log — the thing it exists to prevent.
+- **Rejection, never redaction.** A memory is refused, not rewritten.
+  Storing "my key is ***" would leave the user a memory they never
+  wrote, saying something they did not say.
+- **Ordinary sentences must still be storable.** "Remind me to change my
+  password on Friday" contains no secret and is saved. The bar for
+  refusal is a credential-shaped string, or a credential noun with a
+  value attached — not the mere mention of one.
+- **`app/core/redaction.py` is not this.** It redacts tool inputs headed
+  for a log line, the audit trail or a WebSocket event, and never runs
+  on the memory write path. Both exist; neither replaces the other.
+
+## Legacy data rules (non-negotiable)
+
+- **The v0.1 database is only ever read.** `app/core/legacy_migration.py`
+  never moves, modifies or deletes it — not even after a successful
+  import. Somebody who wants it gone deletes it themselves.
+- **Never overwrite data that is already here**, and never merge two
+  histories. An *empty* destination is fine to replace: that is a schema
+  `create_tables()` made a moment ago. Rows are not.
+- **Look, do not search.** Every candidate is one `exists()` call
+  against a documented or default location. No globbing, no `os.walk`,
+  no disk scanning — enforced by a test.
+- **Copy to a temporary name, then rename.** An interruption must never
+  leave a half-written file where JARVIS expects its database.
+- **Validate before trusting**: a SQLite integrity check *and* a look
+  for the tables a JARVIS database has, so an unrelated `.db` file in a
+  candidate location is never adopted as somebody's history.
+- **Decide once.** A marker records the outcome — including refusals —
+  so repeated launches cannot duplicate anything or re-run the work.
+- **Nothing here may raise.** It runs on the startup path of a windowed
+  build with no console, where an unhandled exception becomes a modal
+  dialog nobody can dismiss. Optional data is not worth that.
+
 ## Process lifecycle rules (non-negotiable)
 
 These exist because a WebView2 process outlived JARVIS on cycle 2 of the
