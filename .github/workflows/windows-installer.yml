@@ -179,12 +179,22 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-      # This repository is private, so this artifact is only visible to
-      # accounts with read access to it — never publicly downloadable.
-      # No release is published or made public by this workflow; see
-      # the packaging report for the browser-based download/verification
-      # instructions this artifact is meant to be used with.
-      - name: Upload installer artifact (private)
+      # Who can actually download this, stated accurately.
+      #
+      # The repository is public. A workflow-run artifact is NOT public
+      # even so: GitHub serves artifact downloads only to accounts signed
+      # in with read access to the repository, and only from the run's
+      # own page. Anonymous visitors browsing the public repository
+      # cannot fetch it, and the download URL is short-lived and signed.
+      #
+      # It is still not a release. Nothing here publishes a release,
+      # creates a tag, or puts a file anywhere a stranger can link to.
+      # The artifact expires with its retention period below, which is
+      # the point: it is a build to hand to a tester, not a distribution
+      # channel. See docs/WINDOWS_INSTALLER.md for the download and
+      # checksum-verification steps this artifact is meant to be used
+      # with.
+      - name: Upload installer artifact (not published; sign-in required)
         if: success()
         uses: actions/upload-artifact@v4
         with:

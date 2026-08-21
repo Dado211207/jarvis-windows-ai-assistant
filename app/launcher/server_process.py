@@ -274,18 +274,21 @@ class ServerProcess:
         state to lose. Claiming a clean Windows unwind we do not actually
         perform would be worse than saying this plainly.
         """
-        from app.launcher.process_tree import descendant_pids, terminate_pids
+        from app.launcher.process_tree import capture_descendants, terminate_identities
 
         if self._process is None:
             return "not_started"
         if self._process.poll() is not None:
-            terminate_pids(descendant_pids(self.pid))
+            terminate_identities(capture_descendants(self.pid))
             return "already_exited"
 
         logger.info("Stopping server child process (pid=%s).", self.pid)
         # Captured while the child is still alive: once it is gone, the
         # relationship that identifies anything it spawned is gone too.
-        descendants = descendant_pids(self.pid)
+        # Identities rather than bare PIDs, for the same reason the window
+        # child captures them — a PID held across a grace period can come
+        # to mean a different process entirely.
+        descendants = capture_descendants(self.pid)
         try:
             self._process.terminate()
         except Exception:
@@ -295,7 +298,7 @@ class ServerProcess:
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
                 logger.info("Server child process stopped.")
-                terminate_pids(descendants)
+                terminate_identities(descendants)
                 return "graceful"
             time.sleep(0.1)
 
@@ -316,11 +319,11 @@ class ServerProcess:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if self._process.poll() is not None:
-                terminate_pids(descendants)
+                terminate_identities(descendants)
                 return "killed"
             time.sleep(0.1)
         logger.error("Server child (pid=%s) survived kill().", self.pid)
-        terminate_pids(descendants)
+        terminate_identities(descendants)
         return "killed"
 
     def port_is_free(self) -> bool:

@@ -19,10 +19,15 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from app.launcher import ipc
-from app.launcher.process_tree import descendant_pids, terminate_pids
+from app.launcher.process_tree import (
+    CleanupReport,
+    ProcessIdentity,
+    capture_descendants,
+    terminate_identities,
+)
 from app.launcher.server_process import _creation_flags
 from app.logging_config import get_logger
 
@@ -81,6 +86,10 @@ class WindowProcess:
     _pump_thread: Optional[threading.Thread] = field(default=None, init=False, repr=False)
     # Never logged and never placed on argv — see environment().
     _secret: bytes = field(default=b"", init=False, repr=False)
+    # What the last stop() did to the window child's leftovers. Kept so a
+    # caller — and the lifecycle test — can ask what happened instead of
+    # scraping a log line.
+    _last_cleanup: Optional[CleanupReport] = field(default=None, init=False, repr=False)
 
     # --- lifecycle ---
 
@@ -278,17 +287,42 @@ class WindowProcess:
         ten-cycle lifecycle test in scripts/test_clean_install.py, on
         cycle one, and by nothing before it: every earlier check asked
         only whether JARVIS.exe itself had exited.
+
+        **Identities, not PIDs**, and captured *before* each poll rather
+        than after. Both come from the second time this defect appeared:
+        a WebView2 process outlived cycle 2 of the lifecycle test while
+        cycle 1 and a whole sibling run passed. See
+        app/launcher/process_tree.py for the three causes that explains.
         """
         if self._process is None:
             self._close_listener()
             return "not_started"
 
-        leftovers = set(descendant_pids(self.pid))
+        leftovers: Dict[int, ProcessIdentity] = {}
+
+        def _capture() -> None:
+            # setdefault, never overwrite: the first sighting is the true
+            # identity of that PID. A later sighting of the same number
+            # could be a different process that inherited it, and
+            # recording the impostor is how cleanup ends up aimed at a
+            # stranger.
+            for identity in capture_descendants(self.pid):
+                leftovers.setdefault(identity.pid, identity)
 
         def _finish(outcome: str) -> str:
-            terminate_pids(sorted(leftovers))
+            # process_tree is written never to raise, and this catch is
+            # here for the day that stops being true. Quit must not be
+            # able to fail because tidying up leftovers failed: the
+            # window is already gone, and a launcher that cannot finish
+            # closing is a worse outcome than an orphaned helper process.
+            try:
+                self._last_cleanup = terminate_identities(list(leftovers.values()))
+            except BaseException:  # noqa: BLE001 — shutdown must always complete
+                logger.error("Leftover process cleanup failed; continuing shutdown.", exc_info=True)
             self._close_listener()
             return outcome
+
+        _capture()
 
         if self._process.poll() is not None:
             return _finish("already_exited")
@@ -297,16 +331,18 @@ class WindowProcess:
 
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
+            # Capture first, check second. WebView2 starts its helper
+            # processes lazily, so the last one to appear is the one that
+            # appears just before the window child exits — and checking
+            # poll() first leaves a whole sleep interval in which such a
+            # helper is born, orphaned and never recorded.
+            _capture()
             if self._process.poll() is not None:
                 return _finish("graceful")
-            # Still alive, so it can still spawn: WebView2 starts its
-            # helper processes lazily, and one that appears after the
-            # first capture is exactly the one that would be missed.
-            leftovers.update(descendant_pids(self.pid))
             time.sleep(0.1)
 
         logger.warning("Window child did not exit on request — terminating this launcher's own child only.")
-        leftovers.update(descendant_pids(self.pid))
+        _capture()
         try:
             self._process.terminate()
         except Exception:
@@ -314,11 +350,12 @@ class WindowProcess:
 
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
+            _capture()
             if self._process.poll() is not None:
                 return _finish("terminated")
             time.sleep(0.1)
 
-        leftovers.update(descendant_pids(self.pid))
+        _capture()
         try:
             self._process.kill()
         except Exception:
@@ -339,6 +376,12 @@ class WindowProcess:
         # children behind that the user then sees in Task Manager. Only
         # processes that were descendants of *our own* child are touched.
         return _finish("killed")
+
+    def last_cleanup_report(self) -> Optional[CleanupReport]:
+        """What the last stop() did to the window child's descendants, or
+        None if stop() has not run. Structured rather than logged-only so
+        a failure can be diagnosed from the return value."""
+        return self._last_cleanup
 
     def _close_listener(self) -> None:
         if self._listener is not None:

@@ -263,6 +263,79 @@ def test_each_lifecycle_cycle_checks_for_orphans_and_a_released_port():
     assert "_jarvis_processes" in content
 
 
+def test_the_lifecycle_cycle_does_not_pass_merely_because_jarvis_exe_exited():
+    """The exact hole this suite exists to keep closed.
+
+    "JARVIS.exe is gone" was the only thing every check before the
+    ten-cycle test asked, and it is true of a shutdown that leaves a
+    WebView2 browser process running — which is what a user sees in Task
+    Manager and calls "JARVIS is still running". The cycle must assert
+    all four: the process, the health endpoint, the port, and the
+    processes JARVIS started.
+    """
+    tree = ast.parse(_read())
+    body = ast.unparse(_find_function(tree, "phase_d_repeated_start_and_quit"))
+
+    for required in (
+        "wait_for_pid_exit",              # the process itself
+        "wait_for_health_to_stop",        # it stopped serving
+        "_wait_for_port_release",         # it let go of the port
+        "_wait_for_identities_to_exit",   # and its WebView2 children are gone
+    ):
+        assert required in body, f"a lifecycle cycle that never calls {required} proves too little"
+
+
+def test_orphan_detection_waits_for_captured_identities_not_a_single_pid_sample():
+    """Two defects in one line, both fixed here.
+
+    `psutil.pid_exists(pid)` asked whether *some* process holds that
+    number — which a recycled PID answers wrongly — and asked it exactly
+    once, with no allowance for the operating system finishing a
+    teardown JARVIS had already ordered. The replacement waits for the
+    exact captured identities, so it can neither be fooled by a recycled
+    PID nor fail a product that did its job.
+    """
+    code = _code_only()
+
+    assert "_wait_for_identities_to_exit" in code
+    assert "create_time" in code, "an identity check needs more than a PID"
+    # The bare single-sample check must not come back.
+    assert "psutil.pid_exists(pid) for pid in" not in code
+    assert "orphaned_webviews" not in code
+
+
+def test_the_orphan_wait_is_bounded_and_short():
+    """A generous wait would turn a real leak into a slow pass. This one
+    only covers the tail of a teardown JARVIS already performed, so it is
+    deliberately close to process_tree's own worst case."""
+    import re
+
+    match = re.search(r"^WEBVIEW_SETTLE_TIMEOUT_SECONDS\s*=\s*([\d.]+)", _read(), re.MULTILINE)
+    assert match, "the settle wait must declare its bound"
+
+    from app.launcher import process_tree
+
+    product_worst_case = process_tree.TERMINATE_GRACE_SECONDS + process_tree.KILL_GRACE_SECONDS
+    settle = float(match.group(1))
+    assert settle >= product_worst_case, "the wait must at least cover the cleanup it follows"
+    assert settle <= product_worst_case * 2, (
+        f"{settle}s is far longer than the {product_worst_case}s of cleanup it is waiting on; "
+        "a leak would have time to look like a pass"
+    )
+
+
+def test_a_failed_cycle_collects_the_evidence_needed_to_diagnose_it():
+    """The first WebView2 orphan produced a one-line failure and an
+    artifact containing the installer log and two self-test logs — not
+    the window child's log, which is the one that would have named the
+    cause."""
+    code = _code_only()
+
+    assert "_collect_application_logs" in code
+    assert "expected_window_log_file" in code
+    assert "_describe" in code, "a survivor must be named, not counted"
+
+
 # ---------------------------------------------------------------------------
 # Real traffic against the installed app, not just process-exists checks
 # ---------------------------------------------------------------------------

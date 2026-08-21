@@ -77,7 +77,40 @@ def _step(text: str) -> None:
     print(f"\n=== {text} ===", flush=True)
 
 
+# Set by main(). Only used to salvage the installed application's own
+# logs on the way out — see _collect_application_logs().
+_LOG_DIR: Optional[Path] = None
+
+
+def _collect_application_logs() -> None:
+    """Copy the installed application's own logs into the CI artifact.
+
+    The first time a lifecycle cycle failed on a WebView2 orphan, the
+    uploaded artifact contained the installer log and two self-test logs
+    and nothing else — so the one file that would have named the cause,
+    the window child's log, did not exist to read. Best-effort and
+    silent: a failing test must still report the failure it found, not a
+    second failure about collecting evidence for it.
+
+    These are the application's own already-redacted logs
+    (app/launcher/server_process.py::redact_text is applied to child
+    output before it is ever written), so nothing new is exposed by
+    copying them.
+    """
+    if _LOG_DIR is None:
+        return
+    import shutil
+
+    for source in (expected_log_file(), expected_window_log_file(), expected_boot_trace_file()):
+        try:
+            if source.is_file():
+                shutil.copy2(source, _LOG_DIR / source.name)
+        except Exception:  # noqa: BLE001 — evidence collection must never mask the real failure
+            continue
+
+
 def _fail(text: str) -> None:
+    _collect_application_logs()
     print(f"\nFAILED: {text}", flush=True)
     sys.exit(1)
 
@@ -108,6 +141,17 @@ def expected_db_path() -> Path:
 
 def expected_log_file() -> Path:
     return expected_data_dir() / "data" / "logs" / "jarvis.log"
+
+
+def expected_window_log_file() -> Path:
+    """Matches app/launcher/window_process.py::window_log_path().
+
+    The window child's own redacted output, which is where the WebView2
+    process cleanup now reports itself. The first time a lifecycle cycle
+    failed on a WebView2 orphan, this file was not collected and the
+    cause had to be reasoned about rather than read.
+    """
+    return expected_data_dir() / "data" / "logs" / "jarvis-window.log"
 
 
 def expected_boot_trace_file() -> Path:
@@ -518,6 +562,106 @@ def _webview_children_of(pids: set) -> list:
     return found
 
 
+# How long the OS is allowed to finish reaping processes JARVIS has
+# already terminated and killed.
+#
+# **This cannot mask a leak, and that is the point.** By the time this
+# test looks, JARVIS's own cleanup has already run to completion: quit()
+# calls window.stop() synchronously, and stop() does not return until
+# process_tree has sent terminate, waited its grace, sent kill and waited
+# again. So a process that is genuinely leaked — never captured, or
+# captured and never signalled — is not mid-teardown; it is running, and
+# it will still be running when this deadline expires. What the wait
+# absorbs is only the last moments of a process that has already been
+# killed, on a loaded runner.
+#
+# Chosen as a little over process_tree's own worst case (3s terminate
+# grace + 3s kill grace), not tuned upwards until something passed.
+WEBVIEW_SETTLE_TIMEOUT_SECONDS = 10.0
+
+
+def _identity_of(process) -> dict:
+    """A PID plus enough to prove it is still the same process later.
+
+    Windows recycles PIDs, and this test's whole assertion is "this exact
+    process is gone". Sampling `pid_exists()` on a bare number answers a
+    different question — "is *some* process using that number" — and can
+    fail a passing product because an unrelated program happened to be
+    started in the gap.
+
+    Deliberately reimplemented here rather than imported from
+    app/launcher/process_tree.py: this is the acceptance test for that
+    module's behaviour, and a test that shares its subject's identity
+    logic cannot catch a bug in it.
+    """
+    import psutil
+
+    def _safe(getter, default):
+        try:
+            return getter()
+        except psutil.Error:
+            return default
+
+    return {
+        "pid": process.pid,
+        "create_time": _safe(process.create_time, None),
+        "name": _safe(process.name, "") or "",
+        "ppid": _safe(process.ppid, None),
+    }
+
+
+def _is_still_alive(identity: dict) -> bool:
+    """Whether *this* process is still running — not merely whether its
+    PID is in use."""
+    import psutil
+
+    try:
+        process = psutil.Process(identity["pid"])
+        create_time = process.create_time()
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.Error:
+        # Cannot read it, but something with that PID exists. Reported as
+        # alive so an unreadable survivor is never mistaken for a pass.
+        return True
+
+    recorded = identity.get("create_time")
+    if recorded is None or create_time is None:
+        return True
+    return abs(recorded - create_time) <= 0.05
+
+
+def _describe(identity: dict) -> str:
+    """One diagnostic line. PID, image name, parent and status only — no
+    command line, no path, nothing that could carry a user's account name
+    or a URL they visited."""
+    import psutil
+
+    try:
+        status = psutil.Process(identity["pid"]).status()
+    except psutil.Error:
+        status = "unreadable"
+    return (
+        f"pid={identity['pid']} name={identity['name'] or 'unknown'} "
+        f"ppid={identity['ppid']} created={identity['create_time']} status={status}"
+    )
+
+
+def _wait_for_identities_to_exit(
+    identities: list, timeout_seconds: float = WEBVIEW_SETTLE_TIMEOUT_SECONDS
+) -> list:
+    """Wait for every captured process to actually be gone. Returns the
+    ones that are still alive when the deadline expires."""
+    deadline = time.monotonic() + timeout_seconds
+    survivors = list(identities)
+    while survivors and time.monotonic() < deadline:
+        survivors = [identity for identity in survivors if _is_still_alive(identity)]
+        if not survivors:
+            break
+        time.sleep(0.2)
+    return survivors
+
+
 def _port_is_free() -> bool:
     """Whether the server port has actually been released.
 
@@ -574,10 +718,18 @@ def phase_d_repeated_start_and_quit(log_dir: Path) -> None:
             ready_seconds = time.monotonic() - started
 
             # Record the whole family before asking it to stop, so an
-            # orphan can be named rather than merely counted.
-            own_pids = {process.pid for process in _jarvis_processes()}
-            own_pids.add(proc.pid)
-            webview_before = {process.pid for process in _webview_children_of(own_pids)}
+            # orphan can be named rather than merely counted. Twice:
+            # WebView2 starts helper processes lazily, so one captured
+            # only at ready-time can miss a process that appears while
+            # the window is being used — and a process this test never
+            # recorded is a leak it could never report.
+            webview_before = {}
+            for _ in range(2):
+                own_pids = {process.pid for process in _jarvis_processes()}
+                own_pids.add(proc.pid)
+                for process in _webview_children_of(own_pids):
+                    identity = _identity_of(process)
+                    webview_before.setdefault(identity["pid"], identity)
 
             subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
 
@@ -602,19 +754,22 @@ def phase_d_repeated_start_and_quit(log_dir: Path) -> None:
                     f"quit (pids {[p.pid for p in surviving]})."
                 )
 
-            import psutil
-
-            orphaned_webviews = [pid for pid in webview_before if psutil.pid_exists(pid)]
-            if orphaned_webviews:
+            orphaned = _wait_for_identities_to_exit(list(webview_before.values()))
+            if orphaned:
+                details = "\n".join(f"    {_describe(identity)}" for identity in orphaned)
                 _fail(
-                    f"Cycle {cycle}: {len(orphaned_webviews)} WebView2 process(es) started by "
-                    f"JARVIS outlived it (pids {orphaned_webviews})."
+                    f"Cycle {cycle}: {len(orphaned)} WebView2 process(es) started by JARVIS "
+                    f"outlived it by more than {WEBVIEW_SETTLE_TIMEOUT_SECONDS:.0f}s.\n"
+                    f"  Captured before shutdown: {len(webview_before)} process(es).\n"
+                    f"  Still running:\n{details}\n"
+                    f"  Window child log tail:\n{_read_file_tail(expected_window_log_file())}"
                 )
 
             print(
                 f"OK: cycle {cycle} — ready in {ready_seconds:.1f}s "
                 f"(session {ready.get('session_id')}), exited cleanly, port released, "
-                f"no JARVIS or WebView2 process left behind"
+                f"{len(webview_before)} WebView2 process(es) cleaned up, "
+                f"nothing left behind"
             )
         finally:
             if proc.poll() is None:
@@ -828,6 +983,10 @@ def phase_e_repeated_restart(log_dir: Path) -> None:
         _fail("The server child never became healthy, so restarts cannot be tested.")
 
     previous_pid = supervisor.server.pid
+    # Captured as an identity, not a number: "is the old child gone?" must
+    # not be answerable "no" merely because an unrelated process inherited
+    # its PID during the restart.
+    previous_identity = _identity_of(psutil.Process(previous_pid))
     print(f"OK: server child running (pid={previous_pid})")
 
     try:
@@ -855,9 +1014,10 @@ def phase_e_repeated_restart(log_dir: Path) -> None:
                     "the restart reused the old process instead of replacing it."
                 )
 
-            if psutil.pid_exists(previous_pid):
+            if _is_still_alive(previous_identity):
                 _fail(
-                    f"Cycle {cycle}: the previous server child (pid={previous_pid}) "
+                    f"Cycle {cycle}: the previous server child "
+                    f"({_describe(previous_identity)}) "
                     "is still running after the restart that replaced it."
                 )
 
@@ -871,6 +1031,7 @@ def phase_e_repeated_restart(log_dir: Path) -> None:
                 + ("" if result.ok else f" (window not opened: {result.window_reason})")
             )
             previous_pid = server.pid
+            previous_identity = _identity_of(psutil.Process(previous_pid))
     finally:
         supervisor.quit()
 
@@ -999,6 +1160,8 @@ def main() -> None:
 
     log_dir = REPO_ROOT / "packaging" / "dist" / "installer-test-logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    global _LOG_DIR
+    _LOG_DIR = log_dir
 
     phase_a_install_launch_and_stop(installer, log_dir)
     # Before anything else: does the thing that was installed actually
@@ -1013,6 +1176,12 @@ def main() -> None:
     # shutdown is a happy path; ten is evidence nothing accumulates.
     phase_d_repeated_start_and_quit(log_dir)
     phase_e_repeated_restart(log_dir)
+    # Collected while the data directory still exists — phase C removes
+    # it. On the success path as well as the failure path, because the
+    # window child's log is where the WebView2 cleanup reports itself,
+    # and "it passed" is worth being able to read rather than infer.
+    _collect_application_logs()
+
     phase_b_uninstall_preserves_data_by_default(log_dir)
     phase_c_reinstall_then_explicit_data_removal(installer, log_dir)
 

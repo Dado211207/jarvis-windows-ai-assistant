@@ -110,6 +110,50 @@ except the prompt.
   reinstall suggestion that would not have helped is the failure this
   replaces; `app/voice/input_state.py` holds the ten states.
 
+## Process lifecycle rules (non-negotiable)
+
+These exist because a WebView2 process outlived JARVIS on cycle 2 of the
+installer's ten-cycle lifecycle test while cycle 1 — and an entire
+sibling run of the identical commit — passed. See
+`docs/webview2-lifecycle-defect.md`.
+
+- **JARVIS terminates only processes it can *prove* are descendants of a
+  process it started.** Targets come from walking down from a PID this
+  launcher spawned (`app/launcher/process_tree.py::capture_descendants`)
+  and from nowhere else. No `process_iter`, no `taskkill /IM`, no name
+  matching — an unrelated Edge or WebView2 the user is browsing in is
+  never ours to touch.
+- **A PID is not an identity.** Windows recycles PIDs, and cleanup holds
+  its targets across a grace period. Every target is a
+  `ProcessIdentity` (PID *plus* creation time), re-verified immediately
+  before it is signalled; a mismatch is reported as `pid_reused` and the
+  process is left alone. An identity captured without a creation time is
+  `inaccessible` and also left alone — unverifiable is not the same as
+  ours.
+- **Every escalation ends in a bounded wait, including after `kill()`.**
+  "Killed" must mean the process is gone, not that `kill()` did not
+  raise. Shutdown stays bounded by construction — one terminate grace
+  plus one kill grace, whatever the processes do — because JARVIS must
+  always be able to close.
+- **Cleanup returns a structured report and never raises.** Six
+  outcomes: `already_gone`, `terminated`, `killed`, `still_alive`,
+  `inaccessible`, `pid_reused`. A survivor is a logged warning naming
+  the process, never silence. Shutdown completes even if cleanup itself
+  fails.
+- **Diagnostics carry no paths.** PID, image name, parent PID and
+  booleans only. A full Windows path contains the account name, and
+  these records go into a log file.
+- **Capture before the poll, not after**, and expand each captured
+  identity to its own live descendants at cleanup time. WebView2 starts
+  helper processes lazily; one born in the last interval before the
+  window child exits is exactly the one that gets orphaned.
+- **The lifecycle test asserts on identities, and its wait may never
+  grow to cover a leak.** `scripts/test_clean_install.py` waits for the
+  exact captured processes to reach a terminal state within a bound
+  close to the product's own cleanup worst case. Never raise it to make
+  something pass: a leaked process never exits, so a longer wait cannot
+  turn a real leak green — it can only turn a slow one invisible.
+
 ## Uninstall rules (non-negotiable)
 
 - **`app/core/ownership.py` is the manifest.** "Remove everything JARVIS

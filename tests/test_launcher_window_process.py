@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.launcher import ipc
+from app.launcher import ipc, process_tree
 
 _UNSET = object()
 
@@ -332,6 +332,11 @@ class _TreeSpy:
     are only discoverable while it is alive. Ask after it exits and you
     get nothing back — which is exactly what the old code did, and why it
     cleaned up nothing on the path everyone actually takes.
+
+    Hands back ProcessIdentity objects rather than bare PIDs, because
+    that is what the module under test now captures — see
+    app/launcher/process_tree.py for why a PID alone is not enough to
+    safely terminate anything.
     """
 
     def __init__(self, process, children):
@@ -339,21 +344,25 @@ class _TreeSpy:
         self._children = children
         self.terminated = []
 
-    def descendant_pids(self, pid):
+    def capture_descendants(self, pid):
         if pid is None or self._process.poll() is not None:
             return []          # dead parent: the relationship is gone
-        return list(self._children)
+        return [
+            process_tree.ProcessIdentity(pid=child, create_time=1000.0 + child, name="msedgewebview2.exe")
+            for child in self._children
+        ]
 
-    def terminate_pids(self, pids):
-        self.terminated.extend(pids)
+    def terminate_identities(self, identities, **kwargs):
+        self.terminated.extend(identity.pid for identity in identities)
+        return process_tree.CleanupReport()
 
 
 def _with_tree_spy(monkeypatch, process, children):
     import app.launcher.window_process as wp
 
     spy = _TreeSpy(process, children)
-    monkeypatch.setattr(wp, "descendant_pids", spy.descendant_pids)
-    monkeypatch.setattr(wp, "terminate_pids", spy.terminate_pids)
+    monkeypatch.setattr(wp, "capture_descendants", spy.capture_descendants)
+    monkeypatch.setattr(wp, "terminate_identities", spy.terminate_identities)
     return spy
 
 
@@ -404,15 +413,53 @@ def test_a_helper_process_that_appears_late_is_still_cleaned_up(monkeypatch):
         calls["n"] += 1
         if calls["n"] == 2:      # a helper shows up mid-shutdown
             appeared.append(7)
-        return spy.descendant_pids(pid)
+        return spy.capture_descendants(pid)
 
-    monkeypatch.setattr(wp, "descendant_pids", _descendants)
-    monkeypatch.setattr(wp, "terminate_pids", spy.terminate_pids)
+    monkeypatch.setattr(wp, "capture_descendants", _descendants)
+    monkeypatch.setattr(wp, "terminate_identities", spy.terminate_identities)
     window.start(base_env={})
 
     window.stop(timeout_seconds=0.3)
 
     assert 7 in spy.terminated, "a helper that appeared after the first capture was missed"
+
+
+def test_the_last_capture_happens_after_the_final_poll_not_before(monkeypatch):
+    """The gap that let cycle 2 of the lifecycle test fail.
+
+    The graceful loop used to check poll() first and capture second, so a
+    helper born in the last sleep interval before the window child exited
+    was never recorded — and a process that was never captured is one
+    that is never cleaned up. Capturing first closes that gap: whatever
+    exists at the moment of the final poll has been seen.
+    """
+    import app.launcher.window_process as wp
+
+    # Exits on the second poll, and spawns a helper just before it does.
+    process = _FakeProcess()
+    window, process, _, _ = _make(process=process)
+    children = []
+    spy = _TreeSpy(process, children)
+    order = []
+
+    def _descendants(pid):
+        order.append("capture")
+        children.append(7)     # a helper exists by the time we look
+        return spy.capture_descendants(pid)
+
+    def _poll_then_die():
+        order.append("poll")
+        return None if len(order) < 4 else 0
+
+    monkeypatch.setattr(wp, "capture_descendants", _descendants)
+    monkeypatch.setattr(wp, "terminate_identities", spy.terminate_identities)
+    window.start(base_env={})
+    process.poll = _poll_then_die
+
+    window.stop(timeout_seconds=1.0)
+
+    assert order.index("capture") < order.index("poll"), "capture must precede the poll it races"
+    assert 7 in spy.terminated, "the helper alive at the final poll was not cleaned up"
 
 
 def test_stop_on_an_already_exited_child_does_not_signal_it():
@@ -434,9 +481,22 @@ def test_stop_cleans_up_webview2_processes_the_child_left_behind(monkeypatch):
     window, process, _, _ = _make(process=_FakeProcess(ignore_quit=True, ignore_terminate=True))
     window.start(base_env={})
 
-    monkeypatch.setattr(wp, "descendant_pids", lambda pid: [4242, 4243] if pid == process.pid else [])
+    monkeypatch.setattr(
+        wp,
+        "capture_descendants",
+        lambda pid: (
+            [process_tree.ProcessIdentity(pid=4242, create_time=1.0), process_tree.ProcessIdentity(pid=4243, create_time=2.0)]
+            if pid == process.pid
+            else []
+        ),
+    )
     terminated = []
-    monkeypatch.setattr(wp, "terminate_pids", terminated.extend)
+
+    def _terminate(identities, **kwargs):
+        terminated.extend(identity.pid for identity in identities)
+        return process_tree.CleanupReport()
+
+    monkeypatch.setattr(wp, "terminate_identities", _terminate)
 
     assert window.stop(timeout_seconds=0.3) == "killed"
     assert terminated == [4242, 4243]
@@ -452,8 +512,16 @@ def test_descendants_are_captured_before_the_kill_not_after(monkeypatch):
     window.start(base_env={})
 
     order = []
-    monkeypatch.setattr(wp, "descendant_pids", lambda pid: (order.append("capture"), [99])[1])
-    monkeypatch.setattr(wp, "terminate_pids", lambda pids: order.append("terminate"))
+    monkeypatch.setattr(
+        wp,
+        "capture_descendants",
+        lambda pid: (order.append("capture"), [process_tree.ProcessIdentity(pid=99, create_time=1.0)])[1],
+    )
+    monkeypatch.setattr(
+        wp,
+        "terminate_identities",
+        lambda identities, **kwargs: (order.append("terminate"), process_tree.CleanupReport())[1],
+    )
     original_kill = process.kill
 
     def _kill():
@@ -472,15 +540,62 @@ def test_descendant_lookup_never_breaks_shutdown(monkeypatch):
     have vanished mid-lookup. Neither may propagate."""
     from app.launcher import window_process as wp
 
-    monkeypatch.setattr(wp, "descendant_pids", MagicMock(side_effect=RuntimeError("psutil is unhappy")))
+    monkeypatch.setattr(wp, "capture_descendants", MagicMock(side_effect=RuntimeError("psutil is unhappy")))
     window, _, _, _ = _make()
     window.start(base_env={})
 
     with pytest.raises(RuntimeError):
-        wp.descendant_pids(1)  # the patched stand-in really does raise
+        wp.capture_descendants(1)  # the patched stand-in really does raise
 
     # ...and the real implementation swallows exactly that.
     monkeypatch.undo()
-    assert wp.descendant_pids(None) == []
-    assert wp.descendant_pids(-1) == []
-    wp.terminate_pids([])  # must not raise
+    assert wp.capture_descendants(None) == []
+    assert wp.capture_descendants(-1) == []
+    assert wp.terminate_identities([]).results == []  # must not raise
+
+
+def test_shutdown_still_completes_when_cleanup_itself_fails(monkeypatch):
+    """The window is already gone by this point. A launcher that cannot
+    finish closing because tidying up leftovers failed is a worse outcome
+    than an orphaned helper process — and, on a windowed build with no
+    console, an exception here becomes a modal dialog nobody can dismiss.
+    """
+    from app.launcher import window_process as wp
+
+    window, process, _, _ = _make()
+    window.start(base_env={})
+    monkeypatch.setattr(
+        wp, "capture_descendants", lambda pid: [process_tree.ProcessIdentity(pid=99, create_time=1.0)]
+    )
+    monkeypatch.setattr(
+        wp,
+        "terminate_identities",
+        MagicMock(side_effect=RuntimeError("psutil exploded mid-cleanup")),
+    )
+
+    assert window.stop(timeout_seconds=0.3) == "graceful"
+    assert window.last_cleanup_report() is None
+
+
+def test_stopping_twice_is_idempotent(monkeypatch):
+    """Quit can be reached from the tray menu, the window's X and the
+    WM_CLOSE handler. Two of them arriving is ordinary, not exceptional."""
+    window, process, _, _ = _make()
+    spy = _with_tree_spy(monkeypatch, process, children=[4242])
+    window.start(base_env={})
+
+    assert window.stop(timeout_seconds=0.3) == "graceful"
+    assert window.stop(timeout_seconds=0.3) == "already_exited"
+    assert process.terminate_calls == 0 and process.kill_calls == 0
+
+
+def test_the_cleanup_report_is_kept_for_diagnosis(monkeypatch):
+    """A WebView2 orphan that survives must be answerable from the return
+    value, not only from a log line somebody has to find first."""
+    window, process, _, _ = _make()
+    _with_tree_spy(monkeypatch, process, children=[4242])
+    window.start(base_env={})
+
+    assert window.last_cleanup_report() is None, "nothing to report before stop() runs"
+    window.stop(timeout_seconds=0.3)
+    assert window.last_cleanup_report() is not None

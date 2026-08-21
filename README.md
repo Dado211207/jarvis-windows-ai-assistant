@@ -206,22 +206,33 @@ See `app/desktop/session.py`.
 
 ## Installation
 
-### Windows (recommended)
+### Windows — the installer
 
-```bat
-git clone https://github.com/dado211207/jarvis-windows-ai-assistant.git
-cd jarvis-windows-ai-assistant
-installer\JARVIS_SETUP.bat
-```
+**`JARVIS-Setup-v<version>-x64.exe` is how JARVIS is installed.** It is a
+per-user Inno Setup installer: it needs no administrator rights, installs
+to `%LOCALAPPDATA%\Programs\JARVIS`, keeps your data separately in
+`%LOCALAPPDATA%\JARVIS`, and adds a Start Menu entry. Python is not
+required — the runtime is inside the executable.
 
-Or with PowerShell:
+Run it, then follow the first-run wizard (a preferred name and, if you
+want AI replies, an Anthropic API key). Everything else — the voice, the
+speech model, local AI — is set up from inside the application when you
+choose to.
 
-```powershell
-cd jarvis-windows-ai-assistant
-.\installer\install.ps1
-```
+`docs/WINDOWS_INSTALLER.md` has the full walkthrough, including how to
+verify the download's SHA-256 before running it.
 
-### Manual / Linux / macOS (development)
+> **v0.2.0-rc1 is a release candidate, not a published release.** There
+> is no GitHub Release and no tag for it. Builds are produced by the
+> **Windows Installer** workflow and attached to that workflow run, which
+> requires a signed-in account with read access to this repository and
+> expires after 30 days. The build is also **unsigned**, so Windows
+> SmartScreen will warn about an unrecognised publisher.
+
+### From source (developers only)
+
+Not the way to install JARVIS. This is for working *on* it — the
+installed application above is a packaged build of this same tree.
 
 ```bash
 git clone https://github.com/dado211207/jarvis-windows-ai-assistant.git
@@ -232,30 +243,12 @@ pip install -r requirements.txt
 cp .env.example .env               # optional: add ANTHROPIC_API_KEY
 ```
 
----
-
-## First Run (Windows ZIP)
-
-If you downloaded the release ZIP, use the included helper scripts — no
-Python installation required.
-
-| Script | What it does |
-|---|---|
-| `SETUP_ENV.bat` | Creates `.env` from `.env.example`; prints API key setup instructions |
-| `START_JARVIS.bat` | Starts the JARVIS CLI assistant |
-| `START_JARVIS_API.bat` | Starts the local FastAPI server on `127.0.0.1:5555` |
-| `QUICKSTART.md` | Step-by-step guide for new users |
-
-**Quick steps:**
-
-1. Extract the ZIP (e.g. to `C:\JARVIS\`).
-2. Double-click `SETUP_ENV.bat` — follow the on-screen instructions to
-   add your Anthropic API key to `.env` (optional; required only for
-   natural-language AI responses).
-3. Double-click `START_JARVIS.bat`.
-
-The API key is **never** included in the ZIP and is stored only in your
-local `.env` file.
+`installer\JARVIS_SETUP.bat` and `installer\install.ps1` are development
+helpers with the same status: they prepare a source checkout on Windows,
+and they are not an installation method. Neither are the
+`START_JARVIS*.bat` / `SETUP_ENV.bat` scripts in the repository root,
+which date from the v0.1 alpha ZIP and only make sense inside a source
+tree.
 
 ---
 
@@ -487,104 +480,48 @@ Workflow file: `.github/workflows/ci.yml`
 
 ---
 
-## Windows build artifact
+## Builds
 
-A downloadable Windows build is produced automatically by GitHub Actions on every
-pull request and push to `main`.
+Two workflows produce Windows output, and they are not the same thing.
 
-### How to download
+| Workflow | Produces | Who it is for |
+|---|---|---|
+| `windows-installer.yml` | `JARVIS-Setup-v<version>-x64.exe` + its `.sha256` | **The installer.** What a person installs. |
+| `windows-build.yml` | An unpacked `JARVIS\` folder | A developer wanting the frozen tree without installing |
 
-1. Go to the [**Actions** tab](../../actions/workflows/windows-build.yml) in the
-   repository.
-2. Click the latest successful **Windows Build** run.
-3. Scroll to **Artifacts** and download **JARVIS-Windows-Build.zip**.
-4. Unzip it — you get a `JARVIS\` folder containing `JARVIS.exe`.
+Both attach their output to the workflow run that produced it. Neither
+publishes anything.
 
-### What is included
+### Getting the installer
 
-| Item | Included |
-|---|---|
-| `JARVIS.exe` and its runtime libraries | ✅ |
-| `README.md` | ✅ |
-| `QUICKSTART.md` | ✅ |
-| `.env.example` | ✅ |
-| `START_JARVIS.bat` | ✅ |
-| `START_JARVIS_API.bat` | ✅ |
-| `SETUP_ENV.bat` | ✅ |
-| Python runtime (embedded) | ✅ |
-| All `app/` and `db/` modules | ✅ (compiled into the bundle) |
+Full walkthrough, including checksum verification: **[`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md)**.
 
-### What is NOT included
+In short — open **Actions → Windows Installer**, pick the run you were
+pointed at, download the **JARVIS-Windows-Installer** artifact, and check
+its SHA-256 against the bundled `.sha256` before running it.
 
-| Item | Excluded |
-|---|---|
-| `.env` / `ANTHROPIC_API_KEY` | ✅ Never included |
-| `data/jarvis.db` (live database) | ✅ Created fresh on first run |
-| `data/logs/` | ✅ Created fresh on first run |
-| `data/screenshots/` | ✅ Created on demand |
-| Test files | ✅ Not bundled |
-| `.git` history | ✅ Not bundled |
+### Who can download a build
 
-### First-time setup on Windows
+This repository is public; its workflow artifacts are not. GitHub serves
+an artifact download only to an account **signed in with read access to
+the repository**, from that run's own page, over a short-lived signed
+URL. Anonymous visitors cannot fetch it.
 
-```bat
-REM 1. Unzip JARVIS-Windows-Build.zip into a folder, e.g. C:\JARVIS\
-REM 2. Copy .env.example to .env and add your API key (optional):
-copy C:\JARVIS\JARVIS\.env.example C:\JARVIS\JARVIS\.env
-REM    Then edit .env and add: ANTHROPIC_API_KEY=sk-ant-...
-REM 3. Run JARVIS:
-C:\JARVIS\JARVIS\JARVIS.exe
-```
+Artifacts also **expire** — 30 days for the installer, 14 for the test
+logs — so a link to one is worth nothing a month later. That is why no
+document here links to a specific build.
 
-JARVIS runs entirely on your local machine. No data is sent to the network unless
-you configure an `ANTHROPIC_API_KEY` for AI responses. The API key is **never**
-included in the build artifact.
+### Not a release
 
-> **Note:** This is a development/testing artifact, not a signed Windows installer.
-> Windows SmartScreen may warn on first launch — click **More info → Run anyway**.
-> A signed installer is planned for a later phase.
+There is no GitHub Release and no tag for v0.2.0-rc1, and this pass
+creates neither. Builds are **unsigned**, so SmartScreen warns about an
+unrecognised publisher — accurately, which is why the checksum step
+matters. Signing and an auto-updater are both deliberately out of scope;
+see `docs/THREAT_MODEL.md`.
 
-Workflow file: `.github/workflows/windows-build.yml`
-
----
-
-## GitHub Releases
-
-Versioned Windows ZIPs are published to **GitHub Releases** via a separate
-manual workflow.
-
-### How to create a release
-
-1. Go to **GitHub → Actions → Release** workflow.
-2. Click **Run workflow**, enter a version tag (e.g. `v0.1.0`), click **Run**.
-3. The workflow runs all tests, builds the executable, and publishes a release.
-4. The release appears under **GitHub → Releases** with the ZIP attached.
-
-### Release asset name
-
-```
-JARVIS-Windows-v0.1.0.zip
-```
-
-### What is and is not in the release ZIP
-
-The release ZIP includes the same content as the Actions build artifact,
-plus the first-run helper scripts and quick-start guide.
-The `ANTHROPIC_API_KEY` and `.env` are **never bundled**.
-Run `SETUP_ENV.bat` after extracting to create your local `.env`.
-
-### Security and limitations
-
-- The API key is **never** included in any release asset.
-- FastAPI binds to `127.0.0.1` only.
-- Releases are **unsigned** — Windows SmartScreen may warn on first launch.
-  Click **More info → Run anyway**.
-- A signed installer is planned for a later phase.
-
-See [`docs/release-process.md`](docs/release-process.md) for the full release
-checklist and version naming guide.
-
-Workflow file: `.github/workflows/release.yml`
+The v0.1 alpha tags (`v0.1.0-alpha` … `v0.1.6-alpha`) are historical.
+They predate the installer and shipped a ZIP with batch-file helpers;
+`docs/release-process.md` describes that older flow.
 
 ---
 
