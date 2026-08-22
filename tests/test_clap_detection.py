@@ -36,7 +36,6 @@ connected to a destination, which tests/test_clap.py asserts separately.
 """
 
 import math
-import os
 import random
 import struct
 import time
@@ -47,8 +46,10 @@ import pytest
 
 # One shared in-process server with the rest of the browser suite, so
 # there is one port and one `settings.jarvis_port` for the origin
-# allowlist to agree with.
-from tests.test_playwright_e2e import BASE_URL, live_server  # noqa: F401
+# allowlist to agree with. `live_server` is a session fixture defined in
+# tests/conftest.py and is requested by name below — importing it here
+# would register a second copy that binds the same port and dies.
+from tests.conftest import BROWSER_BASE_URL as BASE_URL
 
 pytestmark = pytest.mark.browser
 
@@ -147,38 +148,34 @@ def build_clip(name: str, directory: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def clap_browser():
+def clap_browser(playwright_instance):
     """A Chromium whose microphone is a file. One per test, because the
-    file is chosen at launch."""
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        pytest.skip("playwright is not installed")
+    file is chosen at launch — but the Playwright driver is the shared
+    one from conftest, since it cannot be opened twice in a session."""
+    from tests.conftest import chromium_executable_path
 
-    executable_path = os.environ.get("JARVIS_TEST_CHROMIUM_PATH") or None
     launched = []
 
-    with sync_playwright() as p:
-        def launch(wav: Path):
-            try:
-                browser = p.chromium.launch(
-                    executable_path=executable_path,
-                    args=[
-                        "--use-fake-device-for-media-stream",
-                        "--use-fake-ui-for-media-stream",
-                        f"--use-file-for-fake-audio-capture={wav}%noloop",
-                        "--autoplay-policy=no-user-gesture-required",
-                    ],
-                )
-            except Exception as exc:  # pragma: no cover - environment
-                pytest.skip(f"chromium is not available ({exc})")
-            launched.append(browser)
-            return browser
+    def launch(wav: Path):
+        try:
+            browser = playwright_instance.chromium.launch(
+                executable_path=chromium_executable_path(),
+                args=[
+                    "--use-fake-device-for-media-stream",
+                    "--use-fake-ui-for-media-stream",
+                    f"--use-file-for-fake-audio-capture={wav}%noloop",
+                    "--autoplay-policy=no-user-gesture-required",
+                ],
+            )
+        except Exception as exc:  # pragma: no cover - environment
+            pytest.skip(f"chromium is not available ({exc})")
+        launched.append(browser)
+        return browser
 
-        yield launch
+    yield launch
 
-        for browser in launched:
-            browser.close()
+    for browser in launched:
+        browser.close()
 
 
 @pytest.fixture

@@ -34,8 +34,9 @@ import uuid
 
 import pytest
 
-BROWSER_TEST_PORT = 5557
-BASE_URL = f"http://127.0.0.1:{BROWSER_TEST_PORT}"
+# The server itself lives in tests/conftest.py, so the two browser suites
+# share one definition and therefore one port — see the comment there.
+from tests.conftest import BROWSER_BASE_URL as BASE_URL, BROWSER_TEST_PORT  # noqa: E402,F401
 
 pytestmark = pytest.mark.browser
 
@@ -55,75 +56,21 @@ PAGES = ["/ui/", "/ui/chat", "/ui/actions", "/ui/logs", "/ui/memory", "/ui/voice
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def live_server():
+def browser_instance(playwright_instance):
+    """One browser for this suite. The Playwright driver itself is shared
+    with tests/test_clap_detection.py via conftest — see the note there
+    for why it cannot be opened twice."""
+    from tests.conftest import chromium_executable_path
+
     try:
-        import uvicorn
-    except ImportError:
-        pytest.skip("uvicorn is required to run the live server for browser tests")
-
-    from app.voice.stt import FakeSTTAdapter, stt_service
-    stt_service.set_adapter_override(FakeSTTAdapter(transcript="system status"))
-
-    # app/api/origin.py's allowlist is derived from settings.jarvis_port —
-    # it must match the port this test server actually runs on, or the
-    # browser's real Origin header (http://127.0.0.1:<BROWSER_TEST_PORT>)
-    # gets correctly rejected by the app's own origin check.
-    from app.config import settings
-    settings.jarvis_port = BROWSER_TEST_PORT
-
-    from app.api.server import app as jarvis_app
-
-    config = uvicorn.Config(jarvis_app, host="127.0.0.1", port=BROWSER_TEST_PORT, log_level="warning")
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True, name="jarvis-browser-test-server")
-    thread.start()
-
-    import httpx
-    for _ in range(75):
-        try:
-            r = httpx.get(f"{BASE_URL}/health", timeout=1.0)
-            if r.status_code == 200:
-                break
-        except Exception:
-            pass
-        time.sleep(0.2)
-    else:
-        pytest.fail("live_server did not become ready in time")
-
-    yield BASE_URL
-
-    server.should_exit = True
-    thread.join(timeout=5.0)
-    stt_service.set_adapter_override(None)
-
-
-@pytest.fixture(scope="session")
-def browser_instance():
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        pytest.skip("playwright is not installed — pip install playwright && playwright install chromium")
-
-    import os
-    # Normally unset: `playwright install chromium` puts the browser where
-    # the `playwright` package itself expects it, and plain chromium.launch()
-    # resolves it with no extra configuration. This override exists only for
-    # environments with a browser pre-installed at a nonstandard path outside
-    # Playwright's own version-matched cache (e.g. this repo's own sandboxed
-    # dev container — see the environment notes in CLAUDE.md/README, not a
-    # real deployment concern).
-    executable_path = os.environ.get("JARVIS_TEST_CHROMIUM_PATH") or None
-
-    with sync_playwright() as p:
-        try:
-            b = p.chromium.launch(
-                executable_path=executable_path,
-                args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
-            )
-        except Exception as exc:
-            pytest.skip(f"chromium is not available — run `playwright install chromium` ({exc})")
-        yield b
-        b.close()
+        browser = playwright_instance.chromium.launch(
+            executable_path=chromium_executable_path(),
+            args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+        )
+    except Exception as exc:
+        pytest.skip(f"chromium is not available — run `playwright install chromium` ({exc})")
+    yield browser
+    browser.close()
 
 
 @pytest.fixture
