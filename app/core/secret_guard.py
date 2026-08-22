@@ -57,6 +57,19 @@ from typing import Optional
 _SECRET_PATTERNS = (
     ("an Anthropic API key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{6,}")),
     ("an OpenAI-style API key", re.compile(r"\bsk-[A-Za-z0-9]{20,}")),
+    # ElevenLabs keys are `sk_` followed by a long token. Distinct from
+    # OpenAI's `sk-` (underscore, not hyphen), so the two never collide.
+    #
+    # Matched as alphanumeric rather than strictly hex, which is what the
+    # current format uses: `sk_` plus 32 characters is already a
+    # distinctive enough shape that a false positive is close to
+    # unimaginable, and being slightly wider means a format change does
+    # not silently stop protecting anyone.
+    #
+    # The older bare 32-character hex form is deliberately NOT matched:
+    # it is indistinguishable from any MD5 sum, and a rule that refused
+    # every checksum in a memory is a rule people learn to work around.
+    ("an ElevenLabs API key", re.compile(r"\bsk_[A-Za-z0-9]{32,}")),
     ("a GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
     ("a GitHub fine-grained token", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}")),
     ("a Netlify token", re.compile(r"\bnfp_[A-Za-z0-9]{20,}")),

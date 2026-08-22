@@ -110,6 +110,39 @@ except the prompt.
   reinstall suggestion that would not have helped is the failure this
   replaces; `app/voice/input_state.py` holds the ten states.
 
+## Cloud voice rules (non-negotiable)
+
+ElevenLabs is an **optional** premium tier. See
+`docs/clean-room-and-voice-identity.md` for the voice brief and the
+clean-room decision behind it.
+
+- **Local stays the default, and stays sufficient.** Kokoro, Windows
+  natural voices and SAPI5 all keep working with no key, no network and
+  no account. `ENGINE_ORDER` is the *local* chain and ElevenLabs is
+  deliberately not in it: a tier that costs money and sends text to a
+  third party may only ever be chosen by name.
+- **The key lives in Windows Credential Manager, in its own entry**
+  (`credentials.ELEVENLABS_USERNAME`), never in preferences, the
+  database, `.env`, a log, a diagnostic or an event. No endpoint returns
+  it; the UI learns only whether one exists.
+- **One pinned host, no redirects, bounded everything.**
+  `app/voice/elevenlabs.py` talks to `api.elevenlabs.io` over HTTPS with
+  `follow_redirects=False`, connect and read timeouts, a capped response
+  body and a content-type check before a byte is treated as audio. There
+  is no endpoint that fetches an audio URL supplied by anyone.
+- **Privacy mode blocks it completely** — no text is sent, and the
+  refusal says so rather than quietly using a different voice.
+- **A fallback is always visible.** If the local voice covers for the
+  cloud one, the reason is reported. A silent fallback would make an
+  expired key and an exhausted quota both sound like success.
+- **Nothing is created, cloned or billed automatically.** No voice
+  design, no cloning, no credits spent without a button press. Nothing
+  ElevenLabs-related runs during installation, onboarding, startup,
+  tests or CI, and no test may ever call the real API.
+- **The voice is original.** It does not imitate or clone any actor,
+  performer or copyrighted character, and this project never claims
+  otherwise.
+
 ## Memory secret rules (non-negotiable)
 
 These exist because `memory add my key is sk-ant-…` stored the key

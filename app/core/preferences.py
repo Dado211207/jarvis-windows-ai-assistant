@@ -71,6 +71,16 @@ STORABLE_KEYS = (
     # removing software somebody else installed — because JARVIS happened
     # to be uninstalled — is the wrong answer every time.
     "ollama_installed_by_jarvis",
+    # The optional cloud voice. Which engine was chosen, which voice, its
+    # tuning, and whether the local voice may cover for it.
+    #
+    # The ElevenLabs API key is deliberately NOT here and never will be:
+    # this file is plain JSON in AppData, and a credential belongs in the
+    # Windows Credential Manager (app/core/credentials.py). store()
+    # refuses anything credential-shaped, but the real protection is that
+    # there is no key here for it to refuse.
+    "tts_engine", "elevenlabs_voice_id", "elevenlabs_voice_name",
+    "elevenlabs_settings", "elevenlabs_fallback",
 )
 
 # What a name is allowed to be. Deliberately generous about content and

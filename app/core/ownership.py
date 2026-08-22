@@ -88,6 +88,12 @@ CREATED_AT_RUNTIME = (
           r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\JARVIS.lnk", always=True),
     Owned("credential", "Your Anthropic API key, in Windows Credential Manager",
           "Windows Credential Manager (JARVIS)", always=False),
+    # Its own entry, because it is its own credential. Two keys for two
+    # services are granted and revoked independently, and a manifest that
+    # named only one would leave the other behind while reporting
+    # success — which is the exact failure this module exists to prevent.
+    Owned("elevenlabs_credential", "Your ElevenLabs API key, in Windows Credential Manager",
+          "Windows Credential Manager (JARVIS)", always=False),
     Owned("data_dir", "Settings, chat history, logs, and any voice or speech model you downloaded",
           r"%LOCALAPPDATA%\JARVIS", always=False),
 )
@@ -198,19 +204,28 @@ def _remove_credential(report: RemovalReport) -> None:
     Credential Manager target name is how an uninstall leaves a secret
     behind while reporting success.
     """
-    try:
-        from app.core.credentials import clear_stored_api_key, get_stored_api_key
+    from app.core import credentials
 
-        if not get_stored_api_key():
-            report.not_present.append("Your API key in Windows Credential Manager")
-            return
-        if clear_stored_api_key():
-            report.removed.append("Your API key in Windows Credential Manager")
-        else:
-            report.failed.append("Your API key in Windows Credential Manager")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Could not remove the stored API key: %s", exc)
-        report.failed.append(f"Your API key in Windows Credential Manager ({exc})")
+    for label, read, clear in (
+        ("Your Anthropic API key in Windows Credential Manager",
+         credentials.get_stored_api_key, credentials.clear_stored_api_key),
+        ("Your ElevenLabs API key in Windows Credential Manager",
+         credentials.get_elevenlabs_key, credentials.clear_elevenlabs_key),
+    ):
+        try:
+            if not read():
+                report.not_present.append(label)
+                continue
+            if clear():
+                report.removed.append(label)
+            else:
+                report.failed.append(label)
+        except Exception as exc:  # noqa: BLE001
+            # The exception class, not str(exc): this line goes into a
+            # log, and a credential-store error can quote what it was
+            # looking for.
+            logger.warning("Could not remove a stored API key: %s", exc.__class__.__name__)
+            report.failed.append(label)
 
 
 def _remove_data_dir(report: RemovalReport) -> None:

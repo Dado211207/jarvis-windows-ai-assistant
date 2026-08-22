@@ -355,3 +355,277 @@ def voice_licences() -> List[LicenceComponent]:
     drift away from what actually ships.
     """
     return [LicenceComponent(**entry) for entry in assets.LICENCE_MANIFEST]
+
+
+# ---------------------------------------------------------------------------
+# The optional cloud voice (ElevenLabs).
+#
+# Every mutating endpoint here carries require_session_token, like every
+# other mutating endpoint in the application. The key is write-only from
+# the browser's point of view: it can be saved, replaced, deleted and
+# validated, and there is no endpoint that returns it. What comes back is
+# always a boolean.
+# ---------------------------------------------------------------------------
+
+class CloudVoiceStatusResponse(BaseModel):
+    selected: bool
+    key_configured: bool
+    voice_id: str
+    voice_name: str
+    settings: dict
+    defaults: dict
+    ranges: dict
+    fallback_allowed: bool
+    blocked_by_privacy: bool
+    detail: str
+    last_fallback: str
+    test_phrase: str
+    max_text_chars: int
+
+
+class SaveCloudKeyRequest(BaseModel):
+    # No max_length trap: an over-long value is refused below with a
+    # sentence rather than a 422 nobody can act on.
+    api_key: str = Field(..., min_length=1)
+
+
+class SelectEngineRequest(BaseModel):
+    engine: str = Field("", max_length=32)
+
+
+class SelectCloudVoiceRequest(BaseModel):
+    voice_id: str = Field(..., min_length=1, max_length=128)
+    voice_name: str = Field("", max_length=80)
+
+
+class CloudSettingsRequest(BaseModel):
+    settings: dict = Field(default_factory=dict)
+
+
+class CloudFallbackRequest(BaseModel):
+    allowed: bool
+
+
+class CloudActionResponse(BaseModel):
+    success: bool
+    message: str
+    status: CloudVoiceStatusResponse
+
+
+class CloudVoiceListResponse(BaseModel):
+    success: bool
+    message: str
+    voices: List[dict]
+
+
+def _cloud_response(success: bool, message: str) -> CloudActionResponse:
+    return CloudActionResponse(
+        success=success, message=message,
+        status=CloudVoiceStatusResponse(**engines.cloud_status()),
+    )
+
+
+@router.get("/voice/cloud", response_model=CloudVoiceStatusResponse)
+def cloud_status() -> CloudVoiceStatusResponse:
+    return CloudVoiceStatusResponse(**engines.cloud_status())
+
+
+@router.post(
+    "/voice/cloud/key",
+    response_model=CloudActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def save_cloud_key(req: SaveCloudKeyRequest) -> CloudActionResponse:
+    """Save the ElevenLabs key into the Windows Credential Manager.
+
+    Saving does not validate: a network call the user did not ask for is
+    a network call they did not consent to, and a key saved while the
+    machine is offline is still the key they meant to save. Validation is
+    its own button.
+    """
+    from app.core.credentials import set_elevenlabs_key
+
+    key = req.api_key.strip()
+    if len(key) > 512:
+        return _cloud_response(False, "That does not look like an API key — it is too long.")
+    if not set_elevenlabs_key(key):
+        return _cloud_response(
+            False,
+            "The Windows Credential Manager could not be written to, so the key was not "
+            "saved. It has not been stored anywhere else.",
+        )
+    return _cloud_response(True, "Key saved to the Windows Credential Manager.")
+
+
+@router.post(
+    "/voice/cloud/key/delete",
+    response_model=CloudActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def delete_cloud_key() -> CloudActionResponse:
+    from app.core.credentials import clear_elevenlabs_key
+
+    if not clear_elevenlabs_key():
+        return _cloud_response(False, "The Windows Credential Manager could not be reached.")
+    return _cloud_response(True, "Key removed.")
+
+
+@router.post(
+    "/voice/cloud/validate",
+    response_model=CloudActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def validate_cloud_key() -> CloudActionResponse:
+    """Check the saved key against ElevenLabs, only when asked.
+
+    Uses the subscription endpoint — the cheapest authenticated call
+    there is. It generates no audio and spends no credits.
+    """
+    from app.core.credentials import get_elevenlabs_key
+    from app.core.privacy import privacy_mode
+    from app.voice import elevenlabs
+
+    if privacy_mode.active:
+        return _cloud_response(
+            False, "Privacy mode is on, so JARVIS did not contact ElevenLabs.",
+        )
+    key = get_elevenlabs_key()
+    if not key:
+        return _cloud_response(False, elevenlabs._MESSAGES[elevenlabs.NOT_CONFIGURED])
+    ok, message = elevenlabs.validate_key(key)
+    return _cloud_response(ok, message)
+
+
+@router.post(
+    "/voice/cloud/voices",
+    response_model=CloudVoiceListResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def refresh_cloud_voices() -> CloudVoiceListResponse:
+    """The voices this account can use. A POST because it costs a network
+    round trip and must not happen because a page was opened."""
+    from app.core.credentials import get_elevenlabs_key
+    from app.core.privacy import privacy_mode
+    from app.voice import elevenlabs
+
+    if privacy_mode.active:
+        return CloudVoiceListResponse(
+            success=False,
+            message="Privacy mode is on, so JARVIS did not contact ElevenLabs.",
+            voices=[],
+        )
+    key = get_elevenlabs_key()
+    if not key:
+        return CloudVoiceListResponse(
+            success=False, message=elevenlabs._MESSAGES[elevenlabs.NOT_CONFIGURED], voices=[],
+        )
+    try:
+        voices = elevenlabs.list_voices(key)
+    except elevenlabs.ElevenLabsError as exc:
+        return CloudVoiceListResponse(success=False, message=exc.message, voices=[])
+    return CloudVoiceListResponse(
+        success=True,
+        message=f"{len(voices)} voice(s) available to this account.",
+        voices=[voice.as_dict() for voice in voices],
+    )
+
+
+@router.post(
+    "/voice/cloud/select-voice",
+    response_model=CloudActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def select_cloud_voice(req: SelectCloudVoiceRequest) -> CloudActionResponse:
+    engines.set_selected_cloud_voice(req.voice_id, req.voice_name)
+    name = engines.selected_cloud_voice_name() or engines.selected_cloud_voice_id()
+    return _cloud_response(True, f"Cloud voice set to {name}.")
+
+
+@router.post(
+    "/voice/engine",
+    response_model=CloudActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def select_engine(req: SelectEngineRequest) -> CloudActionResponse:
+    """Choose the cloud voice, or go back to the local chain."""
+    chosen = engines.set_selected_engine(req.engine)
+    if chosen == engines.ELEVENLABS:
+        return _cloud_response(True, "JARVIS will speak with the ElevenLabs cloud voice.")
+    return _cloud_response(True, "JARVIS will speak with the best local voice.")
+
+
+@router.post(
+    "/voice/cloud/settings",
+    response_model=CloudActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def save_cloud_settings(req: CloudSettingsRequest) -> CloudActionResponse:
+    engines.set_cloud_settings(req.settings)
+    return _cloud_response(True, "Voice settings saved.")
+
+
+@router.post(
+    "/voice/cloud/settings/reset",
+    response_model=CloudActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def reset_cloud_settings() -> CloudActionResponse:
+    from app.voice import elevenlabs
+
+    engines.set_cloud_settings(dict(elevenlabs.DEFAULT_SETTINGS))
+    return _cloud_response(True, "Voice settings reset to the recommended values.")
+
+
+@router.post(
+    "/voice/cloud/fallback",
+    response_model=CloudActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_cloud_fallback(req: CloudFallbackRequest) -> CloudActionResponse:
+    allowed = engines.set_fallback_allowed(req.allowed)
+    return _cloud_response(
+        True,
+        "The local voice will speak if the cloud voice cannot, and will say why."
+        if allowed
+        else "JARVIS will stay silent and report the error if the cloud voice cannot speak.",
+    )
+
+
+@router.post(
+    "/voice/cloud/test",
+    response_model=CloudActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def test_cloud_voice() -> CloudActionResponse:
+    """Speak the test phrase through ElevenLabs, and only ElevenLabs.
+
+    Deliberately does not fall back: this button answers "does the cloud
+    voice work", and a local voice answering it would be the wrong answer
+    to the question that was asked.
+    """
+    from app.core.credentials import get_elevenlabs_key
+    from app.core.privacy import privacy_mode
+    from app.voice import audio, elevenlabs
+
+    if privacy_mode.active:
+        return _cloud_response(
+            False, "Privacy mode is on, so no text was sent to ElevenLabs.",
+        )
+    key = get_elevenlabs_key()
+    if not key:
+        return _cloud_response(False, elevenlabs._MESSAGES[elevenlabs.NOT_CONFIGURED])
+    voice_id = engines.selected_cloud_voice_id()
+    if not voice_id:
+        return _cloud_response(False, "Choose a voice first.")
+
+    try:
+        wav = elevenlabs.synthesise_wav(
+            elevenlabs.TEST_PHRASE, voice_id=voice_id, api_key=key,
+            settings=engines.cloud_settings(),
+        )
+    except elevenlabs.ElevenLabsError as exc:
+        return _cloud_response(False, exc.message)
+
+    engines.stop()  # one utterance at a time, like every other speech path
+    audio.player.play_wav_bytes(wav)
+    return _cloud_response(True, f"Speaking: “{elevenlabs.TEST_PHRASE}”")
