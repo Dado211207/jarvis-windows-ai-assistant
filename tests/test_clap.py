@@ -33,6 +33,26 @@ def code_only(source: str) -> str:
     return re.sub(r"^\s*//.*$", "", without_blocks, flags=re.MULTILINE)
 
 
+@pytest.fixture(autouse=True)
+def never_really_speak():
+    """No test in this file may reach a real speech engine.
+
+    `activate()` calls `_speak_greeting()`, which is a no-op while
+    spoken replies are off — and they are off by default, so nothing
+    here *would* speak. That is incidental, not structural, and
+    CLAUDE.md's Phase 3 rule asks for structural: on the Windows CI
+    runner, which has no audio device, a preference file that came out
+    the other way would put a real SAPI5 call in the middle of the test
+    suite. Individual tests still patch `speak` themselves to assert on
+    it; this is the floor underneath them.
+    """
+    from app.voice.tts import tts_service
+
+    with patch.object(tts_service, "speak") as speak:
+        speak.return_value = type("R", (), {"success": True, "message": ""})()
+        yield speak
+
+
 @pytest.fixture
 def client():
     from fastapi.testclient import TestClient

@@ -178,6 +178,20 @@ def clap_browser(playwright_instance):
         browser.close()
 
 
+@pytest.fixture(autouse=True)
+def never_really_speak(monkeypatch):
+    """No test in this file may reach a real speech engine — CLAUDE.md's
+    Phase 3 rule. Spoken replies are off by default so nothing here
+    would speak anyway; this makes that structural rather than
+    incidental."""
+    from app.voice.tts import tts_service
+
+    monkeypatch.setattr(
+        type(tts_service), "speak",
+        lambda self, text: type("R", (), {"success": True, "message": ""})(),
+    )
+
+
 @pytest.fixture
 def armed(monkeypatch):
     """Clap activation switched on, with the window signal intercepted.
