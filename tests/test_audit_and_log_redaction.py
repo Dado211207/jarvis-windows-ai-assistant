@@ -181,38 +181,71 @@ def test_redaction_never_raises_even_if_the_guard_is_unavailable(monkeypatch):
 # 2. The log file
 # ---------------------------------------------------------------------------
 
-def test_a_command_containing_a_secret_does_not_reach_the_log_file(tmp_path, monkeypatch):
-    from app.logging_config import get_logger, setup_logging
+@pytest.fixture
+def log_capture(tmp_path, monkeypatch):
+    """A real log file, at a level these tests pin rather than inherit.
+
+    The level has to be pinned, and the file has to be checked for
+    content, because of a defect these tests had themselves.
+    `scripts/build-installer.ps1` sets `JARVIS_LOG_LEVEL=WARNING` before
+    running the suite; three tests here logged at INFO, so on that run
+    the handler dropped every record and the file was created empty. Two
+    of the three asserted only "the secret is not in the file" — which
+    an empty file satisfies perfectly. The Windows Installer job caught
+    it because the third asserted the line was *present*; reproduced
+    afterwards on Linux with `JARVIS_LOG_LEVEL=WARNING`.
+
+    So `read()` refuses to return an empty file. A security test that
+    passes because nothing was written is worse than no test: it reports
+    a guarantee it never checked.
+    """
+    from app.logging_config import setup_logging
 
     log_file = tmp_path / "jarvis.log"
     monkeypatch.setattr("app.config.settings.jarvis_log_file", str(log_file))
+    monkeypatch.setattr("app.config.settings.jarvis_log_level", "DEBUG")
     setup_logging()
+
+    class Capture:
+        path = log_file
+
+        def read(self) -> str:
+            logging.shutdown()
+            body = log_file.read_text(encoding="utf-8")
+            assert body.strip(), (
+                "nothing was written to the log file — this test proves nothing "
+                "unless a record actually reached the handler"
+            )
+            return body
+
     try:
-        get_logger("test.redaction").info("API command: %r", f"memory add my key is {SECRET}")
+        yield Capture()
     finally:
         logging.shutdown()
 
-    body = log_file.read_text(encoding="utf-8")
+
+def test_a_command_containing_a_secret_does_not_reach_the_log_file(log_capture):
+    from app.logging_config import get_logger
+
+    get_logger("test.redaction").info("API command: %r", f"memory add my key is {SECRET}")
+
+    body = log_capture.read()
     assert SECRET not in body
     assert "redacted" in body
 
 
-def test_a_preformatted_message_is_redacted_too(tmp_path, monkeypatch):
+def test_a_preformatted_message_is_redacted_too(log_capture):
     """Not every call site uses %s args; some build the whole line first."""
-    from app.logging_config import get_logger, setup_logging
+    from app.logging_config import get_logger
 
-    log_file = tmp_path / "jarvis.log"
-    monkeypatch.setattr("app.config.settings.jarvis_log_file", str(log_file))
-    setup_logging()
-    try:
-        get_logger("test.redaction").info(f"the key is {SECRET}")
-    finally:
-        logging.shutdown()
+    get_logger("test.redaction").info(f"the key is {SECRET}")
 
-    assert SECRET not in log_file.read_text(encoding="utf-8")
+    body = log_capture.read()
+    assert SECRET not in body
+    assert "redacted" in body
 
 
-def test_a_format_string_is_never_rewritten(tmp_path, monkeypatch):
+def test_a_format_string_is_never_rewritten(log_capture):
     """The bug the first version of the filter had, kept as a test.
 
     "Could not remove the stored API key: %s" reads as a credential noun
@@ -220,33 +253,45 @@ def test_a_format_string_is_never_rewritten(tmp_path, monkeypatch):
     turned an ordinary warning into a TypeError. A format string is
     developer-written literal text; only the arguments carry user data.
     """
+    from app.logging_config import get_logger
+
+    get_logger("test.redaction").warning(
+        "Could not remove the stored API key: %s", OSError("boom"),
+    )
+
+    assert "Could not remove the stored API key: boom" in log_capture.read()
+
+
+def test_ordinary_log_lines_are_untouched(log_capture):
+    from app.logging_config import get_logger
+
+    get_logger("test.redaction").info("Server child process stopped.")
+
+    assert "Server child process stopped." in log_capture.read()
+
+
+def test_the_configured_log_level_is_honoured(tmp_path, monkeypatch):
+    """The other half of the fixture's reasoning, asserted directly.
+
+    A WARNING-level installation must not write INFO lines — that is the
+    setting working, not a fault — and the fixture above exists so no
+    redaction test can quietly depend on which way this goes.
+    """
     from app.logging_config import get_logger, setup_logging
 
     log_file = tmp_path / "jarvis.log"
     monkeypatch.setattr("app.config.settings.jarvis_log_file", str(log_file))
+    monkeypatch.setattr("app.config.settings.jarvis_log_level", "WARNING")
     setup_logging()
     try:
-        get_logger("test.redaction").warning(
-            "Could not remove the stored API key: %s", OSError("boom"),
-        )
+        get_logger("test.redaction").info("this is only informative")
+        get_logger("test.redaction").warning("this one matters")
     finally:
         logging.shutdown()
 
-    assert "Could not remove the stored API key: boom" in log_file.read_text(encoding="utf-8")
-
-
-def test_ordinary_log_lines_are_untouched(tmp_path, monkeypatch):
-    from app.logging_config import get_logger, setup_logging
-
-    log_file = tmp_path / "jarvis.log"
-    monkeypatch.setattr("app.config.settings.jarvis_log_file", str(log_file))
-    setup_logging()
-    try:
-        get_logger("test.redaction").info("Server child process stopped.")
-    finally:
-        logging.shutdown()
-
-    assert "Server child process stopped." in log_file.read_text(encoding="utf-8")
+    body = log_file.read_text(encoding="utf-8")
+    assert "this is only informative" not in body
+    assert "this one matters" in body
 
 
 def test_the_filter_is_attached_to_handlers_not_only_the_logger(tmp_path, monkeypatch):

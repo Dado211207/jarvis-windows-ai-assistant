@@ -534,6 +534,18 @@ should be built on top of; see `docs/audit-v0.2.md` and
 
 ## Testing
 
+**Run the suite the way the installer build runs it.** `scripts/build-installer.ps1`
+sets `JARVIS_LOG_LEVEL=WARNING` and a temp `JARVIS_DB_PATH` before
+`pytest`, so a test that quietly assumes the default log level passes
+locally and fails the Windows Installer job. Worse, it can pass *both*
+while proving nothing: three redaction tests logged at INFO, wrote an
+empty file, and two of them asserted only "the secret is not in the
+file". Before calling a change done:
+
+```bash
+JARVIS_LOG_LEVEL=WARNING JARVIS_DB_PATH=/tmp/jarvis_gate.db pytest
+```
+
 ```bash
 # Run all tests
 pytest
