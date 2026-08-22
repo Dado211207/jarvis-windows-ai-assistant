@@ -114,6 +114,39 @@ def test_load_icon_image_uses_real_asset_when_present(tmp_path, monkeypatch):
     assert image.size == (32, 32)
 
 
+def test_the_placeholder_icon_is_one_file_that_is_rewritten(tmp_path, monkeypatch):
+    """It used to be tempfile.mkstemp(), which left a fresh .ico in
+    %TEMP% on every single start and never removed one — a growing pile
+    of files in a directory the uninstaller does not own. One named file
+    under the JARVIS data directory is both bounded and removable."""
+    from app.launcher import tray
+
+    monkeypatch.setattr(tray, "ICON_ASSET_PATH", tmp_path / "definitely-absent.ico")
+    monkeypatch.setattr("app.core.app_paths.app_data_root", lambda: tmp_path / "data")
+
+    first = tray._resolve_icon_file()
+    second = tray._resolve_icon_file()
+
+    assert first == second
+    assert first.exists()
+    assert first.name == tray.PLACEHOLDER_ICON_NAME
+    assert sorted(p.name for p in first.parent.iterdir()) == [tray.PLACEHOLDER_ICON_NAME]
+
+
+def test_the_bundled_icon_is_used_as_it_is_and_nothing_is_written(tmp_path, monkeypatch):
+    from PIL import Image
+    from app.launcher import tray
+
+    asset = tmp_path / "icon.ico"
+    Image.new("RGBA", (32, 32), (1, 2, 3, 255)).save(asset, format="ICO")
+    monkeypatch.setattr(tray, "ICON_ASSET_PATH", asset)
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr("app.core.app_paths.app_data_root", lambda: data_dir)
+
+    assert tray._resolve_icon_file() == asset
+    assert not data_dir.exists()
+
+
 # ---------------------------------------------------------------------------
 # _poll_loop
 # ---------------------------------------------------------------------------

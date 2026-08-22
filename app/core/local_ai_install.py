@@ -17,8 +17,10 @@ call it.
 **Running a downloaded executable is the most dangerous thing in this
 product, so it is the most checked.** Before the installer is executed:
 
-  * it came from Ollama's own HTTPS download URL, and nothing may
-    redirect it off that host;
+  * it came from Ollama's own HTTPS download URL, and every redirect is
+    checked against `ALLOWED_SOURCES` *before* it is followed — not
+    after the chain has finished, which is what lets a detour through
+    somebody else's host go unnoticed;
   * its Authenticode signature is verified against Windows' own trust
     store, and the signing certificate must name Ollama
     (`app/core/authenticode.py`);
@@ -49,10 +51,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 
 import httpx
 
+from app.core import safe_fetch
 from app.logging_config import get_logger
 
 logger = get_logger("core.local_ai_install")
@@ -61,8 +63,25 @@ logger = get_logger("core.local_ai_install")
 # else is refused rather than followed, because "we downloaded an .exe
 # from wherever that URL ended up pointing" is not a security story.
 INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
-ALLOWED_HOSTS = ("ollama.com", "www.ollama.com", "github.com", "objects.githubusercontent.com",
-                 "release-assets.githubusercontent.com")
+
+# Every host the download is permitted to touch, and — where the host is
+# a shared namespace anybody can publish under — the path prefix as well.
+#
+# `github.com` on its own would allow a redirect to any repository on
+# GitHub, which is not a pin at all: it is "somewhere on a site with
+# millions of publishers". Ollama's releases live under one path, so
+# that is what is allowed. The two githubusercontent hosts are GitHub's
+# own opaque asset CDNs, whose paths carry signed, expiring tokens
+# rather than a stable namespace, so they are pinned by host alone.
+ALLOWED_SOURCES = (
+    ("ollama.com", ""),
+    ("www.ollama.com", ""),
+    ("github.com", "/ollama/ollama/"),
+    ("objects.githubusercontent.com", ""),
+    ("release-assets.githubusercontent.com", ""),
+)
+
+MAX_REDIRECTS = safe_fetch.MAX_REDIRECTS
 
 # The name that must appear in the signing certificate.
 EXPECTED_PUBLISHER = "Ollama"
@@ -164,8 +183,8 @@ def _remember_we_installed_it() -> None:
 
 
 def _host_is_allowed(url: str) -> bool:
-    host = (urlparse(url).hostname or "").lower()
-    return host in ALLOWED_HOSTS
+    """Whether JARVIS may send a request to *url* at all."""
+    return safe_fetch.is_allowed(url, ALLOWED_SOURCES)
 
 
 class OllamaInstaller:
@@ -244,26 +263,17 @@ class OllamaInstaller:
             shutil.rmtree(staging, ignore_errors=True)
 
     def _download(self, target: Path) -> bool:
-        if not _host_is_allowed(INSTALLER_URL):  # pragma: no cover - constant, guarded anyway
-            self._set(status=ERROR, message="The download address is not one JARVIS trusts.")
-            return False
-
         self._set(status=DOWNLOADING, message="Downloading Ollama's installer…")
         try:
-            with httpx.stream(
-                "GET", INSTALLER_URL, timeout=DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True
+            # safe_fetch follows redirects by hand and checks every hop
+            # *before* contacting it. httpx's own follow_redirects=True
+            # cannot: it walks the whole chain and reports only where it
+            # ended up, so a chain that detours through somebody else's
+            # host and returns to an allowed one passed a check on the
+            # final URL. Reproduced here before it was fixed.
+            with safe_fetch.stream(
+                INSTALLER_URL, ALLOWED_SOURCES, DOWNLOAD_TIMEOUT_SECONDS
             ) as response:
-                response.raise_for_status()
-                final_url = str(response.url)
-                if not _host_is_allowed(final_url):
-                    self._set(
-                        status=ERROR,
-                        message=(
-                            "The download was redirected to an address JARVIS does not "
-                            "trust, so nothing was saved."
-                        ),
-                    )
-                    return False
                 total = int(response.headers.get("content-length") or 0)
                 self._set(bytes_total=total)
                 downloaded = 0
@@ -274,6 +284,9 @@ class OllamaInstaller:
                         handle.write(chunk)
                         downloaded += len(chunk)
                         self._set(bytes_downloaded=downloaded)
+        except safe_fetch.UntrustedRedirect as exc:
+            self._set(status=ERROR, message=exc.message)
+            return False
         except httpx.HTTPError as exc:
             self._set(
                 status=ERROR,

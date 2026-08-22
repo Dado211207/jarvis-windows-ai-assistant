@@ -117,6 +117,14 @@ def _write_raw(data: Dict[str, dict]) -> bool:
         return True
     except OSError:
         logger.warning("Could not save custom pronunciations to %s.", path, exc_info=True)
+        # A failed write must not leave its scratch file behind. The
+        # rename is what makes this atomic; if it did not happen, the
+        # half-written file is litter in the user's config directory and
+        # nothing will ever come back for it.
+        try:
+            path.with_suffix(".json.tmp").unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
 
 

@@ -144,20 +144,31 @@ def load_icon_image():
     return image
 
 
+PLACEHOLDER_ICON_NAME = "tray-placeholder.ico"
+
+
 def _resolve_icon_file() -> Path:
     """A real filesystem path to hand to Win32's LoadImage, which (unlike
     pystray) takes a file path rather than an in-memory image — the
-    bundled .ico if present, otherwise load_icon_image()'s placeholder
-    written out to a temp file."""
+    bundled .ico if present, otherwise load_icon_image()'s placeholder.
+
+    The placeholder is written to one fixed path under the JARVIS data
+    directory and overwritten in place. It used to be `mkstemp()`, which
+    left a new .ico in %TEMP% on every start and never removed one: a
+    file nobody knew about, in a directory the uninstaller does not
+    own. One named file that is rewritten is both smaller and, because
+    the data directory is already in app/core/ownership.py's manifest,
+    actually removable.
+    """
     if ICON_ASSET_PATH.exists():
         return ICON_ASSET_PATH
 
-    import tempfile
-    fd, tmp_path = tempfile.mkstemp(suffix=".ico")
-    import os
-    os.close(fd)
-    load_icon_image().save(tmp_path, format="ICO")
-    return Path(tmp_path)
+    from app.core.app_paths import app_data_root
+
+    placeholder = app_data_root() / PLACEHOLDER_ICON_NAME
+    placeholder.parent.mkdir(parents=True, exist_ok=True)
+    load_icon_image().save(placeholder, format="ICO")
+    return placeholder
 
 
 def _poll_loop(client: TrayApiClient, state: TrayState, icon, stop_event: threading.Event) -> None:

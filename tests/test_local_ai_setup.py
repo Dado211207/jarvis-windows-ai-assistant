@@ -127,26 +127,141 @@ def test_an_existing_ollama_is_left_alone(client):
 
 def test_the_download_address_is_ollamas_own():
     assert local_ai_install.INSTALLER_URL.startswith("https://ollama.com/")
-    assert "ollama.com" in local_ai_install.ALLOWED_HOSTS
+    assert ("ollama.com", "") in local_ai_install.ALLOWED_SOURCES
+
+
+# ---------------------------------------------------------------------------
+# Redirects.
+#
+# These drive the real redirect-following code through httpx's own
+# MockTransport rather than a MagicMock standing in for a response, so
+# what is exercised is the product's actual loop: its hop limit, its
+# relative-URL resolution and — the point of all of it — the fact that
+# every destination is checked before a request is sent to it.
+# ---------------------------------------------------------------------------
+
+def _download_through(chain, tmp_path):
+    """Run a download against a scripted redirect chain.
+
+    *chain* maps a URL to either ("redirect", location) or
+    ("ok", body). Returns (succeeded, installer, urls_actually_requested).
+    """
+    import httpx
+
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        requested.append(url)
+        kind, value = chain.get(url, ("missing", None))
+        if kind == "redirect":
+            return httpx.Response(302, headers={"location": value})
+        if kind == "ok":
+            return httpx.Response(
+                200, content=value, headers={"content-length": str(len(value))},
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_stream(method, url, **kwargs):
+        kwargs.pop("timeout", None)
+        client = httpx.Client(
+            transport=transport,
+            follow_redirects=kwargs.pop("follow_redirects", False),
+        )
+        return client.stream(method, url, **kwargs)
+
+    installer = local_ai_install.OllamaInstaller()
+    with patch("httpx.stream", fake_stream):
+        ok = installer._download(tmp_path / "OllamaSetup.exe")
+    return ok, installer, requested
 
 
 def test_a_redirect_off_the_trusted_hosts_is_refused(tmp_path):
     """"We downloaded an .exe from wherever that URL ended up pointing"
     is not a security story."""
-    response = MagicMock()
-    response.url = "https://somewhere-else.example/OllamaSetup.exe"
-    response.headers = {"content-length": "10"}
-    response.iter_bytes.return_value = [b"x" * 10]
-    response.raise_for_status.return_value = None
-    stream = MagicMock()
-    stream.__enter__.return_value = response
-
-    installer = local_ai_install.OllamaInstaller()
-    with patch("httpx.stream", return_value=stream):
-        ok = installer._download(tmp_path / "OllamaSetup.exe")
+    ok, installer, requested = _download_through({
+        local_ai_install.INSTALLER_URL: ("redirect", "https://somewhere-else.example/x.exe"),
+        "https://somewhere-else.example/x.exe": ("ok", b"malware"),
+    }, tmp_path)
 
     assert ok is False
     assert installer.state().status == local_ai_install.ERROR
+    assert "does not trust" in installer.state().message
+    assert "https://somewhere-else.example/x.exe" not in requested, \
+        "the untrusted host must never be contacted at all"
+
+
+def test_a_detour_through_an_untrusted_host_is_refused(tmp_path):
+    """The regression this replaces: httpx's own follow_redirects walks
+    the whole chain and reports only where it ended up, so a chain that
+    passes through somebody else's host and comes back to an allowed one
+    passed a check on the final URL. Reproduced before it was fixed."""
+    ok, installer, requested = _download_through({
+        local_ai_install.INSTALLER_URL: ("redirect", "https://evil.example.net/hop"),
+        "https://evil.example.net/hop": (
+            "redirect", "https://github.com/ollama/ollama/releases/download/x/OllamaSetup.exe",
+        ),
+        "https://github.com/ollama/ollama/releases/download/x/OllamaSetup.exe": ("ok", b"MZ"),
+    }, tmp_path)
+
+    assert ok is False
+    assert "does not trust" in installer.state().message
+    assert requested == [local_ai_install.INSTALLER_URL]
+
+
+def test_a_github_path_outside_ollamas_own_repository_is_refused(tmp_path):
+    """`github.com` on its own is not a pin — anybody can publish a
+    release there."""
+    ok, installer, requested = _download_through({
+        local_ai_install.INSTALLER_URL: (
+            "redirect", "https://github.com/someone-else/malware/releases/download/x/OllamaSetup.exe",
+        ),
+    }, tmp_path)
+
+    assert ok is False
+    assert "does not trust" in installer.state().message
+    assert len(requested) == 1
+
+
+def test_the_real_redirect_chain_is_followed_to_the_end(tmp_path):
+    """The shape Ollama's own URL actually takes: ollama.com to a GitHub
+    release to GitHub's asset CDN."""
+    asset = "https://objects.githubusercontent.com/github-production-release-asset/x?token=y"
+    ok, installer, requested = _download_through({
+        local_ai_install.INSTALLER_URL: (
+            "redirect", "https://github.com/ollama/ollama/releases/download/v1/OllamaSetup.exe",
+        ),
+        "https://github.com/ollama/ollama/releases/download/v1/OllamaSetup.exe": ("redirect", asset),
+        asset: ("ok", b"MZ" + b"\x00" * 100),
+    }, tmp_path)
+
+    assert ok is True
+    assert len(requested) == 3
+    assert (tmp_path / "OllamaSetup.exe").read_bytes().startswith(b"MZ")
+
+
+def test_an_endless_redirect_chain_stops(tmp_path):
+    ok, installer, requested = _download_through({
+        local_ai_install.INSTALLER_URL: ("redirect", "https://ollama.com/a"),
+        "https://ollama.com/a": ("redirect", "https://ollama.com/b"),
+        "https://ollama.com/b": ("redirect", "https://ollama.com/a"),
+    }, tmp_path)
+
+    assert ok is False
+    assert len(requested) <= local_ai_install.MAX_REDIRECTS + 1
+    assert "redirected" in installer.state().message
+
+
+def test_a_plain_http_redirect_is_refused(tmp_path):
+    """Downgrading to http would put the installer on the wire in the
+    clear, where anything between here and there could replace it."""
+    ok, installer, _ = _download_through({
+        local_ai_install.INSTALLER_URL: ("redirect", "http://ollama.com/download/OllamaSetup.exe"),
+    }, tmp_path)
+
+    assert ok is False
     assert "does not trust" in installer.state().message
 
 

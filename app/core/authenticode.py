@@ -24,6 +24,7 @@ Everything here returns a verdict rather than raising, and reports
 where the check cannot run, the safe reading of "unknown" is "no".
 """
 
+import re
 import sys
 from dataclasses import dataclass
 from typing import Optional
@@ -31,6 +32,45 @@ from typing import Optional
 from app.logging_config import get_logger
 
 logger = get_logger("core.authenticode")
+
+# Suffixes a company puts after its name on a certificate. Stripped
+# before comparison so "Ollama Inc." still reads as Ollama, and nothing
+# more permissive than that is allowed through.
+_CORPORATE_SUFFIXES = (
+    "incorporated", "inc", "corporation", "corp", "company", "co",
+    "limited", "ltd", "llc", "llp", "plc", "gmbh", "ab", "as", "sa", "sas",
+    "bv", "nv", "oy", "srl", "spa", "pty", "pte", "kk", "kft", "sro", "zoo",
+)
+
+
+def _normalised_name(value: str) -> str:
+    """A certificate display name reduced to its comparable core.
+
+    Lowercased, punctuation dropped, corporate suffixes removed. This is
+    the *only* transformation applied — nothing here reorders or drops
+    meaningful words, so "Ollama Fan Club" does not become "Ollama".
+    """
+    words = re.findall(r"[a-z0-9]+", (value or "").lower())
+    while words and words[-1] in _CORPORATE_SUFFIXES:
+        words.pop()
+    return " ".join(words)
+
+
+def publisher_matches(signer: str, expected: str) -> bool:
+    """Whether *signer* names *expected*, and nobody else.
+
+    Deliberately not a substring test. `"ollama" in signer.lower()` — what
+    this used to be — accepts a certificate legitimately issued to
+    "NotOllama Ltd" or "Ollama Fan Club", which is exactly the case the
+    publisher check exists to catch: an attacker who can obtain a valid
+    code-signing certificate does not need to compromise anything else.
+
+    A name that has changed (a real acquisition, a new legal entity)
+    fails closed: the install is refused with a message naming the
+    signer it actually saw, which is a person's decision to make, not
+    this function's.
+    """
+    return bool(expected) and _normalised_name(signer) == _normalised_name(expected)
 
 
 @dataclass(frozen=True)
@@ -43,14 +83,15 @@ class SignatureVerdict:
 
     def is_from(self, publisher: str) -> bool:
         """Signed, trusted, *and* by the expected publisher."""
-        return self.trusted and publisher.lower() in self.signer.lower()
+        return self.trusted and publisher_matches(self.signer, publisher)
 
 
 def verify(path, expected_publisher: str = "") -> SignatureVerdict:
     """Verify *path*'s Authenticode signature.
 
-    When *expected_publisher* is given, the verdict is only `trusted`
-    if the signing certificate's subject contains it.
+    When *expected_publisher* is given, the verdict is only `trusted` if
+    the signing certificate names that publisher and nobody else — see
+    `publisher_matches()`, which is not a substring test.
     """
     if sys.platform != "win32":
         return SignatureVerdict(
@@ -64,7 +105,7 @@ def verify(path, expected_publisher: str = "") -> SignatureVerdict:
     if not trusted:
         return SignatureVerdict(trusted=False, signer=signer, detail=detail)
 
-    if expected_publisher and expected_publisher.lower() not in signer.lower():
+    if expected_publisher and not publisher_matches(signer, expected_publisher):
         return SignatureVerdict(
             trusted=False,
             signer=signer,

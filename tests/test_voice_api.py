@@ -289,6 +289,23 @@ def test_the_pronunciation_store_is_isolated_from_the_real_one():
     assert pronunciations.store_path().parent != config_dir()
 
 
+def test_a_failed_save_leaves_no_scratch_file_behind():
+    """The rename is what makes the write atomic. When it does not
+    happen, the half-written .json.tmp is litter in the user's config
+    directory that nothing will ever come back for."""
+    from unittest.mock import patch
+
+    from app.voice import pronunciations
+
+    store = pronunciations.store_path()
+    temporary = store.with_suffix(".json.tmp")
+
+    with patch.object(type(temporary), "replace", side_effect=OSError("disk full")):
+        assert pronunciations._write_raw({"dado": {"spoken_as": "dah-doh"}}) is False
+
+    assert not temporary.exists()
+
+
 def test_saving_a_pronunciation_requires_the_session_token(client):
     from app.api.session import HEADER_NAME
 
