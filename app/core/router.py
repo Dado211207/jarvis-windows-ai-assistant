@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.core.models import CommandResponse, PermissionLevel
+from app.core.redaction import redact_message
 from app.logging_config import get_logger
 
 logger = get_logger("router")
@@ -326,7 +327,13 @@ class CommandRouter:
         runtime.try_transition(RuntimeState.STANDBY, correlation_id=record.id, reason="dispatch complete")
         result_data = result.get("data") or {}
         final_status = ActionLifecycleStatus.SUCCEEDED if result.get("success") else ActionLifecycleStatus.FAILED
-        lifecycle_fields = {"result_summary": str(result.get("message", ""))[:500]}
+        # Redacted before it is persisted or broadcast. A tool's result
+        # message routinely quotes the input it was given, and several
+        # handlers put str(exc) into it — either can carry a credential
+        # into the audit trail and out over /ws/events, which
+        # app/core/events.py forbids in as many words.
+        safe_message = redact_message(str(result.get("message", "")))
+        lifecycle_fields = {"result_summary": safe_message[:500]}
         if final_status == ActionLifecycleStatus.FAILED:
             lifecycle_fields["error_category"] = result_data.get("error_category", "tool_execution_failed")
         lifecycle_transition(record.id, final_status, **lifecycle_fields)
@@ -334,7 +341,7 @@ class CommandRouter:
             EventType.ACTION_RESULT,
             {
                 "action_id": record.id, "tool_name": tool_name,
-                "success": result.get("success", False), "message": result.get("message", ""),
+                "success": result.get("success", False), "message": safe_message,
                 "timed_out": bool(result_data.get("timed_out", False)),
             },
             correlation_id=record.id,

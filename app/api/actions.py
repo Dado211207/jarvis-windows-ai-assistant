@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app.api.session import require_session_token
 from app.core.pending_actions import PendingAction, pending_store
+from app.core.redaction import redact_message
 from app.logging_config import get_logger
 
 logger = get_logger("api.actions")
@@ -229,10 +230,10 @@ def confirm_action(action_id: str) -> ActionResponse:
 
     if result.get("success"):
         pending_store.mark_executed(action_id, result.get("data"))
-        _sync_lifecycle(action_id, ActionLifecycleStatus.SUCCEEDED, result_summary=str(result.get("message", ""))[:500])
+        _sync_lifecycle(action_id, ActionLifecycleStatus.SUCCEEDED, result_summary=redact_message(str(result.get("message", "")))[:500])
         event_bus.publish(
             EventType.ACTION_RESULT,
-            {"action_id": action_id, "tool_name": action.tool_name, "success": True, "message": result.get("message", "")},
+            {"action_id": action_id, "tool_name": action.tool_name, "success": True, "message": redact_message(str(result.get("message", "")))},
             correlation_id=action_id,
         )
         logger.info("Action confirmed and executed: %s (id=%s)", action.tool_name, action_id)
@@ -248,14 +249,14 @@ def confirm_action(action_id: str) -> ActionResponse:
         pending_store.mark_failed(action_id, result.get("message", ""))
         _sync_lifecycle(
             action_id, ActionLifecycleStatus.FAILED,
-            result_summary=str(result.get("message", ""))[:500],
+            result_summary=redact_message(str(result.get("message", "")))[:500],
             error_category=result_data.get("error_category", "tool_execution_failed"),
         )
         event_bus.publish(
             EventType.ACTION_RESULT,
             {
                 "action_id": action_id, "tool_name": action.tool_name, "success": False,
-                "message": result.get("message", ""), "timed_out": bool(result_data.get("timed_out", False)),
+                "message": redact_message(str(result.get("message", ""))), "timed_out": bool(result_data.get("timed_out", False)),
             },
             correlation_id=action_id,
         )
