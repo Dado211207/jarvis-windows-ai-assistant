@@ -629,3 +629,123 @@ def test_cloud_voice() -> CloudActionResponse:
     engines.stop()  # one utterance at a time, like every other speech path
     audio.player.play_wav_bytes(wav)
     return _cloud_response(True, f"Speaking: “{elevenlabs.TEST_PHRASE}”")
+
+
+# ---------------------------------------------------------------------------
+# Double-clap activation
+#
+# Four settings and one activation report. The activation endpoint takes
+# no request body at all — read app/voice/clap.py for why that is a
+# design constraint rather than an omission: there is no field a clap
+# could carry that would be safe to accept.
+# ---------------------------------------------------------------------------
+
+class ClapStatusResponse(BaseModel):
+    enabled: bool
+    sensitivity: str
+    sensitivities: List[str]
+    greet: bool
+    greeting: str
+    detector: dict
+    privacy_blocking: bool
+    activations: int
+    last_reason: str
+    seconds_since_activation: Optional[float] = None
+    min_interval_seconds: float
+
+
+class ClapEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class ClapSettingsRequest(BaseModel):
+    sensitivity: Optional[str] = None
+    greet: Optional[bool] = None
+    greeting: Optional[str] = Field(default=None, max_length=200)
+
+
+class ClapActivateResponse(BaseModel):
+    accepted: bool
+    reason: str
+    window_shown: bool
+    greeted: bool
+    message: str
+
+
+_CLAP_REASONS = {
+    "activated": "JARVIS was brought to the front.",
+    "disabled": "Double-clap activation is switched off.",
+    "privacy_mode": "Privacy mode is on, so JARVIS is not listening for claps.",
+    "too_soon": "That was too soon after the last activation.",
+}
+
+
+@router.get("/voice/clap", response_model=ClapStatusResponse)
+def clap_status() -> ClapStatusResponse:
+    """Settings, detector tuning and what happened last.
+
+    Readable without the session token, like every other status read —
+    it reports no audio and no content, only whether a feature is on.
+    """
+    from app.voice import clap
+
+    return ClapStatusResponse(**clap.status())
+
+
+@router.post(
+    "/voice/clap/enabled",
+    response_model=ClapStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_clap_enabled(req: ClapEnabledRequest) -> ClapStatusResponse:
+    from app.voice import clap
+
+    clap.set_enabled(req.enabled)
+    return ClapStatusResponse(**clap.status())
+
+
+@router.post(
+    "/voice/clap/settings",
+    response_model=ClapStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_clap_settings(req: ClapSettingsRequest) -> ClapStatusResponse:
+    from app.voice import clap
+
+    if req.sensitivity is not None:
+        clap.set_sensitivity(req.sensitivity)
+    if req.greet is not None:
+        clap.set_greet_enabled(req.greet)
+    if req.greeting is not None:
+        clap.set_greeting(req.greeting)
+    return ClapStatusResponse(**clap.status())
+
+
+@router.post(
+    "/voice/clap/activate",
+    response_model=ClapActivateResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def clap_activate() -> ClapActivateResponse:
+    """A page detected a clap pair.
+
+    Takes no body. The page has nothing to tell the server beyond the
+    fact that it happened, and accepting a field here would be the first
+    step towards a microphone that can say things.
+
+    Every gate that matters is re-checked on this side — the stored
+    setting, privacy mode and the refractory interval — because a page
+    left open before the feature was switched off must not still be able
+    to act. The session token requirement means an ordinary web page
+    cannot reach it at all.
+    """
+    from app.voice import clap
+
+    outcome = clap.activate()
+    return ClapActivateResponse(
+        accepted=outcome.accepted,
+        reason=outcome.reason,
+        window_shown=outcome.window_shown,
+        greeted=outcome.greeted,
+        message=_CLAP_REASONS.get(outcome.reason, "Nothing happened."),
+    )

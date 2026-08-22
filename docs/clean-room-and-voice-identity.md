@@ -31,9 +31,10 @@ So this project treats it as read-only prior art, and:
   structure** are copied or paraphrased.
 - **It is not imported, vendored, or added as a dependency.**
 - **No constants are lifted from it.** In particular, the clap
-  detector's thresholds are derived here from measured background level
-  (see `app/voice/clap.py` if present, or the decision below), not
-  transcribed.
+  detector's thresholds (`app/voice/clap.py::SENSITIVITY_PROFILES`) were
+  measured here, against synthesised audio played through a real
+  browser microphone — see `tests/test_clap_detection.py`, which is the
+  experiment that produced them — not transcribed from anywhere.
 - **Its private ElevenLabs voice ID is neither recovered nor guessed.**
   A private voice belongs to the account that created it, and a voice ID
   is a reference to somebody else's paid asset.
@@ -52,7 +53,7 @@ reimplemented:
 | Idea | How JARVIS implements it |
 |---|---|
 | A cloud TTS provider can sound better than a local one | `app/voice/elevenlabs.py`, written against ElevenLabs' own published API documentation |
-| A double clap is a pleasant hands-free way to summon an assistant | An original amplitude/transient state machine, thresholds derived from measured background noise |
+| A double clap is a pleasant hands-free way to summon an assistant | An original amplitude/transient state machine in an `AudioWorkletProcessor` (`app/ui/static/clap-processor.js`), thresholds measured here |
 | A greeting after activation is a nice touch | A configurable phrase, spoken only if spoken output is already on |
 
 An idea is not protected by copyright; an expression of it is. What is

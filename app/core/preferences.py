@@ -81,6 +81,12 @@ STORABLE_KEYS = (
     # there is no key here for it to refuse.
     "tts_engine", "elevenlabs_voice_id", "elevenlabs_voice_name",
     "elevenlabs_settings", "elevenlabs_fallback",
+    # Double-clap activation (app/voice/clap.py). Four settings, all of
+    # them decisions about a room: whether to listen at all (off until
+    # somebody turns it on), how loud a transient has to be, and what —
+    # if anything — to say when the window appears. No audio, no levels
+    # and no timestamps are ever stored here or anywhere else.
+    "clap_enabled", "clap_sensitivity", "clap_greet", "clap_greeting",
 )
 
 # What a name is allowed to be. Deliberately generous about content and

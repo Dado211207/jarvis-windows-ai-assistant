@@ -71,6 +71,115 @@
   </div>
 
   {#
+    The optional cloud voice. Everything here is off until somebody
+    types a key: JARVIS speaks perfectly well without it, and the local
+    voice stays the privacy-preserving default. The key is written to
+    the Windows Credential Manager and never comes back to this page —
+    the only thing the browser is ever told is whether one exists.
+  #}
+  <div class="card mb-4" id="cloud-voice-card">
+    <h2 class="card-title">Premium cloud voice (optional)</h2>
+    <p class="text-xs text-muted mt-2">
+      ElevenLabs produces a more natural voice than anything that runs locally, using your own
+      ElevenLabs account. It is entirely optional. <strong>What changes if you turn it on:</strong>
+      the text of each spoken reply is sent to ElevenLabs&rsquo; servers to be turned into audio.
+      Nothing else is sent &mdash; not your conversations, not your files, and never your microphone.
+      Privacy mode switches it off completely.
+    </p>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label">Status</span>
+      <span id="el-detail" class="status-row-value loading">&#8230;</span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">API key</span>
+      <span id="el-key-state" class="status-row-value">&mdash;</span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">Voice</span>
+      <span id="el-voice-state" class="status-row-value">&mdash;</span>
+    </div>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="el-engine">Speak with</label>
+      <select id="el-engine" class="input" aria-label="Which voice engine JARVIS speaks with">
+        <option value="">The best local voice</option>
+        <option value="elevenlabs">ElevenLabs cloud voice</option>
+      </select>
+    </div>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="el-key">API key</label>
+      <input id="el-key" class="input" type="password" autocomplete="off" spellcheck="false"
+             placeholder="Paste your ElevenLabs API key" aria-label="ElevenLabs API key" maxlength="200">
+      <button id="el-key-save" class="btn btn-primary" type="button">Save key</button>
+      <button id="el-key-check" class="btn btn-ghost" type="button">Check key</button>
+      <button id="el-key-delete" class="btn btn-ghost" type="button">Remove key</button>
+    </div>
+    <p class="text-xs text-muted mt-2">
+      Saving stores the key in the Windows Credential Manager. It is never written to a file,
+      never shown again, and never included in logs or diagnostics.
+    </p>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="el-voice">Voice</label>
+      <select id="el-voice" class="input" aria-label="ElevenLabs voice"></select>
+      <button id="el-voices-refresh" class="btn btn-ghost" type="button">Load voices</button>
+      <button id="el-voice-save" class="btn btn-primary" type="button">Use this voice</button>
+    </div>
+    <p id="el-voice-id" class="text-xs text-muted mt-2 font-mono"></p>
+
+    <div class="mt-3">
+      <div class="status-row">
+        <label class="status-row-label" for="el-stability">Stability</label>
+        <span class="status-row-value">
+          <input id="el-stability" class="range" type="range" min="0" max="1" step="0.01" value="0.5">
+          <span id="el-stability-value" class="font-mono text-xs">0.50</span>
+        </span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-similarity">Similarity</label>
+        <span class="status-row-value">
+          <input id="el-similarity" class="range" type="range" min="0" max="1" step="0.01" value="0.75">
+          <span id="el-similarity-value" class="font-mono text-xs">0.75</span>
+        </span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-style">Style</label>
+        <span class="status-row-value">
+          <input id="el-style" class="range" type="range" min="0" max="1" step="0.01" value="0">
+          <span id="el-style-value" class="font-mono text-xs">0.00</span>
+        </span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-speed">Speed</label>
+        <span class="status-row-value">
+          <input id="el-speed" class="range" type="range" min="0.7" max="1.2" step="0.01" value="0.92">
+          <span id="el-speed-value" class="font-mono text-xs">0.92</span>
+        </span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-boost">Speaker boost</label>
+        <span class="status-row-value"><input type="checkbox" id="el-boost" class="toggle-input"></span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-fallback">Let the local voice cover for it</label>
+        <span class="status-row-value"><input type="checkbox" id="el-fallback" class="toggle-input"></span>
+      </div>
+    </div>
+
+    <div class="btn-row mt-3">
+      <button id="el-settings-save" class="btn btn-primary" type="button">Save settings</button>
+      <button id="el-settings-reset" class="btn btn-ghost" type="button">Reset to recommended</button>
+      <button id="el-test" class="btn btn-ghost" type="button">Test cloud voice</button>
+      <button id="el-stop" class="btn btn-ghost" type="button">Stop</button>
+    </div>
+    <p id="el-test-phrase" class="text-xs text-muted mt-2"></p>
+    <p id="el-message" class="text-xs mt-2" aria-live="polite"></p>
+    <p id="el-fallback-note" class="text-xs text-muted mt-2"></p>
+  </div>
+
+  {#
     Names. The case this exists for is the name entered on first run: no
     general dictionary contains it, so without this JARVIS spells its
     user's name out at them every time.
@@ -146,6 +255,61 @@
       </p>
     </div>
 
+  </div>
+
+  {#
+    Double-clap activation. Read app/voice/clap.py before changing
+    anything here — the wording below is load-bearing, because it is
+    what somebody switching this on is relying on to be true.
+  #}
+  <div class="card mb-4" id="clap-card">
+    <h2 class="card-title">Clap to bring JARVIS forward (optional)</h2>
+    <p class="text-xs text-muted mt-2">
+      Clap twice and the JARVIS window comes to the front.
+      <strong>What this does and does not do:</strong> while it is on, the page measures how loud
+      the microphone is, several hundred times a second, and looks for two sharp sounds close
+      together. It does <em>not</em> listen for words. There is no wake word, no speech
+      recognition, no transcription, nothing recorded and nothing sent anywhere &mdash; the
+      loudness numbers are thrown away as fast as they are produced. A clap can only show the
+      window; it can never run a command.
+    </p>
+    <p class="text-xs text-muted mt-2">
+      It works while the JARVIS window is open, including when it is minimised to the tray.
+      If you quit JARVIS, it stops.
+    </p>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label"><label for="clap-toggle">Listen for a double clap</label></span>
+      <span class="status-row-value"><input type="checkbox" id="clap-toggle" class="toggle-input"></span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">Listener</span>
+      <span id="clap-state" class="status-row-value">Off</span>
+    </div>
+    <div class="status-row">
+      <label class="status-row-label" for="clap-sensitivity">Sensitivity</label>
+      <span class="status-row-value">
+        <select id="clap-sensitivity" class="input" aria-label="Clap sensitivity">
+          <option value="low">Low &mdash; only loud, sharp claps</option>
+          <option value="normal" selected>Normal</option>
+          <option value="high">High &mdash; a quiet room</option>
+        </select>
+      </span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label"><label for="clap-greet">Say something when it activates</label></span>
+      <span class="status-row-value"><input type="checkbox" id="clap-greet" class="toggle-input"></span>
+    </div>
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="clap-greeting">Greeting</label>
+      <input id="clap-greeting" class="input" type="text" maxlength="120"
+             aria-label="What JARVIS says when a double clap activates it">
+      <button id="clap-greeting-save" class="btn btn-ghost" type="button">Save greeting</button>
+    </div>
+    <p class="text-xs text-muted mt-2">
+      Only spoken if <em>Speak replies aloud</em> is already on above.
+    </p>
+    <p id="clap-message" class="text-xs mt-2" aria-live="polite"></p>
   </div>
 
   {#

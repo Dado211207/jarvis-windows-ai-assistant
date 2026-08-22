@@ -2938,6 +2938,371 @@ async function removePronunciation(word) {
   }
 }
 
+// ── The optional cloud voice (ElevenLabs) ───────────────────────────────────
+//
+// The key is write-only from here: it can be typed, saved, replaced and
+// deleted, and there is no endpoint that gives it back. Everything this
+// code ever learns about it is a boolean.
+
+let cloudVoices = [];
+
+function _cloudMessage(text, tone) {
+  const el = $("el-message");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `text-xs mt-2 ${tone || "text-muted"}`;
+}
+
+function renderCloudStatus(s) {
+  if (!s || !$("cloud-voice-card")) return;
+
+  _setDiag("el-detail", s.detail, s.blocked_by_privacy ? "text-err" : (s.key_configured ? "text-ok" : ""));
+  _setDiag("el-key-state", s.key_configured ? "Saved in the Windows Credential Manager" : "Not set",
+           s.key_configured ? "text-ok" : "");
+  _setDiag("el-voice-state", s.voice_name || s.voice_id || "None chosen", s.voice_id ? "text-ok" : "");
+
+  const engine = $("el-engine");
+  if (engine) engine.value = s.selected ? "elevenlabs" : "";
+
+  const idLine = $("el-voice-id");
+  if (idLine) idLine.textContent = s.voice_id ? `Voice ID ${s.voice_id}` : "";
+
+  const settings = s.settings || {};
+  _setSlider("el-stability", settings.stability);
+  _setSlider("el-similarity", settings.similarity_boost);
+  _setSlider("el-style", settings.style);
+  _setSlider("el-speed", settings.speed);
+  const boost = $("el-boost");
+  if (boost) boost.checked = settings.use_speaker_boost !== false;
+  const fallback = $("el-fallback");
+  if (fallback) fallback.checked = !!s.fallback_allowed;
+
+  const phrase = $("el-test-phrase");
+  if (phrase) phrase.textContent = `Test phrase: “${s.test_phrase}”`;
+
+  const note = $("el-fallback-note");
+  if (note) {
+    note.textContent = s.last_fallback
+      ? `Last time the cloud voice could not speak: ${s.last_fallback}`
+      : "";
+  }
+
+  // A key with no voice chosen cannot speak, and neither can privacy mode.
+  const ready = s.key_configured && !!s.voice_id && !s.blocked_by_privacy;
+  const testBtn = $("el-test");
+  if (testBtn) testBtn.disabled = !ready;
+}
+
+function _setSlider(id, value) {
+  const el = $(id);
+  if (!el || typeof value !== "number") return;
+  el.value = String(value);
+  const label = $(id + "-value");
+  if (label) label.textContent = value.toFixed(2);
+}
+
+function _sliderValue(id) {
+  const el = $(id);
+  return el ? Number(el.value) : undefined;
+}
+
+async function refreshCloudVoice() {
+  if (!$("cloud-voice-card")) return;
+  try {
+    renderCloudStatus(await API.get("/voice/cloud"));
+  } catch (e) {
+    _cloudMessage("Could not read the cloud voice settings.", "text-err");
+  }
+}
+
+async function _cloudAction(path, body, whenBusy) {
+  _cloudMessage(whenBusy || "Working…", "text-muted");
+  try {
+    const r = await API.post(path, body || {});
+    renderCloudStatus(r.status);
+    _cloudMessage(r.message, r.success ? "text-ok" : "text-err");
+    return r;
+  } catch (e) {
+    _cloudMessage("That did not work. " + (e.message || ""), "text-err");
+    return null;
+  }
+}
+
+async function saveCloudKey() {
+  const field = $("el-key");
+  const key = field ? field.value.trim() : "";
+  if (!key) {
+    _cloudMessage("Paste your ElevenLabs API key first.", "text-err");
+    return;
+  }
+  const r = await _cloudAction("/voice/cloud/key", { api_key: key }, "Saving the key…");
+  // Clear the field either way: a key left sitting in an input is a key
+  // on screen, and it is never read back from the server to refill it.
+  if (field) field.value = "";
+  if (r && r.success) await refreshCloudVoices();
+}
+
+async function refreshCloudVoices() {
+  const select = $("el-voice");
+  if (!select) return;
+  _cloudMessage("Asking ElevenLabs which voices this account can use…", "text-muted");
+  try {
+    const r = await API.post("/voice/cloud/voices", {});
+    cloudVoices = r.voices || [];
+    _clearEl(select);
+    for (const voice of cloudVoices) {
+      const option = document.createElement("option");
+      option.value = voice.voice_id;
+      option.textContent = voice.category ? `${voice.name} — ${voice.category}` : voice.name;
+      select.appendChild(option);
+    }
+    _cloudMessage(r.message, r.success ? "text-ok" : "text-err");
+  } catch (e) {
+    _cloudMessage("Could not load the voice list. " + (e.message || ""), "text-err");
+  }
+}
+
+async function saveCloudVoice() {
+  const select = $("el-voice");
+  if (!select || !select.value) {
+    _cloudMessage("Load the voices and choose one first.", "text-err");
+    return;
+  }
+  const chosen = cloudVoices.find(v => v.voice_id === select.value);
+  await _cloudAction(
+    "/voice/cloud/select-voice",
+    { voice_id: select.value, voice_name: chosen ? chosen.name : "" },
+    "Saving your choice…",
+  );
+}
+
+function saveCloudSettings() {
+  return _cloudAction("/voice/cloud/settings", {
+    settings: {
+      stability: _sliderValue("el-stability"),
+      similarity_boost: _sliderValue("el-similarity"),
+      style: _sliderValue("el-style"),
+      speed: _sliderValue("el-speed"),
+      use_speaker_boost: !!($("el-boost") && $("el-boost").checked),
+    },
+  }, "Saving…");
+}
+
+function initCloudVoice() {
+  if (!$("cloud-voice-card")) return;
+
+  const on = (id, event, handler) => {
+    const el = $(id);
+    if (el) el.addEventListener(event, handler);
+  };
+
+  on("el-key-save", "click", saveCloudKey);
+  on("el-key-check", "click", () => _cloudAction("/voice/cloud/validate", {}, "Checking the key…"));
+  on("el-key-delete", "click", () => _cloudAction("/voice/cloud/key/delete", {}, "Removing the key…"));
+  on("el-voices-refresh", "click", refreshCloudVoices);
+  on("el-voice-save", "click", saveCloudVoice);
+  on("el-settings-save", "click", saveCloudSettings);
+  on("el-settings-reset", "click", () => _cloudAction("/voice/cloud/settings/reset", {}, "Resetting…"));
+  on("el-test", "click", () => _cloudAction("/voice/cloud/test", {}, "Speaking the test phrase…"));
+  on("el-stop", "click", voiceStop);
+  on("el-engine", "change", () => _cloudAction("/voice/engine", { engine: $("el-engine").value }, "Switching…"));
+  on("el-fallback", "change", () =>
+    _cloudAction("/voice/cloud/fallback", { allowed: $("el-fallback").checked }, "Saving…"));
+
+  // Live numbers beside each slider, so a value is readable before it is saved.
+  for (const id of ["el-stability", "el-similarity", "el-style", "el-speed"]) {
+    on(id, "input", () => {
+      const label = $(id + "-value");
+      if (label) label.textContent = Number($(id).value).toFixed(2);
+    });
+  }
+
+  refreshCloudVoice();
+}
+
+// ── Double-clap activation ──────────────────────────────────────────────────
+//
+// The detector is app/ui/static/clap-processor.js, running on the audio
+// thread. This code starts and stops it and forwards one payload-free
+// message to the server; it never sees a sample or a level.
+//
+// It runs on every page rather than only the Voice page, because the
+// point of the feature is to work while JARVIS is minimised — and it is
+// only ever started when the stored setting says so, which is off until
+// somebody turns it on.
+
+let clapStream = null;
+let clapContext = null;
+let clapNode = null;
+let clapStarting = false;
+
+function clapListening() {
+  return !!clapContext;
+}
+
+async function startClapListener(detector) {
+  if (clapListening() || clapStarting) return true;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.AudioContext) {
+    return false;
+  }
+  clapStarting = true;
+  try {
+    clapStream = await navigator.mediaDevices.getUserMedia({
+      // A clap is a transient. The three processors that exist to make
+      // speech intelligible all work against that: gain control chases
+      // the peak, noise suppression treats a broadband burst as noise,
+      // and echo cancellation is simply irrelevant here.
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+    clapContext = new AudioContext();
+    await clapContext.audioWorklet.addModule("/ui/static/clap-processor.js");
+    const source = clapContext.createMediaStreamSource(clapStream);
+    clapNode = new AudioWorkletNode(clapContext, "clap-processor", {
+      processorOptions: detector || {},
+    });
+    clapNode.port.onmessage = (event) => {
+      if (event.data && event.data.type === "clap-pair") onClapPair();
+    };
+    // Deliberately not connected to the destination: this reads the
+    // microphone, it does not play it back.
+    source.connect(clapNode);
+    return true;
+  } catch (e) {
+    stopClapListener();
+    return false;
+  } finally {
+    clapStarting = false;
+  }
+}
+
+function stopClapListener() {
+  if (clapNode) {
+    try { clapNode.port.onmessage = null; clapNode.disconnect(); } catch (e) { /* already gone */ }
+    clapNode = null;
+  }
+  if (clapStream) {
+    clapStream.getTracks().forEach(track => track.stop());
+    clapStream = null;
+  }
+  if (clapContext) {
+    try { clapContext.close(); } catch (e) { /* already closed */ }
+    clapContext = null;
+  }
+}
+
+async function onClapPair() {
+  try {
+    const r = await API.post("/voice/clap/activate", {});
+    // The Voice page, if it happens to be the page that is open, says
+    // what happened. Every other page stays silent — a window arriving
+    // is the feedback.
+    const message = $("clap-message");
+    if (message) {
+      message.textContent = r.message;
+      message.className = `text-xs mt-2 ${r.accepted ? "text-ok" : "text-muted"}`;
+    }
+    if (!r.accepted && (r.reason === "disabled" || r.reason === "privacy_mode")) {
+      stopClapListener();
+      renderClapState(false);
+    }
+  } catch (e) {
+    // A failed activation is not worth telling anyone about; the next
+    // clap will try again.
+  }
+}
+
+function renderClapState(listening) {
+  const state = $("clap-state");
+  if (!state) return;
+  state.textContent = listening ? "Listening for claps" : "Off";
+  state.className = `status-row-value${listening ? " text-ok" : ""}`;
+}
+
+function renderClapStatus(s) {
+  if (!s) return;
+  const toggle = $("clap-toggle");
+  if (toggle) toggle.checked = !!s.enabled;
+  const sensitivity = $("clap-sensitivity");
+  if (sensitivity) sensitivity.value = s.sensitivity;
+  const greet = $("clap-greet");
+  if (greet) greet.checked = !!s.greet;
+  const greeting = $("clap-greeting");
+  if (greeting && document.activeElement !== greeting) greeting.value = s.greeting || "";
+  renderClapState(clapListening());
+
+  const message = $("clap-message");
+  if (message && s.privacy_blocking && s.enabled) {
+    message.textContent = "Privacy mode is on, so JARVIS is not listening for claps.";
+    message.className = "text-xs mt-2 text-err";
+  }
+}
+
+// Applies whatever the server says: start the listener, stop it, or
+// restart it so a sensitivity change takes effect.
+async function applyClapSetting(status, restart) {
+  if (!status.enabled || status.privacy_blocking) {
+    stopClapListener();
+  } else if (restart) {
+    stopClapListener();
+    await startClapListener(status.detector);
+  } else if (!clapListening()) {
+    await startClapListener(status.detector);
+  }
+  renderClapStatus(status);
+}
+
+async function refreshClap(restart) {
+  try {
+    await applyClapSetting(await API.get("/voice/clap"), restart);
+  } catch (e) { /* a status read that fails leaves the listener as it is */ }
+}
+
+async function setClapEnabled(enabled) {
+  const message = $("clap-message");
+  try {
+    const status = await API.post("/voice/clap/enabled", { enabled });
+    await applyClapSetting(status, true);
+    if (message && enabled && !clapListening() && !status.privacy_blocking) {
+      message.textContent = "The microphone could not be opened, so nothing is listening. "
+        + "Check the microphone permission in Voice diagnostics below.";
+      message.className = "text-xs mt-2 text-err";
+    } else if (message && !enabled) {
+      message.textContent = "Switched off. Nothing is listening.";
+      message.className = "text-xs mt-2 text-muted";
+    }
+  } catch (e) {
+    if (message) {
+      message.textContent = "Could not change the setting.";
+      message.className = "text-xs mt-2 text-err";
+    }
+  }
+}
+
+async function saveClapSettings(restart) {
+  const sensitivity = $("clap-sensitivity");
+  const greet = $("clap-greet");
+  const greeting = $("clap-greeting");
+  try {
+    const status = await API.post("/voice/clap/settings", {
+      sensitivity: sensitivity ? sensitivity.value : null,
+      greet: greet ? greet.checked : null,
+      greeting: greeting ? greeting.value : null,
+    });
+    await applyClapSetting(status, restart);
+  } catch (e) { /* leave the controls showing what the user typed */ }
+}
+
+function initClapControls() {
+  const toggle = $("clap-toggle");
+  const sensitivity = $("clap-sensitivity");
+  const greet = $("clap-greet");
+  const save = $("clap-greeting-save");
+  if (toggle) toggle.addEventListener("change", () => setClapEnabled(toggle.checked));
+  if (sensitivity) sensitivity.addEventListener("change", () => saveClapSettings(true));
+  if (greet) greet.addEventListener("change", () => saveClapSettings(false));
+  if (save) save.addEventListener("click", () => saveClapSettings(false));
+}
+
 function initVoice() {
   const test   = $("btn-speak-test");
   const stop   = $("btn-speak-stop");
@@ -2987,6 +3352,9 @@ function initVoice() {
   const pronSave = $("pron-save");
   if (pronPreview) pronPreview.addEventListener("click", previewPronunciation);
   if (pronSave) pronSave.addEventListener("click", savePronunciation);
+
+  initCloudVoice();
+  initClapControls();
 
   refreshVoiceStatus();
   refreshVoiceInputStatus();
@@ -3426,6 +3794,13 @@ function connectEventStream() {
 document.addEventListener("DOMContentLoaded", () => {
   connectEventStream();
   refreshPrivacyIndicator();
+
+  // Every page, not just Voice: the point of clap activation is that it
+  // works while JARVIS is minimised, whatever page happens to be open.
+  // refreshClap() starts nothing unless the stored setting says to, and
+  // that setting is off until somebody turns it on.
+  refreshClap(false);
+  window.addEventListener("pagehide", stopClapListener);
 
   const path = window.location.pathname.replace(/\/+$/, "");
 

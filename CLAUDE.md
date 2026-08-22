@@ -143,6 +143,43 @@ clean-room decision behind it.
   performer or copyrighted character, and this project never claims
   otherwise.
 
+## Double-clap activation rules (non-negotiable)
+
+The product owner asked for one hands-free convenience and granted a
+deliberate, extremely narrow exception to the blanket ban on continuous
+listening in the Safety rules below. The exception is this feature and
+nothing else. `app/voice/clap.py` and `app/ui/static/clap-processor.js`
+carry the full reasoning; these are the lines that may not move.
+
+- **A transient counter, not a listener.** The detector computes
+  root-mean-square and peak amplitude per 128-sample block, and nothing
+  else. No FFT, no frequency analysis, no wake word, no speech
+  recognition, no transcription. Enforced by a test that reads the
+  worklet's source.
+- **Nothing is recorded, stored or sent.** The worklet's state is six
+  scalars, overwritten every block. No buffer, no history, no file, no
+  upload. Its only output is `{type: "clap-pair"}` — a message with no
+  payload, because there is nothing in it that would be safe to carry.
+- **A clap can only show the window.** Activation goes through
+  `app/launcher/attention.py`, whose entire message is the existence of a
+  marker file. `POST /voice/clap/activate` takes **no request body** and
+  never will: a microphone must not be able to name an action.
+- **Off by default, and gated three times server-side** — the stored
+  preference, privacy mode (which `app/core/privacy.py` always said a
+  future listener would have to honour), and a refractory interval.
+  Server-side because a page left open before the feature was switched
+  off elsewhere must not still be able to act.
+- **No new audio dependency.** The detector runs in the page that is
+  already open, on the microphone stream the level meter already uses.
+  JARVIS still has no native audio *input* dependency — no PortAudio, no
+  PyAudio, no sounddevice — and playback is still stdlib `winsound`.
+- **It is tested against real audio, in a real browser.**
+  `tests/test_clap_detection.py` plays synthesised claps, speech, a hum
+  and silence through Chromium's fake capture device and asserts that
+  only a genuine pair activates anything. Never replace it with a mock:
+  a state machine asserted against itself proves nothing about whether
+  speech sets it off.
+
 ## Memory secret rules (non-negotiable)
 
 These exist because `memory add my key is sk-ant-…` stored the key

@@ -988,3 +988,20 @@ code, .mono {
   cursor: not-allowed;
   opacity: 0.5;
 }
+
+/* Sliders for the cloud voice's tuning. Sized so the number beside each
+   one stays on the same line as the control at the narrowest layout the
+   browser tests cover. */
+.range {
+  width: 9rem;
+  max-width: 45vw;
+  vertical-align: middle;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin-right: var(--space-2);
+}
+
+.range:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
