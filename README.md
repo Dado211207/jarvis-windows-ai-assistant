@@ -594,6 +594,8 @@ docs/
                        rule: how narrow it is, how it was measured, what it cannot do
   dependency-review.md — Every dependency, its licence, and what this pass added
   mobile-companion-architecture.md — Considered and deliberately not built
+  physical-pc-checklist.md — The 34 things no automated run can verify;
+                       this release candidate is not finished until they pass
 run_jarvis.py       — PyInstaller entry point (default: windowed launcher + tray;
                        --api: headless FastAPI server only; --cli: interactive REPL)
 QUICKSTART.md       — First-run guide (included in release ZIP)
