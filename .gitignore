@@ -32,11 +32,41 @@ htmlcov/
 data/screenshots/
 data/logs/
 data/jarvis.db
+data/jarvis.db-shm
+data/jarvis.db-wal
 !data/.gitkeep
+
+# Per-user state written by the running app: the onboarding marker and the
+# preferences file (chosen AI provider, spoken replies). In the packaged
+# app these live under %LOCALAPPDATA%\JARVIS\config; in dev mode
+# app_paths.config_dir() puts them here. They are one machine's settings,
+# never source — see app/core/preferences.py.
+config/
+
+# Packaged-launcher runtime files (dev mode writes these to the repo root,
+# same as data/jarvis.db above — see app/launcher/instance_lock.py)
+jarvis.lock
 
 # PyInstaller
 *.spec
+!packaging/jarvis.spec
 JARVIS-Windows-Build.zip
+
+# Windows installer build output (scripts/build-installer.ps1) — never
+# committed; see docs/THIRD_PARTY_NOTICES.md and the packaging report
+# for how CI publishes the real installer as a private artifact instead.
+packaging/build/
+packaging/dist/
+installer-output/
+
+# Downloaded AI models: the speech model and the neural voice packs.
+# Data, not source — fetched on request with their licence, size and
+# SHA-256 shown first (app/voice/model_installer.py,
+# app/voice/kokoro/install.py), verified against the digests pinned in
+# app/voice/kokoro/assets.py, and stored in AppData in a real install.
+# A source checkout puts them here instead, where a 92 MB model would
+# otherwise land in a commit.
+models/
 
 # IDE
 .idea/

@@ -35,3 +35,79 @@ jobs:
           JARVIS_DB_PATH: /tmp/ci_jarvis_test.db
           # Suppress verbose log output during tests.
           JARVIS_LOG_LEVEL: WARNING
+
+  browser-tests:
+    name: "Playwright + axe / ubuntu-latest"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-test.txt
+
+      - name: Install Chromium (with OS deps)
+        run: playwright install --with-deps chromium
+
+      - name: Run browser + accessibility tests
+        # test_clap_detection.py is here rather than in the default run
+        # because it needs a real Chromium: the double-clap detector is
+        # exercised against a real microphone capture path with
+        # synthesised audio, which is the only way to know it fires on a
+        # clap and stays quiet on speech.
+        run: pytest -m browser tests/test_playwright_e2e.py tests/test_clap_detection.py -v
+        env:
+          JARVIS_DB_PATH: /tmp/ci_jarvis_browser_test.db
+          JARVIS_LOG_LEVEL: WARNING
+          # Unset on a real runner — the in-repo default lets Playwright
+          # resolve its own installed browser normally. Only needed as an
+          # override in nonstandard sandboxes with a mismatched prebuilt
+          # Chromium (see the live_server fixture's browser_instance).
+
+  windows-smoke:
+    name: "Windows smoke / windows-latest"
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile check (app + db)
+        run: python -m compileall app db
+
+      - name: Imports + FastAPI startup smoke
+        run: python scripts/ci_windows_smoke.py
+        env:
+          JARVIS_DB_PATH: ci_windows_smoke.db
+
+      - name: Run full test suite on Windows
+        run: pytest -v
+        env:
+          # Relative path — portable across OSes, written under the
+          # checkout directory. `pytest` (no -m) already excludes the
+          # `browser` marker via pytest.ini's addopts, so this never
+          # launches a browser on this runner.
+          JARVIS_DB_PATH: ci_jarvis_test.db
+          JARVIS_LOG_LEVEL: WARNING
+          # ANTHROPIC_API_KEY is deliberately left unset: proves the
+          # text-only local-fallback path (app/core/brain.py) works with
+          # no credentials, per this job's scope. Every Anthropic SDK call
+          # in the suite itself is mocked regardless (CLAUDE.md).

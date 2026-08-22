@@ -23,7 +23,7 @@
   /* Status */
   --ok:              #22c55e;
   --ok-soft:         rgba(34, 197, 94, 0.12);
-  --err:             #ef4444;
+  --err:             #f87171;
   --err-soft:        rgba(239, 68, 68, 0.12);
   --warn:            #f59e0b;
   --warn-soft:       rgba(245, 158, 11, 0.12);
@@ -56,8 +56,13 @@ body {
   display: flex;
 }
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { color: var(--accent-hover); text-decoration: underline; }
+/* Underlined by default so links embedded in a run of body text (Help
+   page's command list, prose paragraphs) are distinguishable by more
+   than color alone (WCAG 1.4.1 / axe "link-in-text-block"). .sidebar-link
+   opts back out below — nav items already convey their affordance
+   through icon + position + active-state, not surrounding text. */
+a { color: var(--accent); text-decoration: underline; }
+a:hover { color: var(--accent-hover); }
 
 /* ── Sidebar ────────────────────────────────────────────────────────── */
 .sidebar {
@@ -259,6 +264,15 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   color: var(--text);
   flex: 1;
   min-width: 0;
+  /* min-width:0 lets this flex item shrink below its text's natural
+     width (needed so .topbar-indicators keeps its space) — but without
+     these three, the overflowing text paints past its own shrunk box
+     instead of stopping at it, visually colliding with the indicators
+     next to it. Real, visible at 200% browser zoom / narrow desktop
+     widths above the 768px breakpoint where the topbar doesn't wrap. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar-indicators {
@@ -324,13 +338,42 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 }
 .card:hover { border-color: var(--border-bright); }
 
+/* Card titles are <h2> elements so screen-reader users can navigate a
+   page by its sections; the styling below is what makes them read as
+   small labels rather than headings visually. The margin reset matters
+   because a bare h2 would otherwise push every card open. */
 .card-title {
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--text-muted);
+  margin: 0;
+  line-height: 1.4;
 }
+
+/* Off-screen until focused. Not display:none — that would remove it from
+   the tab order entirely, which is the opposite of the point. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 1000;
+  padding: 0.6rem 1rem;
+  background: var(--accent);
+  color: #04121a;
+  font-weight: 600;
+  border-radius: 0 0 var(--radius-sm) 0;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+/* The skip target itself must not draw a focus ring around the whole
+   page when it receives focus programmatically. */
+.main:focus { outline: none; }
 
 .card-glass {
   background: linear-gradient(135deg, rgba(0, 212, 255, 0.04) 0%, var(--surface) 100%);
@@ -482,6 +525,23 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 .input::placeholder { color: var(--text-subtle); }
 
 /* ── Table ─────────────────────────────────────────────────────────── */
+/* Licence text: long, pre-formatted, and not worth pushing the page
+   sideways for — it scrolls inside its own box. */
+.notices-text {
+  max-height: 22rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Cascadia Code", "Fira Mono", "Consolas", monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+  margin: 0;
+}
+
 .table-wrap { overflow-x: auto; }
 .table {
   width: 100%;
@@ -509,6 +569,17 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 .table tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
 
 /* ── Chat ──────────────────────────────────────────────────────────── */
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
 .chat-messages {
   min-height: 340px;
   max-height: 560px;
@@ -603,6 +674,52 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   font-size: 0.67rem;
   color: var(--text-muted);
   padding: 0.1rem 0.1rem;
+}
+
+/* Read this answer aloud. Quiet until wanted — it sits under every
+   JARVIS message and must not compete with the message itself. */
+.msg-speak {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.25rem 0.6rem;
+  margin-top: 0.1rem;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.msg-speak:hover {
+  color: var(--accent);
+  border-color: rgba(0, 212, 255, 0.4);
+  background: var(--accent-soft);
+}
+.msg-speak:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.msg-speak.is-speaking {
+  color: var(--accent);
+  border-color: rgba(0, 212, 255, 0.5);
+  background: var(--accent-soft);
+}
+.msg-speak-glyph { font-size: 0.62rem; }
+
+/* The always-speak switch, alongside the provider label in the toolbar. */
+.chat-speak-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-left: auto;
+  margin-right: 0.6rem;
 }
 
 .chat-input-row {
@@ -750,7 +867,16 @@ code, .mono {
 }
 .status-row:last-child { border-bottom: none; }
 .status-row-label { color: var(--text-muted); font-size: 0.8rem; }
-.status-row-value { font-weight: 500; }
+/* A value with no spaces in it — a download URL, a file path, a SHA-256 —
+   must break rather than push the page sideways. Caught on a 390 px
+   viewport by the browser suite's no-horizontal-overflow test the first
+   time a URL was put in one of these rows. */
+.status-row-value {
+  font-weight: 500;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
 
 /* ── Safety checklist ──────────────────────────────────────────────── */
 .checklist { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
@@ -792,9 +918,90 @@ code, .mono {
 /* ── Responsive: hide sidebar on narrow screens ─────────────────────── */
 @media (max-width: 768px) {
   .sidebar { display: none; }
+
+  /* The topbar's 5 status indicators are fixed-width (white-space: nowrap
+     labels) and .topbar-indicators never shrinks below its content's
+     intrinsic width (the flex default). Below the sidebar breakpoint
+     their combined width exceeds narrow viewports, so let the topbar
+     wrap to a second line instead of forcing horizontal scroll. */
+  .topbar {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+    padding: 0.6rem 1.25rem;
+  }
+  .topbar-indicators {
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+  }
+
+  /* .cmd-name is a fixed 210px non-shrinking label column (Help page's
+     command reference) — doesn't fit next to .cmd-desc in a narrow card.
+     Stack name above description instead of forcing a cramped row. */
+  .cmd-list li {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+  }
+  .cmd-name {
+    min-width: 0;
+  }
 }
 
 /* ── Reduced motion ─────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation: none !important; }
+}
+
+/* ── First run ───────────────────────────────────────────────────────── */
+/* Colours come from the existing :root tokens only — no new literals, so
+   this page follows the same theme as every other one.
+
+   The six-step wizard this replaced had its own step-list chrome. Two
+   fields do not need a progress indicator, and a progress indicator on
+   two fields makes them look like the start of something longer. */
+
+.setup-simple {
+  max-width: 640px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.form-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.toggle-input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.toggle-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Sliders for the cloud voice's tuning. Sized so the number beside each
+   one stays on the same line as the control at the narrowest layout the
+   browser tests cover. */
+.range {
+  width: 9rem;
+  max-width: 45vw;
+  vertical-align: middle;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin-right: var(--space-2);
+}
+
+.range:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }

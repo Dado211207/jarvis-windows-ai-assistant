@@ -1,0 +1,205 @@
+name: Windows Installer
+
+# Separate from ci.yml deliberately: this job installs Inno Setup, runs
+# the full test suite, produces a real PyInstaller + Inno Setup build,
+# and then silent-installs/launches/uninstalls the *real* result — a
+# slower, heavier, more side-effecting job than ci.yml's fast per-PR
+# feedback loop. Path-scoped so it only runs when packaging-relevant
+# files actually change, plus workflow_dispatch for an on-demand build.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/**"
+      - "packaging/**"
+      - "scripts/build-installer.ps1"
+      - "scripts/test_clean_install.py"
+      - "requirements.txt"
+      - "requirements-windows.txt"
+      - "run_jarvis.py"
+      - "docs/licences/**"
+      - ".gitattributes"
+      - "tests/test_licence_policy.py"
+      - ".github/workflows/windows-installer.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "packaging/**"
+      - "scripts/build-installer.ps1"
+      - "scripts/test_clean_install.py"
+      - "requirements.txt"
+      - "requirements-windows.txt"
+      - "run_jarvis.py"
+      - "docs/licences/**"
+      - ".gitattributes"
+      - "tests/test_licence_policy.py"
+
+# NOTE: the concurrency group lives on the installer job below, not here.
+#
+# At workflow level it cancelled builds that mattered. Every push starts
+# this workflow, including a documentation-only one whose gate correctly
+# decides no build is needed — but the cancellation happened first, so a
+# docs commit pushed while a real packaging build was running killed that
+# build and then skipped its own. Observed repeatedly: three separate
+# installer runs were cancelled mid-flight by later docs commits, and one
+# of them was the run that would have first exercised the ten-cycle
+# lifecycle test.
+#
+# On the job, a skipped job never joins the group, so a docs push cannot
+# cancel a build in progress. Two real packaging pushes still supersede
+# each other, which is what the group is for.
+
+jobs:
+  # Why this gate exists, verified rather than assumed: the `paths:`
+  # filters above do NOT do what they appear to for pull_request events.
+  # GitHub evaluates them against the PR's *cumulative* diff versus the
+  # base branch, not against the commits just pushed. This PR genuinely
+  # changes 60 files under app/ and packaging/, so the filter matches on
+  # every push to the branch — including documentation-only ones, which
+  # is exactly what was observed (three docs-only commits each triggered
+  # a full installer build). The filter is behaving as designed; the
+  # design just does not express "skip if this push changed nothing
+  # relevant".
+  #
+  # This job answers that narrower question by diffing only the range the
+  # push actually introduced. It fails safe: any time the range cannot be
+  # determined (a first push, a force-push, a manual dispatch), it runs
+  # the expensive job rather than risk skipping a build that mattered.
+  detect-relevant-changes:
+    name: "Detect packaging-relevant changes"
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.check.outputs.relevant }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether the installer job is needed
+        id: check
+        shell: bash
+        env:
+          RANGE_BEFORE: ${{ github.event.before || github.event.pull_request.base.sha }}
+          RANGE_AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — always build."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -z "${RANGE_BEFORE}" ] || ! git cat-file -e "${RANGE_BEFORE}^{commit}" 2>/dev/null; then
+            echo "Push range unavailable — failing safe and building."
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CHANGED="$(git diff --name-only "${RANGE_BEFORE}" "${RANGE_AFTER}")"
+          echo "Files changed in this push range:"; echo "${CHANGED}"
+          if echo "${CHANGED}" | grep -qE '^(app/|packaging/|run_jarvis\.py|requirements.*\.txt|scripts/build-installer\.ps1|scripts/test_clean_install\.py|docs/licences/|\.gitattributes|tests/test_licence_policy\.py|\.github/workflows/windows-installer\.yml)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Only unrelated files (docs, etc.) changed — skipping the installer build."
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-test-installer:
+    name: "Windows Installer / windows-latest"
+    runs-on: windows-latest
+    needs: detect-relevant-changes
+    if: needs.detect-relevant-changes.outputs.relevant == 'true'
+
+    # Here rather than at workflow level, so a run whose gate skips this
+    # job cannot cancel one that is genuinely building. This job takes
+    # several minutes and installs/uninstalls a real application, so two
+    # of them racing one runner's registry and %LOCALAPPDATA% is both
+    # wasteful and a source of spurious failures — that part still holds.
+    concurrency:
+      group: windows-installer-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Inno Setup
+        # 6.7.1, not the upstream-latest 6.7.3: Chocolatey's community
+        # package repository lags upstream and does not carry 6.7.3 — see
+        # packaging/jarvis.iss's header comment for the verified detail.
+        run: choco install innosetup --version=6.7.1 --no-progress -y
+
+      - name: Build the installer (dependencies, tests, PyInstaller, Inno Setup, checksum)
+        shell: pwsh
+        run: .\scripts\build-installer.ps1
+
+      - name: Licence policy — inspect the real packaged tree
+        shell: pwsh
+        # Runs *after* PyInstaller, so the packaged-tree checks in
+        # tests/test_licence_policy.py have a real build to inspect
+        # instead of skipping. Declared package metadata alone would not
+        # catch a DLL a wheel brought with it.
+        run: python -m pytest tests/test_licence_policy.py -v
+
+      - name: Automated clean-install acceptance test
+        shell: pwsh
+        # Runs against the real installer produced above: silent install,
+        # launch the real JARVIS.exe (not repository Python), real
+        # /health + dashboard HTTP traffic, single-instance check, the
+        # installed executable's own runtime self-test, the full voice
+        # chain (both models downloaded through the app's own screens,
+        # then real audio synthesised and transcribed back *inside* the
+        # installed .exe), ten start/stop cycles, ten restarts, graceful
+        # stop, silent uninstall (data preserved by default), reinstall,
+        # silent uninstall with explicit /DELETEDATA=yes.
+        #
+        # Deliberately carries no `if:` of its own. The path gate above
+        # decides whether this job runs at all; once it does, every
+        # installed-product check runs. A condition here would let the
+        # expensive half of a build be skipped while the build still
+        # reported success, which is how a release candidate ships with a
+        # capability nobody exercised.
+        #
+        # Long because it downloads two models and runs real inference on
+        # a CPU runner. Bounded so a hang fails rather than burns an hour.
+        timeout-minutes: 45
+        run: python scripts\test_clean_install.py
+
+      - name: Upload installer-test logs (always, for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Installer-Test-Logs
+          path: packaging/dist/installer-test-logs/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # Who can actually download this, stated accurately.
+      #
+      # The repository is public. A workflow-run artifact is NOT public
+      # even so: GitHub serves artifact downloads only to accounts signed
+      # in with read access to the repository, and only from the run's
+      # own page. Anonymous visitors browsing the public repository
+      # cannot fetch it, and the download URL is short-lived and signed.
+      #
+      # It is still not a release. Nothing here publishes a release,
+      # creates a tag, or puts a file anywhere a stranger can link to.
+      # The artifact expires with its retention period below, which is
+      # the point: it is a build to hand to a tester, not a distribution
+      # channel. See docs/WINDOWS_INSTALLER.md for the download and
+      # checksum-verification steps this artifact is meant to be used
+      # with.
+      - name: Upload installer artifact (not published; sign-in required)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Windows-Installer
+          path: |
+            packaging/dist/installer/JARVIS-Setup-*.exe
+            packaging/dist/installer/JARVIS-Setup-*.exe.sha256
+          retention-days: 30

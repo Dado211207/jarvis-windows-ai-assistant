@@ -8,6 +8,12 @@
 </head>
 <body>
 
+{# Eleven sidebar links stand between the top of every page and its
+   content. Without this, reaching the chat box by keyboard means eleven
+   tab presses, on every page, every time. Hidden until focused, so it
+   costs sighted mouse users nothing. #}
+<a href="#main-content" class="skip-link">Skip to main content</a>
+
 <aside class="sidebar">
   <div class="sidebar-brand">
     <div class="sidebar-logo">J</div>
@@ -41,6 +47,15 @@
     <a href="/ui/help" class="sidebar-link{% if page == 'help' %} active{% endif %}" aria-current="{% if page == 'help' %}page{% endif %}">
       <span class="sidebar-link-icon">&#9645;</span>Help
     </a>
+    <a href="/ui/settings" class="sidebar-link{% if page == 'settings' %} active{% endif %}" aria-current="{% if page == 'settings' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9881;</span>Settings
+    </a>
+    <a href="/ui/diagnostics" class="sidebar-link{% if page == 'diagnostics' %} active{% endif %}" aria-current="{% if page == 'diagnostics' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9432;</span>About
+    </a>
+    <a href="/ui/setup" class="sidebar-link{% if page == 'setup' %} active{% endif %}" aria-current="{% if page == 'setup' %}page{% endif %}">
+      <span class="sidebar-link-icon">&#9873;</span>Setup
+    </a>
 
     <div class="sidebar-divider" style="margin-top:0.5rem;"></div>
 
@@ -73,10 +88,24 @@
         <span class="status-dot status-dot-grey" id="topbar-brain-dot"></span>
         <span id="topbar-brain-label">brain</span>
       </span>
+      <span class="topbar-indicator" title="Real-time event stream">
+        <span class="status-dot status-dot-grey" id="topbar-ws-dot"></span>
+        <span id="topbar-ws-label">connecting</span>
+      </span>
+      <span class="topbar-indicator" title="What JARVIS is doing right now">
+        <span id="topbar-runtime-label" class="badge badge-muted" aria-live="polite">standby</span>
+      </span>
+      <span class="topbar-indicator" title="Privacy mode: while on, new conversations, memory writes, and screenshots are not saved">
+        <span class="status-dot status-dot-grey" id="topbar-privacy-dot"></span>
+        <span id="topbar-privacy-label" aria-live="polite">privacy: off</span>
+      </span>
     </div>
   </header>
 
-  <main class="main">
+  {# tabindex="-1" so the skip link can actually move focus here; without
+     it the browser scrolls but leaves focus in the sidebar, and the next
+     Tab press goes back to the nav. #}
+  <main class="main" id="main-content" tabindex="-1">
     {% block content %}{% endblock %}
   </main>
 

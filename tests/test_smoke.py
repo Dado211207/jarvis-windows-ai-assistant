@@ -42,7 +42,7 @@ def test_core_modules_import():
 
 
 def test_desktop_modules_import():
-    from app.desktop import apps, screenshots, system, windows
+    from app.desktop import apps, screenshots, system
 
 
 def test_db_modules_import():
@@ -174,8 +174,9 @@ def api_client():
     """Start the full FastAPI app via TestClient (triggers lifespan / brain init)."""
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
     with TestClient(jarvis_app, raise_server_exceptions=True) as client:
-        yield client
+        yield prime_session(client)
 
 
 def test_fastapi_app_loads(api_client):

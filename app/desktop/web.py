@@ -5,10 +5,16 @@ Blocked schemes: file:, javascript:, data:, powershell:, cmd:, vbscript:
 import webbrowser
 from urllib.parse import urlparse
 
-from app.core.models import PermissionLevel, ToolCategory, ToolDefinition
+from pydantic import BaseModel
+
+from app.core.models import PermissionLevel, RiskLevel, ToolCategory, ToolDefinition
 from app.logging_config import get_logger
 
 logger = get_logger("desktop.web")
+
+
+class OpenWebsiteInput(BaseModel):
+    url: str
 
 JARVIS_DASHBOARD_URL = "http://127.0.0.1:5555/ui/"
 
@@ -90,6 +96,9 @@ def register_tools(registry) -> None:
             ),
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.UTILITY,
+            risk=RiskLevel.REVERSIBLE,
+            input_model=OpenWebsiteInput,
+            verification_strategy="Handler reports webbrowser.open()'s own return value; the OS is trusted to have launched the default browser.",
         ),
         open_website,
     )
@@ -99,6 +108,8 @@ def register_tools(registry) -> None:
             description="Open the JARVIS local dashboard (http://127.0.0.1:5555/ui/) in the browser.",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.UTILITY,
+            risk=RiskLevel.REVERSIBLE,
+            verification_strategy="Delegates to open_website; same verification limitations apply.",
         ),
         open_dashboard,
     )

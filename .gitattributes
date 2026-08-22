@@ -1,0 +1,23 @@
+# Line endings, decided explicitly rather than left to each machine's
+# core.autocrlf.
+#
+# This exists because a licence file broke on Windows CI. Its SHA-256 is
+# pinned — a licence text that has been edited is not the licence — and a
+# Windows checkout silently rewrote its LF endings to CRLF, changing the
+# bytes and failing the hash. The check was right; the checkout was the
+# problem. A verbatim licence that git rewrites on the way to disk is not
+# verbatim.
+
+* text=auto
+
+# Never translated, on any platform, for anything whose exact bytes are
+# the point: reproduced licence texts and hash-pinned data.
+docs/licences/** -text
+app/voice/kokoro/data/** -text binary
+
+# Shell scripts must keep LF or they will not run; PowerShell and batch
+# files are happier with CRLF on the platform that runs them.
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.iss text eol=crlf

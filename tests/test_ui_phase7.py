@@ -21,8 +21,9 @@ import pytest
 def api_client():
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
     with TestClient(jarvis_app, raise_server_exceptions=True) as client:
-        yield client
+        yield prime_session(client)
 
 
 # ── All pages return 200 ──────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ def api_client():
     "/ui/logs",
     "/ui/memory",
     "/ui/help",
+    "/ui/setup",
 ])
 def test_all_ui_pages_return_200(api_client, path):
     r = api_client.get(path)
@@ -75,6 +77,7 @@ def test_sidebar_nav_links_all_present(api_client):
     assert "/ui/memory" in html
     assert "/ui/voice" in html
     assert "/ui/help" in html
+    assert "/ui/setup" in html
 
 
 def test_sidebar_local_badge_present(api_client):
@@ -136,19 +139,28 @@ def test_chat_suggestions_present(api_client):
 def test_voice_ids_present(api_client):
     r = api_client.get("/ui/voice")
     html = r.text
-    assert "btn-speak-on" in html
-    assert "btn-speak-off" in html
+    assert "voice-output-toggle" in html
     assert "btn-speak-stop" in html
     assert "tts-avail" in html
     assert "tts-enabled-val" in html
     assert "tts-engine-val" in html
+    # Voice input status belongs on the Voice page too — a page that
+    # describes only the half that speaks is not the voice page.
+    assert "stt-avail" in html
+    assert "stt-model" in html
 
 
-def test_voice_no_microphone_claim(api_client):
+def test_voice_page_does_not_overclaim_always_listening(api_client):
+    """v0.2 added real push-to-talk voice input (Chat page), so the Voice/TTS
+    page correctly acknowledges it now rather than denying all microphone
+    use — that's not an overclaim, it's honest. What must still never be
+    claimed is wake-word / continuous / always-listening support, since
+    that remains genuinely unimplemented (CLAUDE.md's Phase 3 rule)."""
     r = api_client.get("/ui/voice")
     html = r.text.lower()
-    # Must say no microphone (not claim it's supported)
-    assert "no microphone" in html or "microphone" in html
+    assert "wake word" in html or "wake-word" in html
+    assert "no wake word" in html or "planned for a later phase" in html
+    assert "always-listening" in html or "always listening" in html
 
 
 def test_voice_planned_later_notice(api_client):
@@ -195,6 +207,64 @@ def test_help_has_planned_section(api_client):
     r = api_client.get("/ui/help")
     html = r.text.lower()
     assert "planned" in html
+
+
+# ── Setup / first-run onboarding page ───────────────────────────────────────────
+
+def test_setup_asks_only_for_a_name_and_a_key(api_client):
+    """First run is two fields. The readiness table, provider discovery
+    and speech-model installer that used to be here moved to the pages
+    that own them — see tests/test_first_run.py."""
+    r = api_client.get("/ui/setup")
+    html = r.text
+    assert 'id="setup-name-input"' in html
+    assert 'id="setup-key-input"' in html
+    assert 'id="setup-key-status"' in html
+
+
+def test_setup_continue_button_present(api_client):
+    r = api_client.get("/ui/setup")
+    assert 'id="setup-continue"' in r.text
+
+
+def test_model_install_controls_present_on_the_voice_page(api_client):
+    r = api_client.get("/ui/voice")
+    html = r.text
+    for expected_id in (
+        "model-info-name", "model-info-source", "model-info-license",
+        "model-info-size", "model-info-destination", "model-info-checksum",
+        "model-install-start", "model-install-cancel", "model-install-retry",
+        "model-install-progress-bar",
+    ):
+        assert f'id="{expected_id}"' in html
+
+
+def test_key_and_name_controls_present_on_settings(api_client):
+    r = api_client.get("/ui/settings")
+    html = r.text
+    assert 'id="settings-key-input"' in html
+    assert 'id="settings-key-save"' in html
+    assert 'id="settings-key-remove"' in html
+    assert 'id="settings-name-input"' in html
+    assert 'id="settings-close-action"' in html
+
+
+def test_setup_does_not_send_user_to_env_file(api_client):
+    """The whole point of this page: no user is sent to .env to finish
+    setup. (The page's own reassuring copy legitimately says "you won't
+    need PowerShell" — mentioning the word to rule it out is fine; a
+    real PowerShell *command* block would not be, which is what the
+    absence of a <code> block containing one below actually checks.)"""
+    r = api_client.get("/ui/setup")
+    html = r.text.lower()
+    assert ".env" not in html
+    assert "set-executionpolicy" not in html
+    assert ".ps1" not in html
+
+
+def test_setup_api_key_input_is_password_type(api_client):
+    r = api_client.get("/ui/setup")
+    assert 'type="password"' in r.text
 
 
 # ── CSS design system ─────────────────────────────────────────────────────────
@@ -274,7 +344,7 @@ def test_js_no_api_key_exposure(api_client):
 
 @pytest.mark.parametrize("path", [
     "/ui/", "/ui/chat", "/ui/actions", "/ui/voice",
-    "/ui/logs", "/ui/memory",
+    "/ui/logs", "/ui/memory", "/ui/setup",
 ])
 def test_no_api_key_in_ui_pages(api_client, path):
     r = api_client.get(path)

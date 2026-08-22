@@ -13,28 +13,23 @@
     <div class="section-title">Quick Start</div>
     <div class="card">
       <ol class="text-sm" style="padding-left: 1.25rem; color: var(--text-muted); line-height: 2.2;">
-        <li>Start JARVIS API: run <code>START_JARVIS_API.bat</code> or <code>python -m app.api.server</code></li>
-        <li>Open this dashboard: <a href="/ui/">http://127.0.0.1:5555/ui/</a></li>
         <li>Use the <a href="/ui/chat">Chat</a> page to send commands and questions</li>
-        <li>(Optional) Add your Anthropic API key to <code>.env</code> for Claude AI responses</li>
-        <li>(Optional) Enable TTS on the <a href="/ui/voice">Voice</a> page</li>
+        <li>Anything that could affect your PC asks for your approval first &mdash; review it on the <a href="/ui/actions">Actions</a> page</li>
+        <li>(Optional) Add an Anthropic API key on the <a href="/ui/setup">Setup</a> page for natural-language AI replies</li>
+        <li>(Optional) Turn on voice output, or install a speech model for push-to-talk, on the <a href="/ui/voice">Voice</a> page</li>
+        <li>Closing the window shuts JARVIS down; use the tray icon to reopen or quit it at any time</li>
       </ol>
     </div>
   </div>
 
   <div class="section">
-    <div class="section-title">API Key Setup (Optional)</div>
+    <div class="section-title">API Key (Optional)</div>
     <div class="card text-sm" style="line-height: 1.8; color: var(--text-muted);">
-      <p>JARVIS works without an API key &mdash; all deterministic commands are local. To enable Claude AI natural-language responses:</p>
-      <ol style="margin: 0.75rem 0 0 1.25rem; line-height: 2.2;">
-        <li>Copy <code>.env.example</code> to <code>.env</code></li>
-        <li>Open <code>.env</code> in a text editor</li>
-        <li>Add: <code>ANTHROPIC_API_KEY=your-key-here</code></li>
-        <li>Restart JARVIS</li>
-      </ol>
+      <p>JARVIS works without an API key &mdash; every built-in command runs locally on your machine. An Anthropic API key only adds natural-language replies for things that aren't a built-in command.</p>
       <p class="mt-3">
-        Your API key is stored only in <code>.env</code> on your machine.
-        It is never sent to this browser, never committed to git, and never included in builds.
+        Add or replace your key on the <a href="/ui/setup">Setup</a> page. It's stored in the
+        Windows Credential Manager &mdash; not in a plain text file, never shown back to this
+        page once saved, never written to logs, and never included in a build.
       </p>
     </div>
   </div>
@@ -45,7 +40,6 @@
       <ul class="cmd-list">
         <li><span class="cmd-name">help</span><span class="cmd-desc">List all available tools</span></li>
         <li><span class="cmd-name">status</span><span class="cmd-desc">Show JARVIS version and config</span></li>
-        <li><span class="cmd-name">exit</span><span class="cmd-desc">Exit JARVIS CLI</span></li>
       </ul>
     </div>
   </div>
@@ -58,7 +52,10 @@
         <li><span class="cmd-name">disk space</span><span class="cmd-desc">Show disk usage (used / free / total)</span></li>
         <li><span class="cmd-name">network status</span><span class="cmd-desc">Show hostname and local IP (read-only, no scanning)</span></li>
         <li><span class="cmd-name">battery status</span><span class="cmd-desc">Show battery level and power status</span></li>
-        <li><span class="cmd-name">screenshot</span><span class="cmd-desc">Capture screen to data/screenshots/</span></li>
+        <li><span class="cmd-name">what time is it</span><span class="cmd-desc">Show the local date and time from this computer's clock</span></li>
+        <li><span class="cmd-name">top processes</span><span class="cmd-desc">Show what is using the most memory right now (a snapshot, nothing is recorded)</span></li>
+        <li><span class="cmd-name">lock screen</span><span class="cmd-desc">Lock Windows, like Win+L. Nothing closes and no work is lost</span></li>
+        <li><span class="cmd-name">screenshot</span><span class="cmd-desc">Capture the screen to your JARVIS screenshots folder</span></li>
       </ul>
     </div>
   </div>
@@ -93,7 +90,9 @@
     <div class="section-title">Commands — Notes &amp; Memory</div>
     <div class="card">
       <ul class="cmd-list">
-        <li><span class="cmd-name">create note &lt;text&gt;</span><span class="cmd-desc">Save a timestamped note to ~/Documents/JARVIS_Notes/</span></li>
+        <li><span class="cmd-name">create note &lt;text&gt;</span><span class="cmd-desc">Save a timestamped note to your Documents / JARVIS_Notes folder</span></li>
+        <li><span class="cmd-name">list notes</span><span class="cmd-desc">Show your saved notes, newest first</span></li>
+        <li><span class="cmd-name">read note &lt;filename&gt;</span><span class="cmd-desc">Read one saved note back</span></li>
         <li><span class="cmd-name">memory add &lt;text&gt;</span><span class="cmd-desc">Save a note to local SQLite memory</span></li>
         <li><span class="cmd-name">memory search &lt;query&gt;</span><span class="cmd-desc">Search saved memories</span></li>
       </ul>
@@ -101,15 +100,20 @@
   </div>
 
   <div class="section">
-    <div class="section-title">Commands — Voice (TTS)</div>
+    <div class="section-title">Commands — Voice</div>
     <div class="card">
       <ul class="cmd-list">
-        <li><span class="cmd-name">speak on</span><span class="cmd-desc">Enable TTS voice output (session only)</span></li>
-        <li><span class="cmd-name">speak off</span><span class="cmd-desc">Disable TTS voice output</span></li>
-        <li><span class="cmd-name">speak status</span><span class="cmd-desc">Show TTS engine status</span></li>
+        <li><span class="cmd-name">speak on</span><span class="cmd-desc">Speak replies out loud &mdash; remembered the next time JARVIS starts</span></li>
+        <li><span class="cmd-name">speak off</span><span class="cmd-desc">Stop speaking replies</span></li>
+        <li><span class="cmd-name">speak status</span><span class="cmd-desc">Show whether replies are spoken, and the speech engine status</span></li>
         <li><span class="cmd-name">speak test</span><span class="cmd-desc">Speak a test phrase aloud</span></li>
         <li><span class="cmd-name">stop speaking</span><span class="cmd-desc">Stop current speech immediately</span></li>
       </ul>
+      <p class="text-xs text-muted mt-3">
+        Push-to-talk voice <em>input</em> (v0.2) is a separate feature: use the mic button on the
+        <a href="/ui/chat">Chat</a> page to speak a command, review the transcribed text, then send it
+        like any typed command.
+      </p>
     </div>
   </div>
 
@@ -149,12 +153,15 @@
     <div class="card text-sm" style="color: var(--text-muted); line-height: 1.8;">
       The following features are planned for future phases and are <em>not present in this build</em>:
       <ul style="margin: 0.5rem 0 0 1.25rem; line-height: 2.2;">
-        <li>Microphone input / speech-to-text (planned Phase 8+)</li>
-        <li>Wake word detection (planned Phase 8+)</li>
+        <li>Wake word / always-listening voice activation (planned)</li>
         <li>OCR / screen reading (planned Phase 8)</li>
         <li>Browser automation (approval-gated, planned Phase 9)</li>
         <li>Smart home and health integrations (Phase 9)</li>
       </ul>
+      <p class="mt-3">
+        Push-to-talk microphone input and speech-to-text are implemented (v0.2) &mdash;
+        see the <a href="/ui/chat">Chat</a> page's mic button and the Voice (TTS) section above.
+      </p>
     </div>
   </div>
 

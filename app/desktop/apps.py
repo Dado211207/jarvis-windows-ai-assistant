@@ -4,10 +4,16 @@ import platform
 import subprocess
 from typing import Dict, Optional
 
-from app.core.models import PermissionLevel, ToolCategory, ToolDefinition
+from pydantic import BaseModel
+
+from app.core.models import PermissionLevel, RiskLevel, ToolCategory, ToolDefinition
 from app.logging_config import get_logger
 
 logger = get_logger("desktop.apps")
+
+
+class OpenAppInput(BaseModel):
+    app_name: str
 
 # Allowlisted app names mapped to their Windows executable paths.
 # Key = lowercase alias the user types, value = Windows executable.
@@ -129,6 +135,12 @@ def register_tools(registry) -> None:
             description="Open an allowlisted application by name (chrome, notepad, etc.).",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.APP,
+            risk=RiskLevel.REVERSIBLE,
+            input_model=OpenAppInput,
+            verification_strategy=(
+                "Handler reports subprocess.Popen's own success/failure only; this "
+                "milestone does not verify a window actually appeared (see docs/audit-v0.2.md)."
+            ),
         ),
         open_app,
     )
@@ -138,6 +150,8 @@ def register_tools(registry) -> None:
             description="List all allowlisted applications.",
             permission_level=PermissionLevel.SAFE,
             category=ToolCategory.APP,
+            risk=RiskLevel.READ_ONLY,
+            verification_strategy="Read-only — lists a static allowlist, nothing to verify.",
         ),
         list_apps,
     )

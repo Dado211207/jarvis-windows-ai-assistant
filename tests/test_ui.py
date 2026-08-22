@@ -14,8 +14,9 @@ from unittest.mock import MagicMock, patch
 def api_client():
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
     with TestClient(jarvis_app, raise_server_exceptions=True) as client:
-        yield client
+        yield prime_session(client)
 
 
 # ── UI page routes ────────────────────────────────────────────────────────────
@@ -128,11 +129,45 @@ def test_ui_memory_has_search(api_client):
     assert "memory-list" in html
 
 
+def test_ui_voice_offers_the_neural_voice_controls(api_client):
+    """The page has to let someone install the voice, choose it, hear it
+    and fix how their name is said — the reported defect was a robotic
+    voice with no control over any of that."""
+    html = api_client.get("/ui/voice").text
+
+    for element in (
+        "nv-engine-list",       # every tier's own reason
+        "nv-voice-select",      # which voice
+        "nv-test",              # hear it
+        "nv-install-start",     # install it
+        "nv-install-cancel",    # and stop installing it
+        "nv-progress-bar",      # with progress
+        "pron-word",            # teach it a name
+        "nv-name-prompt",       # and be told when it needs one
+    ):
+        assert element in html, f"the Voice page is missing {element}"
+
+
+def test_ui_voice_does_not_claim_an_engine_that_was_removed(api_client):
+    """espeak is deliberately not in this product — the page said it
+    was, which was both wrong and a licence claim.
+
+    Checked against the rendered page rather than the template file so
+    it also covers anything a later include might reintroduce.
+    """
+    html = api_client.get("/ui/voice").text.lower()
+
+    assert "espeak" not in html
+    assert "pyttsx3" not in html
+
+
 def test_ui_voice_has_controls(api_client):
     r = api_client.get("/ui/voice")
     html = r.text
-    assert "btn-speak-on" in html
-    assert "btn-speak-off" in html
+    # A single remembered toggle replaced the old Enable/Disable button
+    # pair, which set a flag nothing on this page ever read back.
+    assert "voice-output-toggle" in html
+    assert "btn-speak-test" in html
     assert "btn-speak-stop" in html
 
 
@@ -210,7 +245,7 @@ def test_health_includes_phase(api_client):
     assert r.status_code == 200
     body = r.json()
     assert "phase" in body
-    assert "Phase" in body["phase"]
+    assert body["phase"]  # non-empty; naming convention may evolve (e.g. "v0.2: ...")
 
 
 def test_health_includes_db_string(api_client):
