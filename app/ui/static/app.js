@@ -1376,6 +1376,69 @@ async function refreshVoiceDiagnostics() {
   await refreshMicrophonePermission();
   await refreshInputDevices();
   renderVoiceInputState(diagnostics);
+  await refreshSpeechOutputDiagnostics();
+}
+
+// The speaking half. Somebody whose voice is not working comes to the
+// diagnostics panel; before this, half the answer was on a different
+// card further up the page, and two of these four rows did not exist
+// anywhere.
+async function refreshSpeechOutputDiagnostics() {
+  if (!$("diag-out-engine")) return;
+
+  try {
+    const s = await API.get("/voice/engine-status");
+    _setDiag("diag-out-engine", s.available ? s.active_engine_name : "No working voice",
+             s.available ? "text-ok" : "text-err");
+    _setDiag("diag-out-enabled", s.speaks_replies ? "On" : "Off",
+             s.speaks_replies ? "text-ok" : "text-muted");
+  } catch (e) {
+    _setDiag("diag-out-engine", "Unknown");
+    _setDiag("diag-out-enabled", "Unknown");
+  }
+
+  try {
+    const c = await API.get("/voice/cloud");
+    let text = "Not set up";
+    let tone = "text-muted";
+    if (c.blocked_by_privacy) {
+      text = "Blocked by privacy mode";
+      tone = "text-err";
+    } else if (!c.key_configured) {
+      text = "No API key";
+    } else if (!c.voice_id) {
+      text = "Key saved, no voice chosen";
+      tone = "text-err";
+    } else {
+      text = c.selected ? `In use — ${c.voice_name || c.voice_id}` : "Ready, but not selected";
+      tone = c.selected ? "text-ok" : "text-muted";
+    }
+    _setDiag("diag-out-cloud", text, tone);
+  } catch (e) {
+    _setDiag("diag-out-cloud", "Unknown");
+  }
+
+  try {
+    const k = await API.get("/voice/clap");
+    let text = "Off";
+    let tone = "text-muted";
+    if (k.privacy_blocking && k.enabled) {
+      text = "Blocked by privacy mode";
+      tone = "text-err";
+    } else if (k.enabled && clapListening()) {
+      text = "Listening";
+      tone = "text-ok";
+    } else if (k.enabled) {
+      // Switched on but nothing is running: the microphone could not be
+      // opened. Saying "on" here would be the kind of accurate-but-
+      // useless row this whole panel exists to replace.
+      text = "On, but the microphone could not be opened";
+      tone = "text-err";
+    }
+    _setDiag("diag-clap", text, tone);
+  } catch (e) {
+    _setDiag("diag-clap", "Unknown");
+  }
 }
 
 async function refreshMicrophonePermission() {

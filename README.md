@@ -588,6 +588,12 @@ docs/
   INSPIRATION.md    — Research sources consulted, concepts adopted/rejected, licenses
   THREAT_MODEL.md   — What is and is not protected, stated honestly
   release-process.md — Release checklist and version naming guide
+  clean-room-and-voice-identity.md — What may and may not be taken from the
+                       reference project, and what JARVIS's voice is and is not
+  double-clap-activation.md — The one exception to the no-continuous-listening
+                       rule: how narrow it is, how it was measured, what it cannot do
+  dependency-review.md — Every dependency, its licence, and what this pass added
+  mobile-companion-architecture.md — Considered and deliberately not built
 run_jarvis.py       — PyInstaller entry point (default: windowed launcher + tray;
                        --api: headless FastAPI server only; --cli: interactive REPL)
 QUICKSTART.md       — First-run guide (included in release ZIP)
