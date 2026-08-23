@@ -192,8 +192,18 @@ $ChecksumPath = "$($InstallerExe.FullName).sha256"
 # with `sha256sum -c` as well as manually compared.
 "$($Hash.Hash.ToLower())  $($InstallerExe.Name)" | Out-File -FilePath $ChecksumPath -Encoding ascii -NoNewline
 
+# Exact byte sizes, reported rather than approximated. Two builds of the
+# same commit are not byte-identical (Inno Setup stamps a build time), so
+# a size that moves by tens of megabytes between builds is a real change
+# worth noticing and a size that moves by a few bytes is not.
+$AppExe = Get-ChildItem -Path (Join-Path $DistDir "JARVIS") -Filter "JARVIS.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+
 Write-Host ""
 Write-Host "Build complete." -ForegroundColor Green
 Write-Host "Installer:     $($InstallerExe.FullName)"
+Write-Host "Installer size: $($InstallerExe.Length) bytes"
+if ($AppExe) {
+    Write-Host "JARVIS.exe size: $($AppExe.Length) bytes"
+}
 Write-Host "SHA-256:       $($Hash.Hash)"
 Write-Host "Checksum file: $ChecksumPath"
