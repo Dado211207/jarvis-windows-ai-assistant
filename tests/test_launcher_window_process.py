@@ -14,6 +14,13 @@ import pytest
 
 from app.launcher import ipc, process_tree
 
+
+# See the identical constant in test_launcher_ipc.py: a timed wait can
+# finish fractionally before time.monotonic() agrees its deadline passed,
+# because the wait and the measurement read different clocks. The bound
+# still fails a terminate that skipped the graceful window entirely.
+CLOCK_SLACK_SECONDS = 0.05
+
 _UNSET = object()
 
 
@@ -307,7 +314,8 @@ def test_stop_escalates_to_terminate_when_the_window_ignores_quit():
 
     assert process.terminate_calls == 1
     assert process.kill_calls == 0
-    assert time.monotonic() - started >= 0.4, "terminate must not pre-empt the graceful window"
+    elapsed = time.monotonic() - started
+    assert elapsed >= 0.4 - CLOCK_SLACK_SECONDS, "terminate must not pre-empt the graceful window"
 
 
 def test_stop_kills_only_after_terminate_also_fails():
