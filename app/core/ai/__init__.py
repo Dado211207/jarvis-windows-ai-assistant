@@ -28,17 +28,26 @@ and cancellable.
 
 from app.core.ai.base import (
     AIProvider,
+    Availability,
     CancellationToken,
     GenerationCancelled,
+    Message,
     ProviderConfig,
     ProviderError,
     ProviderReply,
 )
 
+# Message and Availability are part of the contract a caller needs, not
+# internals: stream() cannot be called without constructing Message, and
+# availability() cannot be handled without reading Availability. They
+# were reachable only as app.core.ai.base imports before, which made the
+# package's public surface narrower than the interface it defines.
 __all__ = [
     "AIProvider",
+    "Availability",
     "CancellationToken",
     "GenerationCancelled",
+    "Message",
     "ProviderConfig",
     "ProviderError",
     "ProviderReply",

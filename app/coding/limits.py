@@ -64,6 +64,12 @@ class TaskBudget:
     Mutated as the task runs. `spend_*` returns the reason a limit was hit,
     or None when there was room — callers stop on a reason rather than
     testing a counter themselves and getting the comparison wrong.
+
+    Every message names the ceiling **this budget** was created with, not
+    the module default. A budget constructed with `steps=3` that reported
+    "the 40-step limit was reached" would be telling the user a number
+    that was never in force — and a limit whose stated size is wrong is
+    indistinguishable, from the outside, from a limit that did not work.
     """
 
     steps: int = MAX_STEPS
@@ -73,34 +79,48 @@ class TaskBudget:
     model_bytes: int = MAX_TOTAL_MODEL_BYTES
     patch_bytes: int = MAX_TOTAL_PATCH_BYTES
 
+    def __post_init__(self) -> None:
+        # The ceilings, captured before anything is spent against them.
+        self._initial = {
+            "steps": self.steps,
+            "commands": self.commands,
+            "files_read": self.files_read,
+            "files_edited": self.files_edited,
+            "model_bytes": self.model_bytes,
+            "patch_bytes": self.patch_bytes,
+        }
+
+    def ceiling(self, name: str) -> int:
+        return self._initial.get(name, 0)
+
     def spend_step(self) -> str | None:
         if self.steps <= 0:
-            return f"the {MAX_STEPS}-step limit for one task was reached"
+            return f"the {self.ceiling('steps')}-step limit for one task was reached"
         self.steps -= 1
         return None
 
     def spend_command(self) -> str | None:
         if self.commands <= 0:
-            return f"the {MAX_COMMANDS}-command limit for one task was reached"
+            return f"the {self.ceiling('commands')}-command limit for one task was reached"
         self.commands -= 1
         return None
 
     def spend_file_read(self) -> str | None:
         if self.files_read <= 0:
-            return f"the {MAX_FILES_READ}-file read limit for one task was reached"
+            return f"the {self.ceiling('files_read')}-file read limit for one task was reached"
         self.files_read -= 1
         return None
 
     def spend_file_edit(self) -> str | None:
         if self.files_edited <= 0:
-            return f"the {MAX_FILES_EDITED}-file edit limit for one task was reached"
+            return f"the {self.ceiling('files_edited')}-file edit limit for one task was reached"
         self.files_edited -= 1
         return None
 
     def spend_model_bytes(self, count: int) -> str | None:
         if count > self.model_bytes:
             return (
-                f"the {MAX_TOTAL_MODEL_BYTES:,}-byte limit on project content sent "
+                f"the {self.ceiling('model_bytes'):,}-byte limit on project content sent "
                 "to the model was reached"
             )
         self.model_bytes -= count
@@ -108,6 +128,16 @@ class TaskBudget:
 
     def spend_patch_bytes(self, count: int) -> str | None:
         if count > self.patch_bytes:
-            return f"the {MAX_TOTAL_PATCH_BYTES:,}-byte limit on changes in one task was reached"
+            return (
+                f"the {self.ceiling('patch_bytes'):,}-byte limit on changes in one "
+                "task was reached"
+            )
         self.patch_bytes -= count
         return None
+
+    def remaining(self) -> dict:
+        """What is left, for the UI's progress display."""
+        return {
+            name: {"remaining": getattr(self, name), "ceiling": ceiling}
+            for name, ceiling in self._initial.items()
+        }

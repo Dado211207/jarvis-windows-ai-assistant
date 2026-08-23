@@ -75,8 +75,11 @@ class PreviewState:
     started_at: Optional[float] = None
     http_status: Optional[int] = None
     last_error: str = ""
-    console_errors: int = 0
-    failed_requests: int = 0
+    # None means "no browser check has run", which is not the same thing
+    # as zero. The Preview panel renders the two differently.
+    console_errors: Optional[int] = None
+    failed_requests: Optional[int] = None
+    browser_checked: bool = False
     screenshot: str = ""
 
     def as_dict(self) -> dict:
@@ -91,6 +94,7 @@ class PreviewState:
             "last_error": self.last_error,
             "console_errors": self.console_errors,
             "failed_requests": self.failed_requests,
+            "browser_checked": self.browser_checked,
             "screenshot": self.screenshot,
             "bound_to": LOOPBACK,
         }
@@ -288,12 +292,31 @@ def handle(context, proposal):
         return StepOutcome(False, summary, "browser", probe, model_text=summary)
 
     checks = basic_page_checks(str(probe.get("body_sample", "")))
-    session._state.console_errors = 0
+
+    # The real browser, when this build has one. Its findings are merged
+    # in as-is: `console_errors` stays None when nothing opened the page,
+    # so the UI can say "not checked" instead of "0". Writing 0 here
+    # (which this function used to do) reported a clean page for a check
+    # that never ran.
+    from app.coding import browser_qa
+
+    findings = browser_qa.run_checks(session, proposal.route, task_id=context.task_id)
+    session._state.console_errors = findings.console_errors
+    session._state.failed_requests = findings.failed_requests
+    session._state.browser_checked = findings.available
+    session._state.screenshot = findings.screenshot
+
     summary = (
         f"{proposal.route} returned HTTP {probe.get('status')}; "
         f"{checks['h1_count']} <h1>, "
-        f"{checks['images_missing_alt']} image(s) without alt text."
+        f"{checks['images_missing_alt']} image(s) without alt text. "
+        + findings.summary()
     )
-    detail = {"route": proposal.route, **checks, "status": probe.get("status")}
+    detail = {
+        "route": proposal.route,
+        **checks,
+        "status": probe.get("status"),
+        "browser": findings.as_dict(),
+    }
     tasks.append_step(context.record, "browser", summary, detail, ok=True)
     return StepOutcome(True, summary, "browser", detail, model_text=summary)

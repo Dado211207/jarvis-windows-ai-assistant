@@ -24,7 +24,7 @@ BLOCKED. The instruction was read; the authority was never there.
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional, Union
+from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -135,21 +135,31 @@ class FinishTask(_Proposal):
     unresolved: List[str] = Field(default_factory=list, max_length=20)
 
 
-AgentProposal = Union[
-    InspectFile,
-    ListFiles,
-    SearchText,
-    ProposePatch,
-    CreateFile,
-    DeleteFile,
-    RenameFile,
-    RunCommand,
-    StartPreview,
-    StopPreview,
-    BrowserCheck,
-    GitInspect,
-    RequestApproval,
-    FinishTask,
+AgentProposal = Annotated[
+    Union[
+        InspectFile,
+        ListFiles,
+        SearchText,
+        ProposePatch,
+        CreateFile,
+        DeleteFile,
+        RenameFile,
+        RunCommand,
+        StartPreview,
+        StopPreview,
+        BrowserCheck,
+        GitInspect,
+        RequestApproval,
+        FinishTask,
+    ],
+    # Discriminated on `action`, which is what makes a rejection legible.
+    # An undiscriminated union tries all fourteen members and reports the
+    # failures of all fourteen, so "you invented an action" arrives as
+    # forty lines naming every field of every real action. The model then
+    # gets that back as its correction and has to guess what went wrong.
+    # Discriminating means an unknown action says so in one line, and a
+    # real action with a bad field is reported against that action alone.
+    Field(discriminator="action"),
 ]
 
 
@@ -172,7 +182,7 @@ class AgentTurn(BaseModel):
 # accepted.
 def known_actions() -> List[str]:
     names: List[str] = []
-    for member in AgentProposal.__args__:  # type: ignore[attr-defined]
+    for member in AgentProposal.__origin__.__args__:  # type: ignore[attr-defined]
         field = member.model_fields.get("action")
         if field is None:
             continue

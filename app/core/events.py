@@ -36,6 +36,10 @@ class EventType(str, Enum):
     ACTION_RESULT = "action_result"
     SYSTEM_HEALTH = "system_health"
     PROVIDER_STATUS = "provider_status"
+    # Coding Workspace activity. Its own type rather than ACTION_PROGRESS
+    # so the Actions page, which listens for that, does not start
+    # rendering coding steps it has no way to display.
+    CODING_ACTIVITY = "coding_activity"
     ERROR = "error"
 
 
