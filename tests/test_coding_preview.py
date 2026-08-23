@@ -271,8 +271,11 @@ def test_a_real_browser_finds_console_errors_failed_requests_and_overflow(served
     assert any("NaN" in message for message in findings.console_messages)
     assert findings.page_errors, "an uncaught ReferenceError was not reported"
     assert findings.failed_requests and findings.failed_requests >= 1
+    # String keys: the widths travel to the page as JSON, where an object
+    # key is a string whatever it started as. Keeping the Python side the
+    # same shape means the UI and a stored task record agree.
     overflow = findings.horizontal_overflow or {}
-    assert overflow[320]["overflows"] is True, "a 1900px block did not register at 320px"
+    assert overflow["320"]["overflows"] is True, "a 1900px block did not register at 320px"
 
 
 @pytest.mark.browser

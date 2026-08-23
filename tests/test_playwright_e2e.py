@@ -1000,8 +1000,13 @@ def test_the_coding_tabs_are_operable_with_the_keyboard_alone(page):
     assert page.locator("#panel-task").is_visible()
     assert not page.locator("#panel-projects").is_visible()
 
+    # End goes to the last tab, whichever it is. Named explicitly rather
+    # than hard-coded, so adding a tab updates the assertion instead of
+    # silently making it test the wrong one.
+    tab_ids = page.eval_on_selector_all(
+        '#coding-tabs [role="tab"]', "els => els.map(e => e.id)")
     page.keyboard.press("End")
-    assert page.locator("#tab-results").get_attribute("aria-selected") == "true"
+    assert page.locator(f"#{tab_ids[-1]}").get_attribute("aria-selected") == "true"
 
     page.keyboard.press("Home")
     assert page.locator("#tab-projects").get_attribute("aria-selected") == "true"

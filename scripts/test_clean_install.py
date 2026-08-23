@@ -1326,6 +1326,33 @@ def _assert_url_serves(url: str, expected_content_type: str) -> None:
         _fail(f"GET {url} returned content-type {content_type!r}, expected it to contain {expected_content_type!r}.")
 
 
+def phase_i_installed_coding_workspace(log_dir: Path) -> None:
+    """Coding Workspace, driven through the installed executable.
+
+    Lives in `scripts/installed_coding_acceptance.py` rather than here:
+    it is twenty-five steps of its own, and this file is already long
+    enough that a reader looking for the lifecycle checks should not have
+    to scroll past it.
+
+    It calls back into this module's waiters so that "healthy", "stopped"
+    and "the process is gone" mean exactly what they mean everywhere else
+    in this test.
+    """
+    import installed_coding_acceptance
+
+    exe_path = expected_install_dir() / "JARVIS.exe"
+    if not exe_path.is_file():
+        _fail(f"Expected {exe_path} to exist before the Coding Workspace acceptance phase.")
+
+    _step("Phase I: Coding Workspace through the installed application")
+    installed_coding_acceptance.run(
+        exe_path, log_dir,
+        wait_for_health=wait_for_health,
+        wait_for_health_to_stop=wait_for_health_to_stop,
+        wait_for_pid_exit=wait_for_pid_exit,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -1351,6 +1378,12 @@ def main() -> None:
     # can it hear one? Both models are installed through the app's own
     # download screens first, so this also proves those screens work.
     phase_g_real_voice_through_the_installed_product(log_dir)
+    # And the other thing no import check can answer: does Coding
+    # Workspace's browser check open a real browser in the *installed*
+    # product? The previous pass shipped one that worked in a source
+    # checkout and reported "not available" on every machine a user had,
+    # because every test that covered it ran against the repository.
+    phase_i_installed_coding_workspace(log_dir)
     # Then the same artifact, started and stopped ten times. One clean
     # shutdown is a happy path; ten is evidence nothing accumulates.
     phase_d_repeated_start_and_quit(log_dir)

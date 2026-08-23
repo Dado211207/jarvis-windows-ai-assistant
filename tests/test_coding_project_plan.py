@@ -282,12 +282,17 @@ def test_a_failed_creation_leaves_the_plan_usable_again(tmp_path, monkeypatch):
     def explode(*args, **kwargs):
         raise OSError("the disk is full")
 
-    monkeypatch.setattr(templates, "create", explode)
-    with pytest.raises(OSError):
-        project_plan.execute(plan)
-    assert plan.consumed is False
+    # A nested context, deliberately: `monkeypatch.undo()` on the shared
+    # fixture object would also undo the autouse patch that keeps the
+    # project registry inside tmp_path — which it did, writing a project
+    # into the real registry and breaking an unrelated browser test three
+    # files away.
+    with pytest.MonkeyPatch.context() as broken:
+        broken.setattr(templates, "create", explode)
+        with pytest.raises(OSError):
+            project_plan.execute(plan)
+        assert plan.consumed is False
 
-    monkeypatch.undo()
     project_plan.execute(plan)
     assert Path(plan.destination).is_dir()
 

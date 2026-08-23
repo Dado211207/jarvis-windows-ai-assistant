@@ -618,8 +618,123 @@ async def stop_coding_task(body: TaskIdRequest) -> dict:
 async def stop_all_processes() -> dict:
     """The safety valve: end every command and preview Coding Workspace
     owns, right now."""
+    _previews.clear()
     reports = ledger.stop_all("user requested stop-all")
-    return {"stopped": len(reports), "reports": reports}
+    return {"stopped": reports, "count": len(reports), "reports": reports}
+
+
+# --------------------------------------------------------------------------
+# The preview, and checking it
+#
+# Startable without a task, because a person looking at their own project
+# should be able to say "show me" without asking a model to do it first —
+# and because the packaged acceptance test has to prove browser QA works
+# in the installed product without calling a cloud API to get there.
+#
+# It is the same `PreviewSession` a task uses, with the same rules: only a
+# script the project itself declares, only loopback, never a process
+# JARVIS did not start.
+# --------------------------------------------------------------------------
+
+#: One preview per project. A dict rather than a single slot because a
+#: person may have two projects open in two tabs, and stopping one must
+#: not stop the other.
+_previews: dict = {}
+
+
+class PreviewStartRequest(BaseModel):
+    project_id: str = Field(min_length=1, max_length=64)
+    script: str = Field(default="dev", max_length=60)
+
+
+class PreviewCheckRequest(BaseModel):
+    project_id: str = Field(min_length=1, max_length=64)
+    # A path inside the preview. `browser_origin.safe_route` refuses
+    # anything that is not one, so there is no URL a caller can name here.
+    route: str = Field(default="/", max_length=512)
+
+
+def _preview_for(project_id: str):
+    from app.coding.preview import PreviewSession
+
+    session = _previews.get(project_id)
+    if session is None:
+        session = PreviewSession()
+        _previews[project_id] = session
+    return session
+
+
+@router.post("/preview/start", dependencies=[Depends(require_session_token)])
+async def start_preview(body: PreviewStartRequest) -> dict:
+    """Start the project's own declared development server.
+
+    JARVIS never guesses a command. A project that declares no dev script
+    gets a refusal naming that fact, not an invented `npm start`.
+    """
+    from app.coding import stacks
+
+    try:
+        root = projects.resolve_root(body.project_id)
+    except WorkspaceViolation as exc:
+        raise HTTPException(status_code=400, detail=exc.reason) from None
+
+    declared = stacks.project_commands(stacks.detect(root))
+    entry = declared.get(body.script) or declared.get("dev")
+    if entry is None:
+        raise HTTPException(
+            status_code=400,
+            detail=("This project does not declare a development-server script, so "
+                    "JARVIS has nothing safe to start. It will not guess a command."),
+        )
+
+    session = _preview_for(body.project_id)
+    state = session.start(root, list(entry["argv"]), body.script)
+    return {"preview": state.as_dict(), "evidence": entry.get("evidence", "")}
+
+
+@router.post("/preview/stop", dependencies=[Depends(require_session_token)])
+async def stop_preview(body: PreviewStartRequest) -> dict:
+    session = _previews.pop(body.project_id, None)
+    if session is None:
+        return {"stopped": False, "reason": "nothing was running"}
+    return session.stop("stopped from the Preview panel")
+
+
+@router.get("/preview/{project_id}")
+async def read_preview(project_id: str) -> dict:
+    session = _previews.get(project_id)
+    if session is None:
+        from app.coding.preview import PreviewState
+        return {"preview": PreviewState().as_dict()}
+    return {"preview": session.state.as_dict()}
+
+
+@router.post("/preview/check", dependencies=[Depends(require_session_token)])
+async def check_preview(body: PreviewCheckRequest) -> dict:
+    """Open one route of the owned preview in a real browser.
+
+    Takes a project id and a path — never a URL. The origin is computed
+    from the port the owned `PreviewSession` bound, and
+    `app/coding/browser_origin.py` is the only thing that decides what may
+    be opened.
+    """
+    from app.coding import browser_qa
+
+    session = _previews.get(body.project_id)
+    if session is None:
+        raise HTTPException(status_code=400,
+                            detail="No preview is running for this project.")
+
+    findings = browser_qa.run_checks(session, body.route,
+                                     task_id=f"preview{body.project_id[:8]}")
+    session._state.console_errors = findings.console_errors
+    session._state.failed_requests = findings.failed_requests
+    session._state.browser_checked = findings.available
+    session._state.browser_state = findings.state.value
+    session._state.browser_reason = findings.reason
+    session._state.browser = findings.as_dict()
+    session._state.screenshot = findings.screenshot
+    return {"browser": findings.as_dict(), "preview": session.state.as_dict()}
 
 
 # --------------------------------------------------------------------------

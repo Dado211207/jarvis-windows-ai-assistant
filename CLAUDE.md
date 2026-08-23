@@ -127,6 +127,92 @@ was deliberately left out.
 - **"Not checked" is never reported as zero.** A browser check that did
   not run reports `None` and says why. Writing `0` after looking at
   nothing is the defect `browser_qa.py` exists to prevent.
+- **Browser QA runs in the installed product, or it is not a feature.**
+  The first version needed Playwright — a test dependency the packaged
+  build does not carry — so it reported `available: false` on every
+  machine a user actually had. It now drives the Chromium Windows already
+  has (Edge, then the WebView2 Runtime the installer requires) over the
+  DevTools protocol. **No new dependency, no download, no installer
+  growth**; `websockets` was already present through `uvicorn[standard]`.
+  `docs/browser-qa-architecture.md` records the four options compared and
+  the measurements. Do not "fix" an unavailable engine by adding a
+  package — investigate why the engine is missing.
+- **`opened` is recorded by the code that opened the page**, never
+  derived from the state. `FAILED` covers both "the page has defects" and
+  "the check fell over before it launched", and inferring "a browser ran"
+  from the state claimed the first when it was the second. Exactly one
+  assignment to it exists, and a test counts them.
+- **Seven outcomes, never two.** `browser_findings.QaState` — passed,
+  failed, blocked, timed out, engine unavailable, preview unavailable,
+  cancelled. Collapsing any of them back into "not available" removes the
+  only information the user could have acted on.
+- **`app/coding/browser_origin.py` is the only thing that decides what a
+  browser check may open**, and it computes the origin from the owned
+  preview's port rather than accepting one. `localhost`, `[::1]`,
+  `127.0.0.2` and `0.0.0.0` are refused: they may reach this machine, but
+  by a route JARVIS did not compute. The browser enforces it a second
+  time — `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1` makes
+  every other hostname unresolvable inside Chromium. Two mechanisms,
+  because a boundary with one implementation is a boundary with one bug.
+- **Every check gets a fresh profile that is deleted afterwards**, all
+  permissions denied, downloads refused, dialogs dismissed by the
+  protocol pump, and a full `process_tree` cleanup. A reused profile would
+  accumulate the history and storage of every page a coding task opened.
+- **`cdp.py` is not a browser-automation library and must not become
+  one.** Attach, enable four domains, navigate, collect, evaluate,
+  screenshot, close. No click, no type, no form fill, no cookie handling,
+  and no way to pass it a URL.
+- **The accessibility check is nine named structural rules, and the UI
+  says so.** It is deliberately not called an axe audit: axe-core is a
+  Node package the packaged build does not carry, and implying a full
+  audit while running nine rules is the same species of dishonesty as
+  reporting zero console errors for a page nothing opened.
+
+## Coding Workspace: folder picker, creation plan, toolchain (non-negotiable)
+
+- **A folder is chosen in a native Windows dialog, not typed.** Only the
+  process that owns a window can open one, so the flow is brokered:
+  `app/coding/folder_requests.py` mints a request (one at a time, short
+  expiry), the page hands the id across pywebview's bridge, and
+  `app/launcher/folder_picker.py` opens the dialog and **posts the outcome
+  back authenticated with the per-session desktop secret**. The answer
+  deliberately does not return through the bridge — routing it through an
+  authenticated endpoint is what makes `selected_via_picker` a fact the
+  server witnessed rather than the page's word for it.
+- **The typed field is a labelled fallback, never the primary control.**
+  It exists because JARVIS also runs in an ordinary browser, where no
+  native dialog is available at all. It is validated identically, through
+  `workspace.canonical_root()`, and the server still reports which of the
+  two happened.
+- **A selection is spent once, a Cancel registers nothing, and a path the
+  dialog could not have produced is screened anyway** — the value arrives
+  over a socket, and a boundary that trusts its input because of where it
+  is supposed to have come from is not a boundary. No chosen path reaches
+  a log, and the dialog is never given a starting directory: that would
+  mean JARVIS remembering and displaying a list of the user's folders.
+- **Creating a project is two steps, and the first writes nothing.**
+  `app/coding/project_plan.py` reports the destination, the exact file
+  list, whether Git is initialised and with which branch, the
+  dependencies, the commands, the network use, the size, what is
+  deliberately not created and any conflict — and a test walks its AST to
+  prove there is no write in it. `POST /coding/projects/create` takes a
+  plan id **and nothing else**, so the thing the user read is the thing
+  that runs.
+- **A plan is re-checked against the filesystem immediately before
+  anything is written.** A destination that appeared while the
+  confirmation was on screen is a refusal, never an overwrite and never a
+  merge. "Empty" is a race; a folder that exists is not ours to fill.
+- **Toolchain detection looks, and never searches or changes.** PATH plus
+  a short named set of standard locations — no disk scan, the same rule
+  `app/core/legacy_migration.py` follows. Nothing is installed, no
+  variable is set, and every probe is a bounded `--version`.
+- **An executable inside the project is refused, not run.** On Windows a
+  `git.exe` committed to a repository is a repository choosing which Git
+  inspects it. `refused` is its own state, distinct from `missing`: the
+  two call for entirely different responses from the user.
+- **A step whose tool is absent reports that it did not run.** Never that
+  it passed. A formatter that is not installed did not agree the code is
+  formatted; it did not look.
 - **Nothing is pushed, merged, deployed or cloned in this version**, and
   `GET /coding/status` publishes that list rather than leaving it implied.
 - **No test may reach a package registry or a real service.**

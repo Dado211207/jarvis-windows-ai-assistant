@@ -98,20 +98,61 @@ for time; it is one that has not been designed.
 
 ### 2.1 Browser checks against the owned preview
 
-- **Status:** Shipped (this pass), with a real gap — see below.
-- **Prerequisites:** Met in a source checkout.
-- **Security model:** `browser_qa.run_checks` takes a `PreviewSession`,
-  not a URL. There is no parameter through which any origin but the owned
-  loopback preview can be named.
+- **Status:** Shipped, and working in the installed application. The gap
+  recorded here previously — that it needed Playwright and so did nothing
+  in the packaged build — is closed.
+- **Prerequisites:** A Chromium-based engine, which Windows 10 and 11
+  already have: Microsoft Edge, or the WebView2 Runtime the JARVIS
+  installer already requires. Nothing is downloaded and the installer did
+  not grow. See `docs/browser-qa-architecture.md` for the four options
+  compared and the measurements — Playwright's driver alone is 137 MB,
+  124 MB of which is a private Node runtime.
+- **Security model:** `browser_qa.run_checks` takes a `PreviewSession`
+  and a *path*, never a URL. `browser_origin.py` computes the one allowed
+  origin from the owned preview's port and refuses `localhost`, `[::1]`,
+  `127.0.0.2` and `0.0.0.0` — they may reach this machine, but by a route
+  JARVIS did not compute. Independently, the browser is launched with
+  `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1`, so nothing
+  else resolves inside Chromium either. Fresh profile per run, deleted
+  afterwards; all permissions denied; downloads refused; dialogs
+  dismissed; full process-tree cleanup.
 - **Approval:** Automatic — it is a read of a page JARVIS itself started.
 - **External account:** None.
-- **Test strategy:** A real server, a real page with planted defects, a
-  real browser.
-- **Gap:** Playwright and its Chromium are test dependencies, not runtime
-  ones. The packaged Windows build cannot run these checks and reports
-  that it cannot, rather than reporting zero problems. Shipping them
-  means adding roughly 150 MB of browser to the installer, which is a
-  packaging decision, not a coding one.
+- **Test strategy:** A real server, real pages with planted defects, and
+  a real browser, plus thirteen hostile fixtures that attempt external
+  redirects, external assets, popups, downloads, `file://` navigation,
+  loopback aliases, console floods, endless navigation, an enormous page
+  and credential-shaped output. And the same thing again through the
+  installed executable — `scripts/installed_coding_acceptance.py` — which
+  fails if the engine is unavailable, if the check is skipped, or if
+  Playwright turns out to be inside the packaged application.
+- **Remaining honest limit:** the accessibility check is nine named
+  structural rules, not an axe-core audit, and the UI says so beside the
+  count.
+
+### 2.1a The native folder picker
+
+- **Status:** Shipped. The path text field is now a labelled fallback.
+- **Prerequisites:** The native window. In an ordinary browser there is
+  no dialog to open, and the page says so rather than offering a button
+  that does nothing.
+- **Security model:** Brokered. The page mints a request (one at a time,
+  short expiry), hands the id across pywebview's bridge, and the window
+  process posts the outcome back **authenticated with the per-session
+  desktop secret**. Nothing else on the machine has it, so nothing else
+  can claim a folder was chosen — which is what makes
+  `selected_via_picker` a fact rather than a claim. A selection is spent
+  once; a Cancel registers nothing; the returned path goes through
+  `workspace.canonical_root()` like every other path in the feature.
+- **Approval:** The dialog *is* the approval.
+- **Deliberately excluded:** any starting directory. Opening the dialog
+  at "the last folder you picked" would mean JARVIS remembering, and
+  displaying, a list of the user's directories.
+- **Test strategy:** The brokering, end to end, through the same
+  endpoints the window posts to — a real selection, a Cancel, a duplicate
+  request, a forged unauthenticated result, a non-folder, and paths a
+  real dialog could not have produced. What no Linux CI can prove is that
+  Windows draws a dialog; that stays on the physical-PC checklist.
 
 ### 2.2 General web browsing / research
 

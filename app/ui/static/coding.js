@@ -30,7 +30,8 @@
     projectId: "",
     projectName: "",
     taskId: "",
-    plan: null,
+    plan: null,            // the *task* plan
+    creationPlan: null,    // the *new project* plan — a different thing
     poll: null,
     lastApprovalKey: "",
     steps: 0,
@@ -424,31 +425,31 @@
    * plan describes, and takes only the plan's id — so the thing the user
    * read is the thing that runs. */
 
-  function planRow(list, label, value) {
+  function creationPlanRow(list, label, value) {
     const item = make("li");
     item.appendChild(make("span", "kv-key", label));
     item.appendChild(make("span", "kv-value", value));
     list.appendChild(item);
   }
 
-  function renderPlan(plan) {
-    const body = clear(el("coding-plan-body"));
+  function renderCreationPlan(plan) {
+    const body = clear(el("coding-create-plan-body"));
 
     const list = make("ul", "kv-list");
-    planRow(list, "Will be created at", plan.destination);
-    planRow(list, "Project name", plan.project_name);
-    planRow(list, "Starting point", `${plan.template_title} (${plan.stack})`);
-    planRow(list, "Files", `${plan.file_count} file(s)`);
-    planRow(list, "Git", plan.git_init
+    creationPlanRow(list, "Will be created at", plan.destination);
+    creationPlanRow(list, "Project name", plan.project_name);
+    creationPlanRow(list, "Starting point", `${plan.template_title} (${plan.stack})`);
+    creationPlanRow(list, "Files", `${plan.file_count} file(s)`);
+    creationPlanRow(list, "Git", plan.git_init
       ? `git init, initial branch: ${plan.initial_branch || "not configured"}`
       : "No repository is created");
-    planRow(list, "Dependencies", plan.dependencies.length
+    creationPlanRow(list, "Dependencies", plan.dependencies.length
       ? `${plan.dependencies.length} listed, none installed` : "None");
-    planRow(list, "Commands JARVIS will run", plan.commands.length
+    creationPlanRow(list, "Commands JARVIS will run", plan.commands.length
       ? plan.commands.join(", ") : "None");
-    planRow(list, "Network access", plan.network_use === "none"
+    creationPlanRow(list, "Network access", plan.network_use === "none"
       ? "None — every template is bundled with JARVIS" : plan.network_use);
-    planRow(list, "Approximate size", `${Math.max(1, Math.round(plan.approximate_bytes / 1024))} KB`);
+    creationPlanRow(list, "Approximate size", `${Math.max(1, Math.round(plan.approximate_bytes / 1024))} KB`);
     body.appendChild(list);
 
     body.appendChild(make("h3", "card-subtitle", "Exactly these files"));
@@ -482,24 +483,24 @@
       body.appendChild(warn);
     }
 
-    el("coding-plan-confirm").disabled = !plan.creatable;
-    el("coding-plan").hidden = false;
-    el("coding-plan").focus();
+    el("coding-create-plan-confirm").disabled = !plan.creatable;
+    el("coding-create-plan").hidden = false;
+    el("coding-create-plan").focus();
     announce(plan.creatable
       ? "Review what will be created, then confirm."
       : "This project cannot be created. See the reason on screen.");
   }
 
-  function hidePlan() {
-    state.plan = null;
-    el("coding-plan").hidden = true;
-    showError("coding-plan-error", "");
+  function hideCreationPlan() {
+    state.creationPlan = null;
+    el("coding-create-plan").hidden = true;
+    showError("coding-create-plan-error", "");
   }
 
   el("coding-new-form").addEventListener("submit", async event => {
     event.preventDefault();
     showError("coding-new-error", "");
-    hidePlan();
+    hideCreationPlan();
     const typed = el("coding-new-parent").value.trim();
     const requestId = picker.new.requestId;
     if (!requestId && !typed) {
@@ -524,43 +525,43 @@
     // the canonical parent, so the picker choice is no longer needed.
     clearChoice("new", "coding-new-chosen");
     el("coding-new-chosen").textContent = data.plan.parent_path;
-    state.plan = data.plan;
-    renderPlan(data.plan);
+    state.creationPlan = data.plan;
+    renderCreationPlan(data.plan);
   });
 
-  el("coding-plan-confirm").addEventListener("click", async () => {
-    if (!state.plan) return;
-    showError("coding-plan-error", "");
-    el("coding-plan-confirm").disabled = true;
+  el("coding-create-plan-confirm").addEventListener("click", async () => {
+    if (!state.creationPlan) return;
+    showError("coding-create-plan-error", "");
+    el("coding-create-plan-confirm").disabled = true;
     try {
-      await API.post("/coding/projects/create", {plan_id: state.plan.plan_id});
+      await API.post("/coding/projects/create", {plan_id: state.creationPlan.plan_id});
     } catch (e) {
-      showError("coding-plan-error", e.message);
-      el("coding-plan-confirm").disabled = false;
+      showError("coding-create-plan-error", e.message);
+      el("coding-create-plan-confirm").disabled = false;
       return;
     }
     el("coding-new-name").value = "";
     el("coding-new-parent").value = "";
     el("coding-new-chosen").textContent = "No folder chosen yet.";
-    hidePlan();
+    hideCreationPlan();
     announce("Project created.");
     loadProjects();
     loadStatus();
   });
 
-  el("coding-plan-change").addEventListener("click", async () => {
+  el("coding-create-plan-change").addEventListener("click", async () => {
     await abandonPlan();
     el("coding-new-name").focus();
   });
 
-  el("coding-plan-cancel").addEventListener("click", async () => {
+  el("coding-create-plan-cancel").addEventListener("click", async () => {
     await abandonPlan();
     announce("Cancelled. Nothing was created.");
   });
 
   async function abandonPlan() {
-    const plan = state.plan;
-    hidePlan();
+    const plan = state.creationPlan;
+    hideCreationPlan();
     if (!plan) return;
     try {
       await API.post(
@@ -958,7 +959,7 @@
     return `${value} ${value === 1 ? singular : (plural || singular + "s")}`;
   }
 
-  function row(list, label, value) {
+  function kvRow(list, label, value) {
     const item = make("li");
     item.appendChild(make("span", "kv-key", label));
     item.appendChild(make("span", "kv-value", value));
@@ -1000,19 +1001,19 @@
     }
 
     const list = make("ul", "kv-list");
-    row(list, "Route", qa.route || "/");
-    row(list, "HTTP status", qa.http_status === null ? "not checked" : String(qa.http_status));
-    row(list, "Title", qa.title || "(none)");
-    row(list, "Language", qa.lang || "(not declared)");
-    row(list, "Top-level headings", count(qa.h1_count, "<h1> element"));
-    row(list, "Console errors", count(qa.console_errors, "error"));
-    row(list, "Page errors", count(qa.page_errors, "uncaught error"));
-    row(list, "Failed requests", count(qa.failed_requests, "request"));
-    row(list, "Broken images", count(qa.broken_images, "image"));
-    row(list, "Accessibility", count(qa.accessibility_findings, "finding"));
-    row(list, "Duration", `${qa.duration_seconds}s`);
+    kvRow(list, "Route", qa.route || "/");
+    kvRow(list, "HTTP status", qa.http_status === null ? "not checked" : String(qa.http_status));
+    kvRow(list, "Title", qa.title || "(none)");
+    kvRow(list, "Language", qa.lang || "(not declared)");
+    kvRow(list, "Top-level headings", count(qa.h1_count, "<h1> element"));
+    kvRow(list, "Console errors", count(qa.console_errors, "error"));
+    kvRow(list, "Page errors", count(qa.page_errors, "uncaught error"));
+    kvRow(list, "Failed requests", count(qa.failed_requests, "request"));
+    kvRow(list, "Broken images", count(qa.broken_images, "image"));
+    kvRow(list, "Accessibility", count(qa.accessibility_findings, "finding"));
+    kvRow(list, "Duration", `${qa.duration_seconds}s`);
     if (qa.checked_at) {
-      row(list, "Checked at", new Date(qa.checked_at * 1000).toLocaleString());
+      kvRow(list, "Checked at", new Date(qa.checked_at * 1000).toLocaleString());
     }
     box.appendChild(list);
 
@@ -1212,6 +1213,29 @@
 
   el("coding-tools-refresh").addEventListener("click", loadToolchain);
   el("tab-tools").addEventListener("click", loadToolchain);
+
+  // ---------------------------------------------------- preview, on demand
+
+  /* The Preview panel used to be filled in only while a task was running,
+   * so opening it at any other time showed whatever the last task had
+   * left there — or nothing at all, over a preview that was in fact still
+   * running. It now asks the server, which answers from the owned
+   * process rather than from a remembered flag. */
+  async function loadPreview() {
+    if (!state.projectId) {
+      renderPreview(null);
+      return;
+    }
+    try {
+      const data = await API.get(
+        `/coding/preview/${encodeURIComponent(state.projectId)}`);
+      renderPreview(data.preview);
+    } catch (e) {
+      renderPreview(null);
+    }
+  }
+
+  el("tab-preview").addEventListener("click", loadPreview);
 
   // ------------------------------------------------------------- diff
 
