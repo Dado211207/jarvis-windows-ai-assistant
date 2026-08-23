@@ -47,12 +47,28 @@ def find_free_port(start: int = limits.PREVIEW_PORT_RANGE[0],
     Binding and closing is the only reliable test; asking whether a
     connection succeeds has a race in it and also cannot distinguish
     "free" from "refused for another reason".
+
+    **`SO_REUSEADDR` is deliberately not set, and that is a Windows
+    correctness point rather than a style one.** On POSIX the option
+    permits rebinding a port in TIME_WAIT. On Windows it permits binding
+    a port another socket is *actively listening on* — the bind succeeds
+    and the two sockets fight over incoming connections. This function
+    exists to answer "is anybody using this port", so an option whose
+    entire effect is to make that question return yes when the answer is
+    no defeats it.
+
+    The Windows CI job caught this: with a listener on 5180,
+    `find_free_port()` returned 5180. JARVIS would then have started a
+    preview on a port somebody else owned, reported it as its own, and
+    been unable to explain why the page showed a stranger's application.
     """
     for port in range(start, end + 1):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind((LOOPBACK, port))
+                # Listening as well as binding: on some platforms a bind
+                # can succeed for a port that cannot accept connections.
+                probe.listen(1)
                 return port
             except OSError:
                 continue

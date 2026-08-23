@@ -34,10 +34,11 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple
 
 from app.coding.runner import build_environment
+from app.coding.workspace import is_protected
 from app.logging_config import get_logger
 
 logger = get_logger("coding.gitsafe")
@@ -186,15 +187,63 @@ def status(root: Path) -> GitStatus:
 
 
 def diff(root: Path, staged: bool = False, max_bytes: int = 200_000) -> str:
+    """The working-tree diff, with protected files excluded.
+
+    **This function is a way for a file's contents to leave the project,
+    and `git diff` knows nothing about the protected-path engine.** A
+    plain `git diff` over a repository whose `.env` has been edited puts
+    the key in the diff — and this diff is served over HTTP, rendered in
+    the Changes tab, and available to a task record.
+
+    That is not hypothetical: the Windows CI job caught it. Every file
+    showed as modified there because of line-ending normalisation, and
+    `GET /coding/projects/{id}/diff` returned the fixture's fake
+    Anthropic key, its Stripe secret, its npm token and its private key.
+    On Linux the same test passed only because nothing happened to be
+    modified.
+
+    So the changed paths are listed first, the protected ones are removed
+    by the same `is_protected()` every other read goes through, and git
+    is asked for a diff of what remains. An excluded file is *named* —
+    the user should know their `.env` differs from HEAD; they just should
+    not be shown what it now says.
+    """
     args = ["diff", "--no-color"]
     if staged:
         args.append("--staged")
-    code, out, _ = _git(root, args, timeout=30.0)
+
+    # Which files would this diff cover?
+    name_args = list(args) + ["--name-only"]
+    code, listing, _ = _git(root, name_args, timeout=30.0)
     if code != 0:
         return ""
-    if len(out.encode("utf-8", errors="replace")) > max_bytes:
-        return out[:max_bytes] + f"\n[diff truncated at {max_bytes:,} bytes]"
-    return out
+
+    changed = [line.strip() for line in listing.splitlines() if line.strip()]
+    permitted, withheld = [], []
+    for path in changed:
+        (withheld if is_protected(PurePosixPath(path)) is not None else permitted).append(path)
+
+    header = ""
+    if withheld:
+        header = (
+            "[" + str(len(withheld)) + " protected file(s) changed and are not shown: "
+            + ", ".join(sorted(withheld)[:20])
+            + ". JARVIS never displays the contents of a file that holds credentials.]\n\n"
+        )
+
+    if not permitted:
+        return header
+
+    # `--` separates paths from revisions, so a file named like a branch
+    # cannot be reinterpreted as one.
+    code, out, _ = _git(root, args + ["--"] + permitted, timeout=30.0)
+    if code != 0:
+        return header
+
+    body = header + out
+    if len(body.encode("utf-8", errors="replace")) > max_bytes:
+        return body[:max_bytes] + f"\n[diff truncated at {max_bytes:,} bytes]"
+    return body
 
 
 def log(root: Path, count: int = 10) -> List[dict]:

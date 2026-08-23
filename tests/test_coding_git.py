@@ -44,7 +44,7 @@ def test_status_reports_a_clean_repository(tmp_path):
 def test_status_finds_modified_staged_and_untracked_separately(tmp_path):
     root = fx.static_site(tmp_path / "mixed", with_defect=False)
     fx.init_repo(root)
-    (root / "index.html").write_text("<h1>modified</h1>\n", encoding="utf-8")
+    fx.write(root, "index.html", "<h1>modified</h1>\n")
     fx.write(root, "staged.txt", "staged\n")
     fx.git(root, "add", "staged.txt")
     fx.write(root, "untracked.txt", "untracked\n")
@@ -130,8 +130,8 @@ def test_a_worktree_leaves_every_uncommitted_change_untouched(tmp_path, builder,
     assert worktree.is_dir()
 
     # Work in the worktree, as a task would.
-    (worktree / "jarvis-made-this.txt").write_text("task output\n", encoding="utf-8")
-    (worktree / "index.html").write_text("<h1>changed by the task</h1>\n", encoding="utf-8")
+    fx.write(worktree, "jarvis-made-this.txt", "task output\n")
+    fx.write(worktree, "index.html", "<h1>changed by the task</h1>\n")
 
     after = snapshot_bytes(root)
     assert after == before, (
@@ -229,16 +229,22 @@ def test_undo_only_touches_files_whose_hash_still_matches(tmp_path):
     fx.init_repo(root)
 
     import hashlib
-    jarvis_wrote = "<h1>JARVIS wrote this</h1>\n"
-    (root / "index.html").write_text(jarvis_wrote, encoding="utf-8")
-    recorded = hashlib.sha256(jarvis_wrote.encode()).hexdigest()
 
-    fx.write(root, "style.css", "/* JARVIS wrote this too */\n")
-    style_hash = hashlib.sha256(b"/* JARVIS wrote this too */\n").hexdigest()
+    # Written through fx.write, which writes exact bytes. Python's text
+    # mode would translate "\n" to "\r\n" on Windows, so a hash computed
+    # over the intended string would not match the file — the test would
+    # fail for a reason unrelated to what it is testing.
+    jarvis_wrote = "<h1>JARVIS wrote this</h1>\n"
+    fx.write(root, "index.html", jarvis_wrote)
+    recorded = hashlib.sha256(jarvis_wrote.encode("utf-8")).hexdigest()
+
+    style_wrote = "/* JARVIS wrote this too */\n"
+    fx.write(root, "style.css", style_wrote)
+    style_hash = hashlib.sha256(style_wrote.encode("utf-8")).hexdigest()
 
     # Now the user edits one of them.
     user_text = "<h1>and then the user changed it</h1>\n"
-    (root / "index.html").write_text(user_text, encoding="utf-8")
+    fx.write(root, "index.html", user_text)
 
     results = gitsafe.undo_task_edits(
         root, ["index.html", "style.css"],
@@ -246,7 +252,7 @@ def test_undo_only_touches_files_whose_hash_still_matches(tmp_path):
     )
     by_path = {r["path"]: r for r in results}
     assert by_path["index.html"]["reverted"] is False, "the user's later edit was discarded"
-    assert (root / "index.html").read_text(encoding="utf-8") == user_text
+    assert (root / "index.html").read_bytes() == user_text.encode("utf-8")
     assert by_path["style.css"]["reverted"] is True
 
 
@@ -295,8 +301,72 @@ def test_removing_a_worktree_that_still_has_changes_is_refused(tmp_path):
     plan = gitsafe.plan_isolation(root, "task4321")
     gitsafe.create_worktree(root, plan)
     worktree = Path(plan.worktree_path)
-    (worktree / "unsaved-task-work.txt").write_text("not committed\n", encoding="utf-8")
+    fx.write(worktree, "unsaved-task-work.txt", "not committed\n")
 
     removed, message = gitsafe.remove_worktree(root, str(worktree))
     assert removed is False
     assert worktree.exists(), "task work was thrown away"
+
+
+# ---------------------------------------------------------------------------
+# The diff is a way for a file's contents to leave the project
+# ---------------------------------------------------------------------------
+
+def test_a_diff_never_shows_the_contents_of_a_protected_file(tmp_path):
+    """`git diff` knows nothing about the protected-path engine.
+
+    The Windows CI job found this: line-ending normalisation made every
+    file show as modified, and `GET /coding/projects/{id}/diff` returned
+    the fixture's fake Anthropic key, Stripe secret, npm token and
+    private key. On Linux the same test passed only because nothing
+    happened to be modified — the hole was there either way.
+    """
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.with_secrets(root)
+    fx.init_repo(root)
+
+    # The user edits everything, including their credentials.
+    fx.write(root, ".env", f"ANTHROPIC_API_KEY={fx.FAKE_ANTHROPIC_KEY}\nEDITED=yes\n")
+    fx.write(root, "certs/server.key",
+             "-----BEGIN PRIVATE KEY-----\nFIXTUREPRIVATEKEYMATERIAL\nrotated\n"
+             "-----END PRIVATE KEY-----\n")
+    fx.write(root, "secrets.yaml", "database_password: fixture-yaml-secret\nnew: 1\n")
+    fx.write(root, "index.html", "<h1>a real change the user made</h1>\n")
+
+    body = gitsafe.diff(root)
+
+    for secret in fx.SECRET_VALUES:
+        assert secret not in body, f"the diff leaked {secret[:16]}…"
+
+    # The ordinary change is still shown — this must not be a blunt refusal.
+    assert "a real change the user made" in body
+
+    # And the user is told their protected files differ, without being
+    # shown what they now say.
+    assert ".env" in body
+    assert "not shown" in body
+
+
+def test_a_staged_diff_excludes_protected_files_too(tmp_path):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.with_secrets(root)
+    fx.init_repo(root)
+
+    fx.write(root, ".env", f"ANTHROPIC_API_KEY={fx.FAKE_ANTHROPIC_KEY}\nSTAGED=yes\n")
+    fx.git(root, "add", ".env")
+
+    body = gitsafe.diff(root, staged=True)
+    for secret in fx.SECRET_VALUES:
+        assert secret not in body, "the staged diff leaked a secret"
+
+
+def test_a_diff_of_only_protected_files_is_a_notice_not_an_empty_string(tmp_path):
+    """Empty would read as "nothing changed", which is false."""
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.with_secrets(root)
+    fx.init_repo(root)
+    fx.write(root, ".env", "ANTHROPIC_API_KEY=changed\n")
+
+    body = gitsafe.diff(root)
+    assert body.strip(), "a changed .env produced an empty diff, which reads as 'no changes'"
+    assert ".env" in body

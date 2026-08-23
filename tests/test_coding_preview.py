@@ -189,10 +189,20 @@ def test_the_structure_check_finds_the_planted_defects():
 # ---------------------------------------------------------------------------
 
 def test_availability_is_reported_with_a_reason_when_it_is_false(monkeypatch, tmp_path):
+    """Two different absences, two different reasons.
+
+    Which one applies depends on the machine: a Windows CI runner has no
+    Playwright package at all, a Linux dev box has the package but may
+    have no browser. Both are legitimate, and both must name the thing
+    that is missing and what would provide it — that is the property
+    under test, not which of the two it happens to be.
+    """
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "nothing-here"))
     result = browser_qa.availability()
     assert result.available is False
-    assert "chromium" in result.reason.lower()
+    reason = result.reason.lower()
+    assert "playwright" in reason, reason
+    assert "chromium" in reason or "does not include" in reason, reason
 
 
 def test_an_unavailable_browser_reports_not_checked_never_zero(monkeypatch, tmp_path):
@@ -433,3 +443,47 @@ def test_a_browser_failure_reason_names_the_problem_not_just_the_type(monkeypatc
     assert "Executable doesn't exist" in findings.reason
     assert "\n" not in findings.reason, "only the first line may be shown"
     assert len(findings.reason) < 300
+
+
+def test_a_port_another_process_is_listening_on_is_never_chosen():
+    """SO_REUSEADDR means different things on POSIX and Windows.
+
+    On POSIX it permits rebinding a port in TIME_WAIT. On Windows it
+    permits binding a port another socket is *actively listening on* —
+    the bind succeeds and the two sockets compete for connections. This
+    function exists to answer "is anybody using this port", so setting an
+    option whose whole effect is to make that answer wrong defeated it.
+
+    The Windows CI job caught it: with a listener on 5180,
+    find_free_port() returned 5180.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    # The AST, not a grep: the function's docstring explains *why* the
+    # option is not set, and a substring search cannot tell an
+    # explanation from a call.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(preview.find_free_port)))
+    sockopts = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "setsockopt"
+    ]
+    assert sockopts == [], (
+        "find_free_port must not call setsockopt — SO_REUSEADDR on Windows "
+        "allows binding a port somebody else is actively listening on, which "
+        "is exactly the question this function exists to answer"
+    )
+
+    first = preview.find_free_port()
+    listener, stop_flag, thread = fx.occupied_port_server(first)
+    try:
+        for _ in range(3):
+            chosen = preview.find_free_port()
+            assert chosen != first, "a port with a live listener was chosen"
+        assert preview.port_in_use(first) is True, "the other process was disturbed"
+    finally:
+        stop_flag.set()
+        listener.close()
+        thread.join(timeout=2)

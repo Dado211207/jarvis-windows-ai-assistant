@@ -42,6 +42,24 @@ def git(root: Path, *args: str) -> subprocess.CompletedProcess:
 
 def init_repo(root: Path, commit: bool = True) -> Path:
     git(root, "init", "-q", "-b", "main")
+
+    # Windows git defaults to core.autocrlf=true, which checks files out
+    # with CRLF and normalises them to LF on commit. A fixture that
+    # writes LF then commits is therefore *immediately dirty* on Windows
+    # — every file differs from HEAD by its line endings alone. That made
+    # four tests fail there and pass on Linux, which is worse than
+    # failing everywhere.
+    git(root, "config", "core.autocrlf", "false")
+    git(root, "config", "core.safecrlf", "false")
+
+    # An identity local to the fixture repository. CI runners have no
+    # global git identity, so `git commit` fails there with "Author
+    # identity unknown" — a real user's repository has one, and a test
+    # that depends on the machine having configured git is testing the
+    # machine.
+    git(root, "config", "user.email", "fixture@example.invalid")
+    git(root, "config", "user.name", "Fixture")
+
     if commit:
         git(root, "add", "-A")
         git(root, "commit", "-qm", "initial")
@@ -49,9 +67,18 @@ def init_repo(root: Path, commit: bool = True) -> Path:
 
 
 def write(root: Path, relative: str, content: str) -> Path:
+    """Write exactly these bytes.
+
+    `newline=""` is load-bearing. Without it, Python's text mode
+    translates every "\n" to "\r\n" on Windows, so a fixture asking for
+    LF gets CRLF, a sha256 computed over the intended string does not
+    match the file, and a test about hashes fails for a reason that has
+    nothing to do with hashing.
+    """
     target = root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    with open(target, "w", encoding="utf-8", newline="") as handle:
+        handle.write(content)
     return target
 
 
