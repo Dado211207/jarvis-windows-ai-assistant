@@ -336,19 +336,48 @@ def test_a_browser_check_works_from_a_thread_that_has_an_event_loop(served):
     """Playwright's sync API refuses to run where an asyncio loop is
     live, and reports it as a bare `Error`. A caller inside a request
     handler is a reasonable thing to be, so the work moves to its own
-    thread rather than failing with a message nobody can act on."""
+    thread rather than failing with a message nobody can act on.
+
+    The loop is created on a thread of this test's own rather than with
+    `asyncio.run()`: by the time the whole browser suite reaches here,
+    another suite may already have left a loop running on the main
+    thread, and `asyncio.run()` refuses to nest. Owning the thread makes
+    the condition under test independent of what ran before it.
+    """
     import asyncio
+    import threading
 
     if not browser_qa.availability().available:
         pytest.skip("no Chromium available for a real browser check")
 
     session, root, port = served
+    outcome = {}
 
-    async def check_from_inside_a_loop():
-        return browser_qa.run_checks(session, "/", task_id="loop",
-                                     capture_screenshot=False)
+    def worker():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
-    findings = asyncio.run(check_from_inside_a_loop())
+        async def inside_the_loop():
+            # The loop really is running at this point, which is the
+            # whole condition being tested.
+            assert asyncio.get_running_loop() is loop
+            return browser_qa.run_checks(session, "/", task_id="loop",
+                                         capture_screenshot=False)
+
+        try:
+            outcome["findings"] = loop.run_until_complete(inside_the_loop())
+        except Exception as exc:  # noqa: BLE001 — reported through outcome
+            outcome["error"] = exc
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=worker, name="loop-check")
+    thread.start()
+    thread.join(timeout=120)
+    assert not thread.is_alive(), "the browser check never returned"
+    assert "error" not in outcome, f"run_checks raised: {outcome.get('error')}"
+
+    findings = outcome["findings"]
     assert findings.available is True, findings.reason
     assert findings.http_status == 200
 
