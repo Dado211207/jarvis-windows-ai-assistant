@@ -393,5 +393,39 @@ product's internals — it wraps `getUserMedia`, the `AudioContext` and
 call stack, matching both `clap-controller.js` and the older
 `startClapListener`. So the headline assertion,
 `__liveClapTracks() === 0` after privacy mode is enabled, means exactly
-the same thing on both commits: on the older one it times out with the
-track still live.
+the same thing on both commits.
+
+**Measured.** Against `4c0f67c` — the last commit before this work — all
+36 tests fail:
+
+```
+36 failed in 250.75s
+```
+
+and against the commit that replaced it, all 36 pass:
+
+```
+36 passed in 176.01s
+```
+
+The headline privacy test fails on the older commit as a measurement
+rather than a missing symbol:
+
+```
+Page.wait_for_function: Timeout 15000ms exceeded.
+    (waiting for __liveClapTracks() === 0)
+```
+
+Fifteen seconds after privacy mode was switched on, a microphone track
+opened by the clap listener was still `readyState === "live"`. That is
+the defect, stated in the only terms that matter.
+
+The other failures divide into three honest kinds, and all three are
+findings rather than noise:
+
+| Kind | Example | What it says about `4c0f67c` |
+|---|---|---|
+| `ReferenceError: ClapController is not defined` | most of the suspension and lifecycle tests | there was no controller — the stream, context and node were three variables and the decisions were made wherever they happened |
+| `ReferenceError: setSharedMicrophone is not defined` | the selected-microphone tests | the dropdown moved nothing but the level meter |
+| `Page.click: Timeout 30000ms exceeded` | every calibration test | the buttons did not exist |
+| `KeyError: 'listener_state'` | the tray tests | the server had nothing to tell the tray |

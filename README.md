@@ -201,6 +201,13 @@ See `app/desktop/session.py`.
 
 - Python 3.11+
 - Windows 10/11 (for app launcher and screenshots; CLI/API work cross-platform)
+- **Microsoft Edge WebView2 Runtime**, for the desktop window. It ships
+  with Windows 11 and with recent Windows 10, and the installer fetches
+  and installs it from Microsoft if it is missing — so this is a
+  dependency to know about rather than one to go and get. It is a shared
+  Windows component: JARVIS never removes it, even when it installed it.
+  The double-clap listener and push-to-talk both run inside that
+  WebView2 window, which is why they stop when JARVIS is quit.
 
 ---
 

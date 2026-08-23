@@ -245,7 +245,11 @@ def run_silent(exe: Path, log_path: Path, extra_args: Optional[list] = None) -> 
 def wait_for_health(proc: subprocess.Popen, timeout_seconds: float = HEALTH_TIMEOUT_SECONDS) -> dict:
     import httpx
 
-    deadline = time.monotonic() + timeout_seconds
+    # Measured and printed, never asserted on. A startup that got slower
+    # is worth knowing about between builds; turning it into a threshold
+    # would make this test fail on a busy runner for no defect.
+    started = time.monotonic()
+    deadline = started + timeout_seconds
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             _fail(f"JARVIS.exe exited early (code {proc.returncode}) while waiting for it to become healthy.")
@@ -254,6 +258,7 @@ def wait_for_health(proc: subprocess.Popen, timeout_seconds: float = HEALTH_TIME
             if response.status_code == 200:
                 body = response.json()
                 if body.get("healthy") is True:
+                    print(f"TIMING: server answered /health after {time.monotonic() - started:.1f}s")
                     return body
         except Exception:
             pass
@@ -366,7 +371,8 @@ def wait_for_desktop_ready(timeout_seconds: float = DESKTOP_READY_TIMEOUT_SECOND
     """
     import httpx
 
-    deadline = time.monotonic() + timeout_seconds
+    started = time.monotonic()
+    deadline = started + timeout_seconds
     last = {}
     while time.monotonic() < deadline:
         try:
@@ -374,6 +380,7 @@ def wait_for_desktop_ready(timeout_seconds: float = DESKTOP_READY_TIMEOUT_SECOND
             if response.status_code == 200:
                 last = response.json()
                 if last.get("ready") is True:
+                    print(f"TIMING: desktop reported ready after {time.monotonic() - started:.1f}s")
                     return last
         except Exception:
             pass  # the server may still be starting

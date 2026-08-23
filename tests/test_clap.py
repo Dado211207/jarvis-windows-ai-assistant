@@ -412,9 +412,16 @@ def test_the_worklet_is_bundled_with_the_application():
     development and nowhere else."""
     spec = (REPO_ROOT / "packaging" / "jarvis.spec").read_text(encoding="utf-8")
 
-    assert WORKLET.exists()
-    assert WORKLET.parent.name == "static"
+    for asset in (WORKLET, CONTROLLER):
+        assert asset.exists()
+        assert asset.parent.name == "static"
     assert 'app" / "ui" / "static"' in spec
+
+    # And the page has to load the controller before app.js, or app.js's
+    # first call into it finds nothing there.
+    base = (REPO_ROOT / "app" / "ui" / "templates" / "base.html").read_text(encoding="utf-8")
+    scripts = re.findall(r'<script src="/ui/static/([^"]+)"', base)
+    assert scripts.index("clap-controller.js") < scripts.index("app.js")
 
 
 def test_the_worklet_posts_nothing_but_the_bare_fact():

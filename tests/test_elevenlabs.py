@@ -180,6 +180,45 @@ def test_an_oversized_response_is_cut_off_rather_than_read(mock_api, monkeypatch
     assert caught.value.category == elevenlabs.BAD_RESPONSE
 
 
+def test_cloud_audio_never_reaches_the_disk():
+    """"Are the temporary files cleaned up on success, error,
+    cancellation and shutdown?" has a better answer than "yes": there are
+    none.
+
+    Synthesised audio is bytes in memory from the HTTP response to
+    `winsound.PlaySound(..., SND_MEMORY)`. Nothing writes a WAV anywhere,
+    so there is no file to leave behind when a request fails, a person
+    presses Stop, or the process is killed mid-utterance.
+
+    `app/voice/audio.py` does contain a `write_wav()`, but nothing on the
+    speech path calls it — it exists for the launcher self-test, which
+    deliberately leaves a sample file behind for somebody to listen to.
+    So the assertion is scoped to the two things that carry a spoken
+    reply: the ElevenLabs client, and the `Player`.
+    """
+    import inspect
+
+    from app.voice import audio
+
+    sources = {
+        "app.voice.elevenlabs": inspect.getsource(elevenlabs),
+        "app.voice.audio.Player": inspect.getsource(audio.Player),
+    }
+    for name, source in sources.items():
+        for forbidden in ("tempfile", "NamedTemporaryFile", "mkstemp", "wave.open",
+                          "write_bytes", "os.remove", ".unlink("):
+            assert forbidden not in source, (
+                f"{name} touches the filesystem via {forbidden!r}"
+            )
+
+    assert "SND_MEMORY" in sources["app.voice.audio.Player"]
+
+    # And nothing on the speech path reaches the one helper that does
+    # write a file.
+    from app.voice import engines
+    assert "write_wav" not in inspect.getsource(engines)
+
+
 def test_there_is_no_endpoint_that_fetches_an_arbitrary_audio_url():
     """An AI model that could name a URL and have JARVIS fetch it would
     be a request-forgery primitive wearing a voice."""
