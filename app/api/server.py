@@ -87,6 +87,15 @@ def create_app() -> FastAPI:
     from app.api.ws import router as ws_router
     app.include_router(ws_router)
 
+    # Coding Workspace. Its capabilities live in their own registry
+    # (app/coding/registry.py) and are never added to the global tool
+    # registry, so mounting these routes gives the ordinary assistant
+    # nothing it did not already have — see
+    # docs/coding-workspace-architecture.md §2.2 and
+    # tests/test_coding_isolation.py.
+    from app.api.coding_routes import router as coding_router
+    app.include_router(coding_router)
+
     from app.ui.routes import router as ui_router
     app.include_router(ui_router)
 
