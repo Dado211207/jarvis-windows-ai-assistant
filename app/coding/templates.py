@@ -360,6 +360,17 @@ def validate_name(name: str) -> str:
         raise WorkspaceViolation(f"'{cleaned}' is a reserved Windows device name.")
     if ".." in cleaned:
         raise WorkspaceViolation("A project name may not contain '..'.")
+    # Windows silently strips a trailing dot or space from a directory
+    # name, so "my-site." asks for one folder and gets another. The user
+    # is then looking at a project whose name is not what they typed, and
+    # "my-site." and "my-site" collide with no explanation. Refusing is
+    # the only outcome that matches what the user sees.
+    if cleaned.endswith((".", " ")):
+        raise WorkspaceViolation(
+            "A project name may not end with a dot or a space — Windows removes "
+            "them from the folder name, so the project would not be called what "
+            "you typed."
+        )
     return cleaned
 
 

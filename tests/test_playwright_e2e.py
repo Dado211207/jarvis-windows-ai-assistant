@@ -960,3 +960,115 @@ def test_axe_no_serious_or_critical_violations_on_approval_interface(page):
         f"Approval card has {len(serious_or_critical)} serious/critical axe violation(s):\n"
         + "\n".join(f"  - {v['id']} ({v['impact']}): {v['description']}" for v in serious_or_critical)
     )
+
+
+# ---------------------------------------------------------------------------
+# 23. Coding Workspace page
+#
+# The page-level checks above (loads, no horizontal overflow at four
+# widths, no serious axe violation) already cover /ui/coding because it is
+# in PAGES. What follows is the behaviour those cannot see: the tablist
+# actually behaving like one, the mode being stated, and the page never
+# claiming a capability it has not got.
+# ---------------------------------------------------------------------------
+
+def test_the_coding_page_says_which_mode_you_are_in(page):
+    page.goto(url("/ui/coding"), wait_until="networkidle")
+    banner = page.locator("#coding-mode-banner")
+    assert banner.is_visible()
+    text = banner.inner_text().lower()
+    assert "coding workspace" in text
+    # It must say what this mode can do *and* that ordinary chat cannot.
+    assert "project" in text
+    assert "chat" in text
+
+
+def test_the_coding_page_has_exactly_one_h1(page):
+    page.goto(url("/ui/coding"), wait_until="networkidle")
+    assert page.locator("h1").count() == 1
+
+
+def test_the_coding_tabs_are_operable_with_the_keyboard_alone(page):
+    page.goto(url("/ui/coding"), wait_until="networkidle")
+
+    first = page.locator("#tab-projects")
+    first.focus()
+    assert first.get_attribute("aria-selected") == "true"
+
+    page.keyboard.press("ArrowRight")
+    assert page.locator("#tab-task").get_attribute("aria-selected") == "true"
+    assert page.locator("#panel-task").is_visible()
+    assert not page.locator("#panel-projects").is_visible()
+
+    page.keyboard.press("End")
+    assert page.locator("#tab-results").get_attribute("aria-selected") == "true"
+
+    page.keyboard.press("Home")
+    assert page.locator("#tab-projects").get_attribute("aria-selected") == "true"
+
+
+def test_only_the_selected_coding_tab_is_in_the_tab_order(page):
+    """A tablist where every tab is tabbable makes a keyboard user press
+    Tab six times to leave the tab strip."""
+    page.goto(url("/ui/coding"), wait_until="networkidle")
+    tabbable = page.eval_on_selector_all(
+        '#coding-tabs [role="tab"]',
+        "els => els.filter(e => e.tabIndex === 0).map(e => e.id)",
+    )
+    assert tabbable == ["tab-projects"]
+
+
+def test_the_coding_page_lists_what_it_will_not_do(page):
+    page.goto(url("/ui/coding"), wait_until="networkidle")
+    page.wait_for_function(
+        "() => document.querySelectorAll('#coding-disabled-list li').length > 0",
+        timeout=5000)
+    text = page.locator("#coding-disabled-list").inner_text().lower()
+    for forbidden in ("push", "pull request", "merge", "deploy"):
+        assert forbidden in text, f"the page does not say {forbidden} is unavailable"
+
+
+def test_the_coding_page_shows_the_protected_files_from_the_server(page):
+    """Rendered from GET /coding/status, not written into the template,
+    so what is shown is what workspace.py enforces."""
+    page.goto(url("/ui/coding"), wait_until="networkidle")
+    page.wait_for_function(
+        "() => document.querySelector('#coding-protected').children.length > 0",
+        timeout=5000)
+    text = page.locator("#coding-protected").inner_text()
+    assert ".env" in text
+    assert ".ssh" in text
+
+
+def test_the_coding_page_starts_with_an_explicit_empty_state(page):
+    """With no project added, the page must not present a coding agent
+    nobody asked for."""
+    page.goto(url("/ui/coding"), wait_until="networkidle")
+    page.wait_for_function(
+        "() => document.querySelector('#coding-projects').innerText.length > 0",
+        timeout=5000)
+    assert "No projects yet" in page.locator("#coding-projects").inner_text()
+
+    page.locator("#tab-task").click()
+    assert page.locator("#coding-no-project").is_visible()
+    assert not page.locator("#coding-task-area").is_visible()
+
+
+def test_long_paths_scroll_inside_their_own_box_not_the_page(page):
+    """A Windows project path is long. §4 forbids the page scrolling
+    sideways, so the container must be the thing that scrolls."""
+    page.goto(url("/ui/coding"), wait_until="networkidle")
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.wait_for_function(
+        "() => document.querySelector('#coding-protected').children.length > 0",
+        timeout=5000)
+
+    overflows = page.evaluate(
+        "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1")
+    assert overflows is False, "the coding page scrolls sideways on a phone width"
+
+    scrollable = page.eval_on_selector_all(
+        ".path-box",
+        "els => els.every(e => getComputedStyle(e).overflowX === 'auto' && e.tabIndex === 0)",
+    )
+    assert scrollable is True, "a path box is not scrollable, or not reachable by keyboard"
