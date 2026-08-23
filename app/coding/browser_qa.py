@@ -206,7 +206,41 @@ def run_checks(session, route: str = "/", *, task_id: str = "",
 
     `session` is a `PreviewSession`. The URL is built from *its* port, so
     a caller cannot redirect this at another origin.
+
+    Playwright's synchronous API refuses to run on a thread that has a
+    live asyncio event loop, and says so with an exception whose type is
+    just `Error` — which arrived here as "the browser check could not
+    complete (Error)", a message that tells nobody anything. The coding
+    agent runs on a plain worker thread so this does not arise in the
+    product, but a caller inside a request handler is an entirely
+    reasonable thing to be, so the work is moved to a thread of its own
+    rather than failing.
     """
+    if _loop_is_running():
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                _run_checks_here, session, route,
+                task_id=task_id, capture_screenshot=capture_screenshot,
+            ).result()
+    return _run_checks_here(session, route, task_id=task_id,
+                            capture_screenshot=capture_screenshot)
+
+
+def _loop_is_running() -> bool:
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def _run_checks_here(session, route: str = "/", *, task_id: str = "",
+                     capture_screenshot: bool = True) -> BrowserFindings:
+    """The actual check. Always called on a thread with no event loop."""
     state = session.state
     if not state.running or not state.port:
         return BrowserFindings(
@@ -291,9 +325,16 @@ def run_checks(session, route: str = "/", *, task_id: str = "",
                 browser.close()
     except Exception as exc:  # noqa: BLE001 — a QA check must not end a task
         logger.warning("Browser check failed.", exc_info=True)
+        # Playwright raises a bare `Error` for most failures, so the type
+        # name alone is useless. Its first line is written by Playwright
+        # (not by a remote server) and names the actual problem — a
+        # missing browser, a navigation timeout, a closed target — so it
+        # is safe and worth showing. Bounded, and only the first line.
+        detail = str(exc).strip().splitlines()[0][:200] if str(exc).strip() else ""
         return BrowserFindings(
             available=False,
-            reason=f"The browser check could not complete ({type(exc).__name__}).",
+            reason=("The browser check could not complete"
+                    + (f": {detail}" if detail else f" ({type(exc).__name__}).")),
             url=url, route=safe_route,
         )
 

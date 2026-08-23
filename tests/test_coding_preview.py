@@ -329,3 +329,60 @@ def test_starting_a_preview_needs_a_script_the_project_declares(tmp_path):
     outcome = preview.handle(context, Proposal())
     assert outcome.ok is False
     assert "does not declare" in outcome.summary
+
+
+@pytest.mark.browser
+def test_a_browser_check_works_from_a_thread_that_has_an_event_loop(served):
+    """Playwright's sync API refuses to run where an asyncio loop is
+    live, and reports it as a bare `Error`. A caller inside a request
+    handler is a reasonable thing to be, so the work moves to its own
+    thread rather than failing with a message nobody can act on."""
+    import asyncio
+
+    if not browser_qa.availability().available:
+        pytest.skip("no Chromium available for a real browser check")
+
+    session, root, port = served
+
+    async def check_from_inside_a_loop():
+        return browser_qa.run_checks(session, "/", task_id="loop",
+                                     capture_screenshot=False)
+
+    findings = asyncio.run(check_from_inside_a_loop())
+    assert findings.available is True, findings.reason
+    assert findings.http_status == 200
+
+
+def test_a_browser_failure_reason_names_the_problem_not_just_the_type(monkeypatch):
+    """`type(exc).__name__` is `Error` for nearly every Playwright
+    failure, so the message it produced — "could not complete (Error)" —
+    told the user nothing they could act on. Playwright writes its own
+    first line, and it names the real problem."""
+    class FakeSession:
+        class _S:
+            running = True
+            port = 4321
+        state = _S()
+
+    monkeypatch.setattr(browser_qa, "availability",
+                        lambda: browser_qa.BrowserAvailability(True))
+
+    class PlaywrightShapedError(Exception):
+        pass
+
+    def explode():
+        raise PlaywrightShapedError(
+            "Executable doesn't exist at /nowhere/chrome\nTry playwright install")
+
+    class FakeModule:
+        @staticmethod
+        def sync_playwright():
+            explode()
+
+    monkeypatch.setitem(__import__("sys").modules, "playwright.sync_api", FakeModule)
+
+    findings = browser_qa.run_checks(FakeSession(), "/", task_id="t")
+    assert findings.available is False
+    assert "Executable doesn't exist" in findings.reason
+    assert "\n" not in findings.reason, "only the first line may be shown"
+    assert len(findings.reason) < 300
