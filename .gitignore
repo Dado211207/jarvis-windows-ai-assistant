@@ -31,6 +31,13 @@ htmlcov/
 # Data (runtime files, not source)
 data/screenshots/
 data/logs/
+# Coding Workspace runtime data. coding_projects.json holds the absolute
+# paths of the user's own projects and coding_tasks.json their task
+# history — both are a map of somebody's disk, and neither belongs in a
+# public repository. The screenshots are browser-check output.
+data/coding_screenshots/
+data/coding_projects.json
+data/coding_tasks.json
 data/jarvis.db
 data/jarvis.db-shm
 data/jarvis.db-wal

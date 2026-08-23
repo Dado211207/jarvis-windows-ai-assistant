@@ -35,6 +35,24 @@ DEFECTIVE_PAGE = """<!doctype html>
 """
 
 
+@pytest.fixture(autouse=True)
+def screenshots_go_to_a_scratch_directory(tmp_path, monkeypatch):
+    """Keep browser-check output out of the repository.
+
+    `screenshot_dir()` resolves through `app_paths.data_dir()`, which in a
+    source checkout is ./data — so a test run wrote real PNGs into the
+    working tree, and sixteen of them were committed before anyone
+    noticed. Redirecting it here means the test cannot do that again even
+    if the ignore rules are lost.
+    """
+    from app.core import app_paths
+
+    scratch = tmp_path / "appdata"
+    scratch.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(app_paths, "data_dir", lambda: scratch)
+    return scratch
+
+
 @pytest.fixture
 def served(tmp_path):
     """A real preview session serving a real page, stopped afterwards."""

@@ -238,3 +238,45 @@ def test_an_interrupted_task_is_offered_not_resumed(tmp_path, monkeypatch):
         # Nothing is running: it was reported, not restarted.
         assert sessions.live_ids() == []
         assert client.get(f"/coding/tasks/{record.id}/live").json()["live"] is False
+
+
+def test_no_runtime_data_file_is_tracked_in_the_repository():
+    """Coding Workspace writes three files into the application's data
+    directory. In a source checkout that directory is ./data, so a test
+    run — or a developer using the feature — puts them in the working
+    tree, and `git add -A` commits them.
+
+    coding_projects.json holds the absolute paths of somebody's own
+    projects and coding_tasks.json their task history. Both are a map of
+    a person's disk. Eighteen such files were committed to this branch
+    before this test existed.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "ls-files", "data/"],
+        cwd=str(REPO_ROOT), capture_output=True, text=True, check=False,
+    )
+    tracked = [line for line in result.stdout.split() if line]
+    unexpected = [
+        path for path in tracked
+        if not path.endswith(".gitkeep")
+    ]
+    assert unexpected == [], (
+        "runtime data is tracked in the repository:\n  " + "\n  ".join(unexpected)
+        + "\nAdd it to .gitignore and `git rm --cached` it."
+    )
+
+
+def test_the_runtime_data_files_are_ignored():
+    """The ignore rules, checked by asking git rather than by reading
+    .gitignore — a rule in the wrong section matches nothing."""
+    import subprocess
+
+    for name in ("data/coding_projects.json", "data/coding_tasks.json",
+                 "data/coding_screenshots/example.png"):
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", name],
+            cwd=str(REPO_ROOT), capture_output=True, check=False,
+        )
+        assert result.returncode == 0, f"{name} is not ignored by git"
