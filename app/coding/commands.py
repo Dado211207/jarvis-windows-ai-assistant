@@ -94,6 +94,17 @@ BLOCKED_PROGRAMS = frozenset({
     "attrib", "fsutil",
     # Process control not owned by this task
     "taskkill", "tskill", "kill", "pkill", "killall",
+    # Signed Windows binaries whose documented behaviour includes fetching
+    # a remote file and executing it. These are not "system tools JARVIS
+    # has no use for" like the entries above; they are the specific
+    # programs an attacker reaches for *because* they are already present
+    # and already trusted, and each one is a way to run code that never
+    # appeared in an argv this module classified. `certutil -urlcache -f
+    # <url> out.exe` is a download; `rundll32`, `mshta` and `regsvr32`
+    # each execute arbitrary code from a file or a URL.
+    "rundll32", "certutil", "bitsadmin", "mshta", "regsvr32", "installutil",
+    "odbcconf", "msiexec", "forfiles", "pcalua", "wusa", "conhost",
+    "explorer", "msdt", "cmstp", "hh", "ieexec",
 })
 
 # Programs that are legitimate development tools.
@@ -121,8 +132,17 @@ GIT_BLOCKED = frozenset({
     "push", "merge", "rebase", "reset", "clean", "checkout", "switch",
     "restore", "cherry-pick", "revert", "filter-branch", "filter-repo",
     "gc", "prune", "reflog", "am", "apply", "clone", "fetch", "pull",
-    "submodule", "remote-add", "update-ref",
+    "submodule", "remote-add", "update-ref", "daemon", "credential",
 })
+
+# `git remote` and `git branch` read harmlessly and write destructively,
+# so the subcommand alone cannot decide. These are the second words that
+# turn each of them into something §6 forbids: changing where the
+# repository points, and deleting a branch.
+GIT_REMOTE_MUTATIONS = frozenset({"add", "set-url", "remove", "rm", "rename", "prune",
+                                  "set-branches", "set-head"})
+GIT_BRANCH_DESTRUCTIVE = frozenset({"-d", "-D", "--delete", "-m", "-M", "--move",
+                                    "--force", "-f", "-u", "--set-upstream-to"})
 
 # Package-manager subcommands that install, i.e. execute third-party code.
 INSTALL_SUBCOMMANDS = frozenset({
@@ -259,7 +279,21 @@ def classify(
     for intent, entry in (declared_commands or {}).items():
         if list(entry.get("argv") or []) != list(argv):
             continue
-        suspicious = _suspicious_script_body(str(entry.get("declared") or ""))
+        body = str(entry.get("declared") or "")
+        if not body.strip():
+            # No body to inspect. That is not the same as an inspected
+            # body that turned out to be fine, and treating it as such
+            # would make an entry with a missing field the way past this
+            # check. Fail closed.
+            return Verdict(
+                CommandTier.APPROVAL,
+                f"This project declares a '{intent}' command but JARVIS could not read "
+                "what it actually runs, so it cannot vouch for it. Review it before "
+                "approving.",
+                RiskLevel.SENSITIVE,
+                disclosure={"intent": intent, "declared_script": "", "unreadable": True},
+            )
+        suspicious = _suspicious_script_body(body)
         if suspicious is not None:
             return Verdict(
                 CommandTier.APPROVAL,
@@ -267,7 +301,7 @@ def classify(
                 "does not run automatically. Review the script before approving.",
                 RiskLevel.SENSITIVE,
                 disclosure={
-                    "declared_script": str(entry.get("declared") or "")[:400],
+                    "declared_script": body[:400],
                     "flagged_program": suspicious,
                     "intent": intent,
                 },
@@ -339,6 +373,27 @@ def _classify_git(rest: Sequence[str]) -> Verdict:
             RiskLevel.BLOCKED,
         )
 
+    if subcommand == "remote":
+        if args and args[0] in GIT_REMOTE_MUTATIONS:
+            return Verdict(
+                CommandTier.BLOCKED,
+                f"'git remote {args[0]}' changes where this repository pushes and "
+                "pulls from. JARVIS does not alter remotes.",
+                RiskLevel.BLOCKED,
+            )
+        return Verdict(CommandTier.AUTO, "Lists the configured remotes.", RiskLevel.READ_ONLY)
+
+    if subcommand == "branch":
+        destructive = [a for a in args if a in GIT_BRANCH_DESTRUCTIVE]
+        if destructive:
+            return Verdict(
+                CommandTier.BLOCKED,
+                f"'git branch {destructive[0]}' can delete or move a branch. JARVIS "
+                "creates a task branch and never removes or renames one of yours.",
+                RiskLevel.BLOCKED,
+            )
+        return Verdict(CommandTier.AUTO, "Lists branches.", RiskLevel.READ_ONLY)
+
     if subcommand == "worktree":
         # Adding a worktree is how isolation happens; removing one could
         # discard task changes, so it is not auto.
@@ -388,6 +443,39 @@ def _classify_git(rest: Sequence[str]) -> Verdict:
     )
 
 
+LOCKFILE_FOR = {
+    "npm": "package-lock.json", "pnpm": "pnpm-lock.yaml", "yarn": "yarn.lock",
+    "bun": "bun.lockb", "pip": "requirements.txt", "pip3": "requirements.txt",
+    "poetry": "poetry.lock", "uv": "uv.lock", "pipenv": "Pipfile.lock",
+}
+
+DEFAULT_REGISTRY = {
+    "npm": "https://registry.npmjs.org", "pnpm": "https://registry.npmjs.org",
+    "yarn": "https://registry.npmjs.org", "bun": "https://registry.npmjs.org",
+    "pip": "https://pypi.org/simple", "pip3": "https://pypi.org/simple",
+    "poetry": "https://pypi.org/simple", "uv": "https://pypi.org/simple",
+    "pipenv": "https://pypi.org/simple",
+}
+
+
+def _registry_for(program: str, rest: Sequence[str]) -> str:
+    """Where the packages would come from.
+
+    An explicit --registry or --index-url on the command line wins, and
+    is worth surfacing loudly: it is how an install is pointed at a host
+    the user has never heard of.
+    """
+    tokens = [str(a) for a in rest]
+    for index, token in enumerate(tokens):
+        lowered = token.lower()
+        for flag in ("--registry", "--index-url", "--extra-index-url"):
+            if lowered == flag and index + 1 < len(tokens):
+                return f"{tokens[index + 1]}  (overridden on the command line)"
+            if lowered.startswith(f"{flag}="):
+                return f"{token.split('=', 1)[1]}  (overridden on the command line)"
+    return DEFAULT_REGISTRY.get(program, "the tool's configured default")
+
+
 def _classify_package_manager(program: str, rest: Sequence[str]) -> Verdict:
     if not rest:
         return Verdict(
@@ -410,6 +498,7 @@ def _classify_package_manager(program: str, rest: Sequence[str]) -> Verdict:
 
     if subcommand in INSTALL_SUBCOMMANDS:
         packages = [a for a in rest[1:] if not a.startswith("-")]
+        registry = _registry_for(program, rest)
         return Verdict(
             CommandTier.APPROVAL,
             f"'{program} {subcommand}' installs or removes packages. Installing a "
@@ -419,10 +508,26 @@ def _classify_package_manager(program: str, rest: Sequence[str]) -> Verdict:
             disclosure={
                 "installs_packages": True,
                 "manager": program,
-                "packages": packages,
+                "packages": packages or ["everything in the lockfile"],
+                "registry": registry,
+                "lockfile": LOCKFILE_FOR.get(program, "the project's lockfile"),
+                "changes_lockfile": True,
+                "runs_scripts": True,
                 "lifecycle_scripts_may_run": list(LIFECYCLE_SCRIPTS),
                 "network": True,
-                "changes_lockfile": True,
+                # Licence and installed size are deliberately reported as
+                # unknown rather than guessed. Both are properties of the
+                # published package, and the only way to learn them before
+                # installing is to query the registry — a network request
+                # made *because* the user is being asked whether to make a
+                # network request. Saying "unknown until installed" is
+                # honest; printing a plausible number would not be.
+                "licence": "Not known before installing — JARVIS does not query the "
+                           "registry to find out, because that is itself a request to "
+                           "the network you have not approved yet.",
+                "disk_impact": "Not known before installing. Dependency trees routinely "
+                               "reach hundreds of megabytes.",
+                "reason": f"The task asked for '{' '.join([program, subcommand] + packages)}'.",
             },
         )
 
@@ -446,7 +551,8 @@ def describe_matrix() -> List[dict]:
     drifts."""
     return [
         {
-            "tier": "Automatic",
+            "tier": "auto",
+            "label": "Automatic",
             "examples": [
                 "git status / diff / log / branch",
                 "the project's own test, lint, format, typecheck and build scripts",
@@ -456,7 +562,8 @@ def describe_matrix() -> List[dict]:
             "why": "Read-only, or a command the project itself declares.",
         },
         {
-            "tier": "Approval required",
+            "tier": "approval",
+            "label": "Approval required",
             "examples": [
                 "npm / pnpm / yarn / pip install, add, update, remove",
                 "npx and anything that can download code",
@@ -469,7 +576,8 @@ def describe_matrix() -> List[dict]:
                    "or moving work that is not JARVIS's.",
         },
         {
-            "tier": "Blocked outright",
+            "tier": "blocked",
+            "label": "Blocked outright",
             "examples": [
                 "PowerShell, cmd, bash and every other shell",
                 "git push / merge / rebase / reset / clean / checkout / clone",

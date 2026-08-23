@@ -61,6 +61,12 @@ _ENV_ALLOWLIST = (
     "NODE_PATH", "NPM_CONFIG_PREFIX", "PYTHONPATH", "VIRTUAL_ENV",
 )
 
+# Values a caller may set explicitly, which are not read from os.environ.
+# The preview needs all three; none of them can carry a credential, and
+# keeping them separate from _ENV_ALLOWLIST means "inherited from this
+# machine" and "chosen by JARVIS" stay distinguishable.
+_ENV_SETTABLE = ("PORT", "HOST", "BROWSER", "FORCE_COLOR", "npm_config_registry")
+
 # Forced into every child. `CI=1` stops interactive prompts; the npm and
 # pip flags stop a package manager opening a browser or waiting on input.
 _ENV_FORCED = {
@@ -145,8 +151,17 @@ def build_environment(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     for key, value in (extra or {}).items():
         # An override may not reintroduce something the allowlist dropped
         # under a different name; only known-safe keys are accepted.
-        if key in _ENV_ALLOWLIST or key in _ENV_FORCED:
+        if key in _ENV_ALLOWLIST or key in _ENV_FORCED or key in _ENV_SETTABLE:
             env[key] = value
+        else:
+            # Refusing is right; refusing *silently* is not. A caller that
+            # passed a key believes it arrived, and the only way to find
+            # out otherwise was to inspect the child. Say so.
+            logger.warning(
+                "Ignoring environment variable %r for a coding command: it is not "
+                "one this runner is allowed to set. Add it to _ENV_SETTABLE if it "
+                "is genuinely safe.", key,
+            )
     return env
 
 

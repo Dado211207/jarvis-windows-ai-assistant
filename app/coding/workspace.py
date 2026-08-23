@@ -288,16 +288,24 @@ def _has_link_escape(candidate: Path, root: Path) -> Optional[str]:
     return None
 
 
-def canonical_root(raw: str) -> Path:
+def canonical_root(raw) -> Path:
     """The canonical form of a workspace root the user selected.
 
     Called once when a project is added, and again — from `resolve()` —
     every single time a path is checked, because a root that has been
     replaced by a link since it was registered is no longer the directory
     the user chose.
+
+    Accepts a `str` or a `Path`. It previously took only `str`, and
+    `resolve()` therefore did its own `root.resolve(strict=True)` rather
+    than calling this — two routines canonicalising the same thing, of
+    which only one screened the representation and only one checked that
+    the root is a directory. Passing this function a `Path` raised
+    AttributeError from inside the string screen.
     """
-    _reject_unsafe_representation(raw)
-    candidate = Path(raw).expanduser()
+    text = str(raw)
+    _reject_unsafe_representation(text)
+    candidate = Path(text).expanduser()
     try:
         resolved = candidate.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
@@ -378,12 +386,13 @@ def resolve(
     """
     _reject_unsafe_representation(candidate)
 
-    # Re-canonicalize the root on every call. Registering a project does
-    # not freeze the filesystem, and a root swapped for a link afterwards
-    # must not still be honoured.
+    # Re-canonicalize the root on every call, through the same function
+    # that vetted it when the project was added. Registering a project
+    # does not freeze the filesystem, and a root swapped for a link
+    # afterwards must not still be honoured.
     try:
-        live_root = root.resolve(strict=True)
-    except (OSError, RuntimeError):
+        live_root = canonical_root(root)
+    except WorkspaceViolation:
         raise WorkspaceViolation("The project folder is no longer available.") from None
 
     raw = Path(candidate).expanduser()
