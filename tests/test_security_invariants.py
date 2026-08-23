@@ -116,7 +116,15 @@ def test_the_route_walk_actually_finds_the_api():
 # one, but it is a different gate, so the exemption is listed here and
 # paired with test_the_alternative_gate_is_real() below, which proves the
 # endpoint actually refuses an unauthenticated call.
-_ALTERNATIVE_AUTH_ENDPOINTS = {"POST /desktop/ready"}
+_ALTERNATIVE_AUTH_ENDPOINTS = {
+    "POST /desktop/ready",
+    # The native window reporting which folder a person chose. It has no
+    # browser session to carry a session token, and authenticates with the
+    # per-session desktop secret instead — the same gate, and
+    # test_the_alternative_gate_is_real below proves it refuses a request
+    # with no credential at all.
+    "POST /coding/folder-dialog/{request_id}/result",
+}
 
 
 def test_every_mutating_endpoint_requires_the_session_token():
@@ -176,12 +184,23 @@ def test_read_only_endpoints_do_not_demand_a_token_unnecessarily():
     should not require a token, or the requirement stops meaning
     anything. Stated as an inventory so a GET that starts mutating has to
     be argued for here."""
+    #: GETs that do require a token, each because it returns something
+    #: about the person rather than about the product. Adding one means
+    #: adding it here, which is the point.
+    justified = {
+        # Returns the folder a person picked in the native dialog — an
+        # absolute Windows path, which contains their account name. The
+        # request id is unguessable, but "hard to guess" is not a gate.
+        "/coding/folder-dialog/{request_id}",
+    }
     token_gated_gets = sorted(
         route.path for route in _api_routes()
         if "GET" in route.methods and _requires_session_token(route)
     )
 
-    assert token_gated_gets == []
+    assert set(token_gated_gets) <= justified, (
+        f"a GET started requiring a token without being argued for: "
+        f"{sorted(set(token_gated_gets) - justified)}")
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +222,14 @@ def test_the_api_binds_to_loopback_by_default():
 # anything at all — which is not taken on trust but proven by
 # test_the_bind_all_exemption_cannot_bind_anything() below. Every other
 # file, and any networking added to this one, still fails.
-_BIND_ALL_EXEMPT_FILES = {"runtime_check.py"}
+_BIND_ALL_EXEMPT_FILES = {
+    "runtime_check.py",
+    # browser_origin.py lists "0.0.0.0" among the addresses it *refuses*
+    # to let a browser check open. It is the opposite of a bind, and
+    # test_the_bind_all_exemption_cannot_bind_anything below proves the
+    # file has no way to open a socket at all.
+    "browser_origin.py",
+}
 
 
 def test_nothing_binds_to_all_interfaces():

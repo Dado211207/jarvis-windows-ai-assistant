@@ -217,6 +217,9 @@ class LauncherSupervisor:
         """
         self._window = window_process.WindowProcess(
             url=dashboard_url(), close_action=close_action(),
+            # So the window child can authenticate the one thing it reports
+            # to the server: which folder a person picked in a native dialog.
+            session_secret=self._server.session_secret if self._server else "",
         )
         result = self._window.start_detailed()
         if not result.ok:

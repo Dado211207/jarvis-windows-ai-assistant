@@ -170,9 +170,13 @@ def main(argv=None, context=None, webview_module=None) -> int:
         pump = threading.Thread(target=_start_pump_when_ready, daemon=True, name="jarvis-window-ipc")
         pump.start()
 
+        from app.launcher import folder_picker
+
         webview_window.create_and_run(
             url=context["url"],
             icon_path=None,
+            # The only thing the page can ask this process to do.
+            js_api=folder_picker.WindowApi(),
             close_action=context["close_action"],
             on_quit=_on_user_quit,
             webview_module=webview_module,

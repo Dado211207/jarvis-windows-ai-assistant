@@ -98,10 +98,14 @@ def _make_handlers(close_action: str, on_quit: Callable[[], None]):
 
     def on_closed() -> None:
         global _window
-        from app.launcher import boot_trace
+        from app.launcher import boot_trace, folder_picker
         boot_trace.trace("webview on_closed")
         with _window_lock:
             _window = None
+        # The window that owned any open dialog has gone, so the dialog
+        # has gone with it. Releasing the guard here is what stops the
+        # next window believing one is still up and refusing to open one.
+        folder_picker.abandon()
         if close_action == "quit":
             on_quit()
         boot_trace.trace("webview on_closed returned")
@@ -115,6 +119,7 @@ def create_and_run(
     close_action: str,
     on_quit: Callable[[], None],
     webview_module=None,
+    js_api=None,
 ) -> None:
     """Creates the window and blocks until it is destroyed.
 
@@ -147,6 +152,11 @@ def create_and_run(
         resizable=True,
         confirm_close=False,  # closing is handled explicitly by the events below instead
         text_select=True,
+        # The page's entire bridge into this process. One object with one
+        # method on it — see app/launcher/folder_picker.py::WindowApi.
+        # Every method added here is another thing a page can do to the
+        # native process, so it stays that small.
+        js_api=js_api,
     )
     window.events.closing += on_closing
     window.events.closed += on_closed

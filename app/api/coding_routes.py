@@ -14,8 +14,9 @@ project, and state, never file contents or secrets.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.session import require_session_token
@@ -36,14 +37,42 @@ router = APIRouter(prefix="/coding", tags=["coding"])
 # --------------------------------------------------------------------------
 
 class AddProjectRequest(BaseModel):
-    path: str = Field(min_length=1, max_length=4000)
+    # Either a folder the native picker returned (`request_id`) or one
+    # typed into the labelled fallback field (`path`). Both are validated
+    # identically by `workspace.canonical_root`; the difference is only
+    # that the server can tell them apart.
+    path: str = Field(default="", max_length=4000)
+    request_id: str = Field(default="", max_length=128)
     name: str = Field(default="", max_length=120)
 
 
-class CreateProjectRequest(BaseModel):
-    parent_path: str = Field(min_length=1, max_length=4000)
+class PlanProjectRequest(BaseModel):
+    """Step one of two. Produces a plan; writes nothing."""
+
+    parent_path: str = Field(default="", max_length=4000)
+    # A folder the native picker returned, spent here instead of a typed
+    # path. Exactly one of the two is used, and the server can tell which.
+    parent_request_id: str = Field(default="", max_length=128)
     name: str = Field(min_length=1, max_length=80)
     template: str = Field(default="static", max_length=40)
+
+
+class CreateProjectRequest(BaseModel):
+    """Step two. Nothing is written without a plan id."""
+
+    plan_id: str = Field(min_length=1, max_length=64)
+
+
+class FolderDialogRequest(BaseModel):
+    purpose: str = Field(min_length=1, max_length=40)
+
+
+class FolderDialogResult(BaseModel):
+    """What the native window reports back. One of three outcomes."""
+
+    path: str = Field(default="", max_length=4000)
+    cancelled: bool = False
+    error: str = Field(default="", max_length=300)
 
 
 class StartTaskRequest(BaseModel):
@@ -156,13 +185,29 @@ async def list_coding_projects() -> dict:
 
 @router.post("/projects", dependencies=[Depends(require_session_token)])
 async def add_coding_project(body: AddProjectRequest) -> dict:
+    from app.coding import folder_requests
+
+    path = body.path
+    picked = False
+    if body.request_id:
+        # A folder the person chose in the native dialog. Spent here, once.
+        try:
+            path = folder_requests.broker.consume(body.request_id)
+            picked = True
+        except folder_requests.FolderRequestError as exc:
+            raise HTTPException(status_code=400, detail=exc.reason) from None
+    if not path:
+        raise HTTPException(status_code=400, detail="No folder was given.")
+
     try:
-        project = projects.add(body.path, body.name)
+        project = projects.add(path, body.name)
     except WorkspaceViolation as exc:
         raise HTTPException(status_code=400, detail=exc.reason) from None
     except Exception as exc:  # noqa: BLE001
         raise _safe_failure(exc, "add coding project") from None
-    return {"project": _project_payload(project)}
+    # Reported so the page cannot claim a folder was chosen through the
+    # picker when it was typed. Only the server knows which happened.
+    return {"project": _project_payload(project), "selected_via_picker": picked}
 
 
 @router.delete("/projects/{project_id}", dependencies=[Depends(require_session_token)])
@@ -186,23 +231,167 @@ async def open_coding_project(project_id: str) -> dict:
     return {"project": _project_payload(project)}
 
 
-@router.post("/projects/create", dependencies=[Depends(require_session_token)])
-async def create_coding_project(body: CreateProjectRequest) -> dict:
-    """Scaffold a new project from a bundled template.
+@router.post("/projects/plan", dependencies=[Depends(require_session_token)])
+async def plan_coding_project(body: PlanProjectRequest) -> dict:
+    """Step one of two: what creating this project *would* do.
 
-    The plan is returned by `GET /coding/templates` and shown before this
-    is called; nothing here reaches the network, and no dependency is
-    installed — that stays a separate, approved action.
+    Reads the filesystem and writes nothing — see
+    `app/coding/project_plan.py`, whose test walks its AST to prove there
+    is no write in it. The plan is what the confirmation screen shows.
     """
-    from app.coding import templates
+    from app.coding import folder_requests, project_plan
+
+    parent = body.parent_path
+    picked = False
+    if body.parent_request_id:
+        try:
+            parent = folder_requests.broker.consume(body.parent_request_id)
+            picked = True
+        except folder_requests.FolderRequestError as exc:
+            raise HTTPException(status_code=400, detail=exc.reason) from None
+    if not parent:
+        raise HTTPException(status_code=400, detail="No parent folder was given.")
 
     try:
-        project = templates.create(body.parent_path, body.name, body.template)
-    except WorkspaceViolation as exc:
+        plan = project_plan.build_plan(parent, body.name, body.template)
+    except (project_plan.PlanError, WorkspaceViolation) as exc:
+        raise HTTPException(status_code=400, detail=exc.reason) from None
+    except Exception as exc:  # noqa: BLE001
+        raise _safe_failure(exc, "plan a coding project") from None
+    return {"plan": plan.as_dict(), "selected_via_picker": picked}
+
+
+@router.post("/projects/plan/{plan_id}/cancel", dependencies=[Depends(require_session_token)])
+async def cancel_coding_project_plan(plan_id: str) -> dict:
+    """Throw a plan away. There is nothing to undo, because nothing was
+    written — which is the whole point of the plan step."""
+    from app.coding import project_plan
+
+    return {"cancelled": project_plan.cancel(plan_id), "files_created": 0}
+
+
+@router.post("/projects/create", dependencies=[Depends(require_session_token)])
+async def create_coding_project(body: CreateProjectRequest) -> dict:
+    """Step two of two: create the project a plan describes.
+
+    Takes a plan id and nothing else. There is deliberately no path,
+    name or template on this request — a create that could be given its
+    own destination would be a one-step create with an extra field, and
+    the plan the user read would not be the thing that ran.
+
+    The plan is re-checked against the filesystem immediately before
+    anything is written; a destination that appeared while the
+    confirmation was on screen is a refusal, not an overwrite.
+    """
+    from app.coding import project_plan
+
+    plan = project_plan.get(body.plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=400,
+            detail="That plan is no longer available. Review the details and confirm again.",
+        )
+    try:
+        project = project_plan.execute(plan)
+    except (project_plan.PlanError, WorkspaceViolation) as exc:
         raise HTTPException(status_code=400, detail=exc.reason) from None
     except Exception as exc:  # noqa: BLE001
         raise _safe_failure(exc, "create coding project") from None
-    return {"project": _project_payload(project)}
+    return {"project": _project_payload(project), "plan_id": plan.id}
+
+
+# --------------------------------------------------------------------------
+# The native folder dialog
+#
+# Brokered, because only the process that owns a window can put a modal on
+# it, and that is not this one. See app/coding/folder_requests.py for the
+# whole flow and why the answer comes back through an authenticated
+# endpoint rather than through the page.
+# --------------------------------------------------------------------------
+
+@router.get("/folder-dialog")
+async def folder_dialog_availability() -> dict:
+    """Whether a native folder dialog can be opened right now.
+
+    Answered from the desktop-ready signal, which is the parent's *proved*
+    account of whether a window is alive — not a guess from this process,
+    which has no window of its own and cannot see one.
+    """
+    from app.api.routes import _desktop_ready_state
+
+    window_alive = bool((_desktop_ready_state or {}).get("window_alive"))
+    return {
+        "available": window_alive,
+        "reason": "" if window_alive else (
+            "JARVIS is running without its native window, so Windows cannot show a "
+            "folder dialog. Type the folder path instead."
+        ),
+    }
+
+
+@router.post("/folder-dialog", dependencies=[Depends(require_session_token)])
+async def open_folder_dialog(body: FolderDialogRequest) -> dict:
+    from app.coding import folder_requests
+
+    try:
+        request = folder_requests.broker.create(body.purpose)
+    except folder_requests.FolderRequestError as exc:
+        # 409 means "not right now" (a dialog is already open); 400 means
+        # "not ever" (that is not a folder JARVIS asks for). A page that
+        # sees them as one cannot tell whether retrying would help.
+        raise HTTPException(status_code=409 if exc.conflict else 400,
+                            detail=exc.reason) from None
+    return {"request": request.as_dict(include_path=True)}
+
+
+@router.get("/folder-dialog/{request_id}", dependencies=[Depends(require_session_token)])
+async def read_folder_dialog(request_id: str) -> dict:
+    from app.coding import folder_requests
+
+    request = folder_requests.broker.get(request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="That folder request is not open.")
+    return {"request": request.as_dict(include_path=True)}
+
+
+@router.post("/folder-dialog/{request_id}/cancel",
+             dependencies=[Depends(require_session_token)])
+async def cancel_folder_dialog(request_id: str) -> dict:
+    from app.coding import folder_requests
+
+    request = folder_requests.broker.cancel(request_id)
+    if request is None:
+        raise HTTPException(status_code=404, detail="That folder request is not open.")
+    return {"request": request.as_dict(include_path=True)}
+
+
+@router.post("/folder-dialog/{request_id}/result")
+async def report_folder_dialog(
+    request_id: str,
+    body: FolderDialogResult,
+    x_jarvis_desktop_secret: Optional[str] = Header(default=None),
+) -> dict:
+    """The native window reporting what the person chose.
+
+    Deliberately **not** behind the session token: the caller is the
+    window child, which has no browser session. It authenticates with the
+    per-session desktop secret that only the processes JARVIS started
+    inherited, so nothing else on this machine can claim a folder was
+    picked. A server started without one refuses every call rather than
+    accepting any.
+    """
+    from app.api.routes import _require_desktop_secret
+    from app.coding import folder_requests
+
+    _require_desktop_secret(x_jarvis_desktop_secret)
+    try:
+        request = folder_requests.broker.resolve(
+            request_id, path=body.path, cancelled=body.cancelled, error=body.error)
+    except folder_requests.FolderRequestError as exc:
+        raise HTTPException(status_code=409 if exc.conflict else 400,
+                            detail=exc.reason) from None
+    # The window does not need the path back; it is the thing that sent it.
+    return {"request": request.as_dict(include_path=False)}
 
 
 @router.get("/templates")
@@ -590,6 +779,26 @@ async def coding_screenshot(name: str):
         if candidate.name == name:
             return FileResponse(str(candidate), media_type="image/png")
     raise HTTPException(status_code=404, detail="No such screenshot.")
+
+
+@router.get("/toolchain")
+async def coding_toolchain(project_id: str = "") -> dict:
+    """What is installed on this machine, and what cannot run without it.
+
+    Read-only in the strongest sense: every probe is `--version` on a
+    resolved executable. Nothing is installed, nothing is configured, and
+    the lookup is bounded — PATH plus a small named set of standard
+    locations, never a disk scan.
+    """
+    from app.coding import toolchain
+
+    root = None
+    if project_id:
+        try:
+            root = projects.resolve_root(project_id)
+        except (WorkspaceViolation, Exception):  # noqa: BLE001
+            root = None
+    return toolchain.diagnose(root)
 
 
 @router.get("/browser-check")

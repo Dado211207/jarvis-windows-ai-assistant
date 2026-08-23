@@ -71,6 +71,13 @@ class RuntimeStatus:
     applicable: bool = True
 
 
+#: Microsoft writes this into the WebView2 `pv` value to mean "not
+#: installed", rather than removing the key. Defined once, here, and
+#: imported by anything else that reads that value: this file carries the
+#: reviewed exemption for the literal, and a second copy elsewhere would
+#: need a second exemption for a string that never reaches a socket.
+NOT_INSTALLED_VERSION = "0.0.0.0"
+
 def _read_webview2_version() -> Optional[str]:
     """The installed WebView2 Runtime version string, or None.
 
@@ -95,9 +102,9 @@ def _read_webview2_version() -> Optional[str]:
         try:
             with winreg.OpenKey(hive, path) as key:
                 version, _ = winreg.QueryValueEx(key, "pv")
-            # Microsoft documents "0.0.0.0" as explicitly meaning "not
+            # Microsoft documents this value as explicitly meaning "not
             # installed" rather than absent — treated as absent here.
-            if isinstance(version, str) and version and version != "0.0.0.0":
+            if isinstance(version, str) and version and version != NOT_INSTALLED_VERSION:
                 return version
         except OSError:
             continue

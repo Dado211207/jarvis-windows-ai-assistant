@@ -51,8 +51,12 @@ def project(tmp_path):
 
 MUTATING = [
     ("post", "/coding/projects", {"path": "/tmp", "name": "x"}),
-    ("post", "/coding/projects/create", {"parent_path": "/tmp", "name": "x",
-                                         "template": "static"}),
+    ("post", "/coding/projects/plan", {"parent_path": "/tmp", "name": "x",
+                                       "template": "static"}),
+    ("post", "/coding/projects/create", {"plan_id": "x"}),
+    ("post", "/coding/projects/plan/anything/cancel", {}),
+    ("post", "/coding/folder-dialog", {"purpose": "add_project"}),
+    ("post", "/coding/folder-dialog/anything/cancel", {}),
     ("post", "/coding/tasks/plan", {"project_id": "x", "request": "y"}),
     ("post", "/coding/tasks/start", {"task_id": "x"}),
     ("post", "/coding/tasks/decide", {"task_id": "x", "granted": True}),
@@ -278,10 +282,61 @@ def test_the_template_list_describes_each_one_without_promising_a_download(clien
         assert template["key"] and template["title"] and template["description"]
 
 
-def test_creating_a_project_writes_files_and_installs_nothing(client, tmp_path):
-    response = client.post("/coding/projects/create",
+def test_planning_a_project_writes_nothing_at_all(client, tmp_path):
+    """Step one of two. The response describes; the disk is untouched."""
+    before = sorted(p.name for p in tmp_path.iterdir())
+    response = client.post("/coding/projects/plan",
                            json={"parent_path": str(tmp_path), "name": "my-new-site",
                                  "template": "static"},
+                           headers=token_headers(client))
+    assert response.status_code == 200
+    plan = response.json()["plan"]
+    assert plan["destination"].endswith("my-new-site")
+    assert plan["files"]
+    assert plan["creatable"] is True
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert not (tmp_path / "my-new-site").exists()
+
+
+def test_cancelling_a_plan_leaves_nothing_behind(client, tmp_path):
+    plan = client.post("/coding/projects/plan",
+                       json={"parent_path": str(tmp_path), "name": "abandoned",
+                             "template": "static"},
+                       headers=token_headers(client)).json()["plan"]
+
+    response = client.post(f"/coding/projects/plan/{plan['plan_id']}/cancel", json={},
+                           headers=token_headers(client))
+    assert response.status_code == 200
+    assert response.json()["files_created"] == 0
+    assert not (tmp_path / "abandoned").exists()
+
+    # And the cancelled plan cannot then be confirmed.
+    confirmed = client.post("/coding/projects/create",
+                            json={"plan_id": plan["plan_id"]},
+                            headers=token_headers(client))
+    assert confirmed.status_code == 400
+    assert not (tmp_path / "abandoned").exists()
+
+
+def test_creating_a_project_needs_a_plan_and_takes_nothing_else(client, tmp_path):
+    """Step two takes a plan id and no destination of its own — otherwise
+    it would be a one-step create with an extra field, and the plan the
+    user read would not be the thing that ran."""
+    smuggled = client.post("/coding/projects/create",
+                           json={"parent_path": str(tmp_path), "name": "sneaky",
+                                 "template": "static"},
+                           headers=token_headers(client))
+    assert smuggled.status_code == 422
+    assert not (tmp_path / "sneaky").exists()
+
+
+def test_confirming_a_plan_writes_files_and_installs_nothing(client, tmp_path):
+    plan = client.post("/coding/projects/plan",
+                       json={"parent_path": str(tmp_path), "name": "my-new-site",
+                             "template": "static"},
+                       headers=token_headers(client)).json()["plan"]
+
+    response = client.post("/coding/projects/create", json={"plan_id": plan["plan_id"]},
                            headers=token_headers(client))
     assert response.status_code == 200
     created = Path(response.json()["project"]["root"])
@@ -295,7 +350,7 @@ def test_creating_a_project_writes_files_and_installs_nothing(client, tmp_path):
     "name:stream", "trailing.",
 ])
 def test_an_unsafe_project_name_is_refused(client, tmp_path, name):
-    response = client.post("/coding/projects/create",
+    response = client.post("/coding/projects/plan",
                            json={"parent_path": str(tmp_path), "name": name,
                                  "template": "static"},
                            headers=token_headers(client))
@@ -304,7 +359,7 @@ def test_an_unsafe_project_name_is_refused(client, tmp_path, name):
 
 
 def test_creating_into_a_parent_that_does_not_exist_is_refused(client, tmp_path):
-    response = client.post("/coding/projects/create",
+    response = client.post("/coding/projects/plan",
                            json={"parent_path": str(tmp_path / "nope"), "name": "x",
                                  "template": "static"},
                            headers=token_headers(client))
@@ -312,8 +367,148 @@ def test_creating_into_a_parent_that_does_not_exist_is_refused(client, tmp_path)
 
 
 def test_an_unknown_template_is_refused(client, tmp_path):
-    response = client.post("/coding/projects/create",
+    response = client.post("/coding/projects/plan",
                            json={"parent_path": str(tmp_path), "name": "x",
                                  "template": "definitely-not-a-template"},
                            headers=token_headers(client))
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# The native folder dialog, at the HTTP boundary
+#
+# The dialog itself is Windows'. What is checked here is the brokering:
+# who may ask for one, who may answer, and what a page can learn.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def a_clean_folder_broker():
+    from app.coding import folder_requests
+
+    folder_requests.broker.clear()
+    yield
+    folder_requests.broker.clear()
+
+
+def desktop_headers(monkeypatch) -> dict:
+    from app.launcher.server_process import SESSION_SECRET_ENV
+
+    monkeypatch.setenv(SESSION_SECRET_ENV, "a-test-desktop-secret")
+    return {"X-JARVIS-Desktop-Secret": "a-test-desktop-secret"}
+
+
+def test_a_page_can_mint_a_folder_request_but_not_answer_it(client, monkeypatch, tmp_path):
+    minted = client.post("/coding/folder-dialog", json={"purpose": "add_project"},
+                         headers=token_headers(client))
+    assert minted.status_code == 200
+    request_id = minted.json()["request"]["request_id"]
+
+    # The session token is not the credential for reporting a result.
+    forged = client.post(f"/coding/folder-dialog/{request_id}/result",
+                         json={"path": str(tmp_path)},
+                         headers=token_headers(client))
+    assert forged.status_code == 403
+
+    state = client.get(f"/coding/folder-dialog/{request_id}",
+                       headers=token_headers(client)).json()["request"]
+    assert state["state"] == "pending"
+    assert state["path"] == ""
+
+
+def test_an_unauthenticated_result_is_refused(client, tmp_path):
+    minted = client.post("/coding/folder-dialog", json={"purpose": "add_project"},
+                         headers=token_headers(client))
+    request_id = minted.json()["request"]["request_id"]
+
+    response = client.post(f"/coding/folder-dialog/{request_id}/result",
+                           json={"path": str(tmp_path)})
+    assert response.status_code == 403
+
+
+def test_a_result_with_the_desktop_secret_is_accepted_once(client, monkeypatch, tmp_path):
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    headers = desktop_headers(monkeypatch)
+    request_id = client.post("/coding/folder-dialog", json={"purpose": "add_project"},
+                             headers=token_headers(client)).json()["request"]["request_id"]
+
+    first = client.post(f"/coding/folder-dialog/{request_id}/result",
+                        json={"path": str(chosen)}, headers=headers)
+    assert first.status_code == 200
+    # The window is the thing that sent the path; it does not get it back.
+    assert first.json()["request"]["path"] == ""
+
+    second = client.post(f"/coding/folder-dialog/{request_id}/result",
+                         json={"path": str(tmp_path)}, headers=headers)
+    assert second.status_code == 409
+
+    shown = client.get(f"/coding/folder-dialog/{request_id}",
+                       headers=token_headers(client)).json()["request"]
+    assert shown["state"] == "selected"
+    assert shown["path"] == str(chosen.resolve())
+
+
+def test_a_picked_folder_becomes_a_project_and_is_spent(client, monkeypatch, tmp_path):
+    chosen = fx.static_site(tmp_path / "picked", with_defect=False)
+    headers = desktop_headers(monkeypatch)
+    request_id = client.post("/coding/folder-dialog", json={"purpose": "add_project"},
+                             headers=token_headers(client)).json()["request"]["request_id"]
+    client.post(f"/coding/folder-dialog/{request_id}/result",
+                json={"path": str(chosen)}, headers=headers)
+
+    added = client.post("/coding/projects", json={"request_id": request_id},
+                        headers=token_headers(client))
+    assert added.status_code == 200
+    assert added.json()["selected_via_picker"] is True
+    assert added.json()["project"]["root"] == str(chosen.resolve())
+
+    reused = client.post("/coding/projects", json={"request_id": request_id},
+                         headers=token_headers(client))
+    assert reused.status_code == 400
+
+
+def test_a_typed_path_is_never_reported_as_picked(client, tmp_path):
+    """§4: do not claim a folder was selected through the picker when it
+    was typed. Only the server can tell, so only the server may say."""
+    typed = fx.static_site(tmp_path / "typed", with_defect=False)
+    added = client.post("/coding/projects",
+                        json={"path": str(typed), "name": "typed"},
+                        headers=token_headers(client))
+    assert added.status_code == 200
+    assert added.json()["selected_via_picker"] is False
+
+
+def test_a_cancelled_dialog_registers_nothing(client, monkeypatch, tmp_path):
+    headers = desktop_headers(monkeypatch)
+    request_id = client.post("/coding/folder-dialog", json={"purpose": "add_project"},
+                             headers=token_headers(client)).json()["request"]["request_id"]
+
+    client.post(f"/coding/folder-dialog/{request_id}/result",
+                json={"cancelled": True}, headers=headers)
+
+    added = client.post("/coding/projects", json={"request_id": request_id},
+                        headers=token_headers(client))
+    assert added.status_code == 400
+    assert client.get("/coding/projects").json()["projects"] == []
+
+
+def test_a_second_dialog_is_refused_while_one_is_open(client):
+    client.post("/coding/folder-dialog", json={"purpose": "add_project"},
+                headers=token_headers(client))
+    second = client.post("/coding/folder-dialog", json={"purpose": "add_project"},
+                         headers=token_headers(client))
+    assert second.status_code == 409
+
+
+def test_an_unknown_purpose_is_refused(client):
+    response = client.post("/coding/folder-dialog", json={"purpose": "read_my_disk"},
+                           headers=token_headers(client))
+    assert response.status_code == 400
+
+
+def test_availability_is_reported_from_the_proved_window_state(client):
+    """The server has no window of its own and cannot see one; it reports
+    what the parent proved, or says a dialog is not available."""
+    body = client.get("/coding/folder-dialog").json()
+    assert body["available"] is False
+    assert body["reason"], "an unavailable picker must say why"

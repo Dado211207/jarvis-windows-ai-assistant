@@ -43,6 +43,7 @@
       <button role="tab" id="tab-diff"      aria-controls="panel-diff"      aria-selected="false" class="tab-btn" tabindex="-1">Changes</button>
       <button role="tab" id="tab-preview"   aria-controls="panel-preview"   aria-selected="false" class="tab-btn" tabindex="-1">Preview</button>
       <button role="tab" id="tab-results"   aria-controls="panel-results"   aria-selected="false" class="tab-btn" tabindex="-1">Results</button>
+      <button role="tab" id="tab-tools"     aria-controls="panel-tools"     aria-selected="false" class="tab-btn" tabindex="-1">Tools</button>
     </div>
   </div>
 
@@ -54,15 +55,35 @@
     <h2 class="section-title" style="margin-top:2rem;">Add a project you already have</h2>
     <form id="coding-add-form" class="stack">
       <div>
-        <label class="label" for="coding-add-path">Full path to the project folder</label>
-        <input class="input" id="coding-add-path" name="path" type="text" autocomplete="off"
-               placeholder="C:\Users\you\projects\my-site"
-               aria-describedby="coding-add-path-help">
-        <p class="text-xs text-muted" id="coding-add-path-help">
-          JARVIS reads and writes only inside this folder. Adding a project does not change
-          anything in it.
+        <span class="label" id="coding-add-folder-label">Project folder</span>
+        <div class="btn-row">
+          <button class="btn btn-secondary" type="button" id="coding-add-browse"
+                  aria-describedby="coding-add-folder-help">Browse&hellip;</button>
+        </div>
+        <!-- The chosen folder, announced when it changes: a person using a
+             screen reader must hear what the dialog returned, not be left to
+             go looking for it. -->
+        <p class="chosen-path" id="coding-add-chosen" role="status" aria-live="polite"
+           aria-labelledby="coding-add-folder-label" tabindex="0">No folder chosen yet.</p>
+        <p class="text-xs text-muted" id="coding-add-folder-help">
+          JARVIS reads and writes only inside the folder you choose. Adding a project does
+          not change anything in it.
         </p>
       </div>
+
+      <!-- The typed field is the fallback, and it says so. It exists because
+           JARVIS also runs in an ordinary browser, where no native dialog is
+           available at all; the picker stays the primary control. -->
+      <details id="coding-add-manual">
+        <summary class="text-sm">Type the folder path instead</summary>
+        <label class="label" for="coding-add-path">Full path to the project folder</label>
+        <input class="input" id="coding-add-path" name="path" type="text" autocomplete="off"
+               aria-describedby="coding-add-path-help">
+        <p class="text-xs text-muted" id="coding-add-path-help">
+          Checked in exactly the same way as a folder chosen through the dialog.
+        </p>
+      </details>
+
       <div>
         <label class="label" for="coding-add-name">Name it (optional)</label>
         <input class="input" id="coding-add-name" name="name" type="text" autocomplete="off"
@@ -77,10 +98,24 @@
     <h2 class="section-title" style="margin-top:2rem;">Start a new project</h2>
     <form id="coding-new-form" class="stack">
       <div>
-        <label class="label" for="coding-new-parent">Create it inside this folder</label>
-        <input class="input" id="coding-new-parent" type="text" autocomplete="off"
-               placeholder="C:\Users\you\projects">
+        <span class="label" id="coding-new-folder-label">Create it inside this folder</span>
+        <div class="btn-row">
+          <button class="btn btn-secondary" type="button" id="coding-new-browse"
+                  aria-describedby="coding-new-folder-help">Browse&hellip;</button>
+        </div>
+        <p class="chosen-path" id="coding-new-chosen" role="status" aria-live="polite"
+           aria-labelledby="coding-new-folder-label" tabindex="0">No folder chosen yet.</p>
+        <p class="text-xs text-muted" id="coding-new-folder-help">
+          The new project is created inside this folder. Nothing already in it is changed.
+        </p>
       </div>
+
+      <details id="coding-new-manual">
+        <summary class="text-sm">Type the folder path instead</summary>
+        <label class="label" for="coding-new-parent">Full path to the parent folder</label>
+        <input class="input" id="coding-new-parent" type="text" autocomplete="off">
+      </details>
+
       <div>
         <label class="label" for="coding-new-name">Project name</label>
         <input class="input" id="coding-new-name" type="text" autocomplete="off" maxlength="80"
@@ -95,7 +130,9 @@
         <p class="text-xs text-muted" id="coding-new-template-desc"></p>
       </div>
       <div class="btn-row">
-        <button class="btn btn-primary" type="submit">Create project</button>
+        <!-- Deliberately not "Create project". This button produces the plan
+             below; nothing is written until the plan is confirmed. -->
+        <button class="btn btn-primary" type="submit">Review what will be created</button>
       </div>
       <p class="form-error" id="coding-new-error" role="alert" hidden></p>
       <p class="text-xs text-muted">
@@ -104,6 +141,19 @@
         separate step you approve.
       </p>
     </form>
+
+    <!-- ================= CREATION PLAN (step two) ================= -->
+    <section id="coding-plan" class="card" hidden aria-labelledby="coding-plan-title"
+             tabindex="-1">
+      <h2 class="card-title" id="coding-plan-title">This is what will be created</h2>
+      <div id="coding-plan-body"></div>
+      <div class="btn-row" id="coding-plan-actions">
+        <button class="btn btn-primary" type="button" id="coding-plan-confirm">Create project</button>
+        <button class="btn btn-secondary" type="button" id="coding-plan-change">Change options</button>
+        <button class="btn btn-ghost" type="button" id="coding-plan-cancel">Cancel</button>
+      </div>
+      <p class="form-error" id="coding-plan-error" role="alert" hidden></p>
+    </section>
   </section>
 
   <!-- ============================== TASK ============================== -->
@@ -190,6 +240,20 @@
       this computer only. It never uses or stops a server it did not start.
     </p>
     <div id="coding-preview"><p class="empty">No preview is running.</p></div>
+  </section>
+
+  <!-- ============================= TOOLS ============================== -->
+  <section role="tabpanel" id="panel-tools" aria-labelledby="tab-tools" tabindex="0" hidden>
+    <h2 class="section-title">Tools on this computer</h2>
+    <p class="text-sm text-muted">
+      JARVIS looks at PATH and a short list of standard install locations, asks each tool
+      for its version, and changes nothing. It never searches your drive, and it never
+      installs anything.
+    </p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" type="button" id="coding-tools-refresh">Check again</button>
+    </div>
+    <div id="coding-tools"><p class="empty">Not checked yet.</p></div>
   </section>
 
   <!-- ============================ RESULTS ============================= -->

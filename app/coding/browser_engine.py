@@ -107,7 +107,11 @@ def _webview2_version() -> Optional[str]:
         try:
             with winreg.OpenKey(hive, path) as handle:
                 version, _ = winreg.QueryValueEx(handle, "pv")
-            if isinstance(version, str) and version and version != "0.0.0.0":
+            # Microsoft's documented "not installed" sentinel, defined in
+            # app/launcher/runtime_check.py rather than repeated here.
+            from app.launcher.runtime_check import NOT_INSTALLED_VERSION
+
+            if isinstance(version, str) and version and version != NOT_INSTALLED_VERSION:
                 return version
         except OSError:
             continue

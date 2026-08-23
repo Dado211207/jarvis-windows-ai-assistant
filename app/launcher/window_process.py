@@ -77,6 +77,13 @@ def build_command(executable: Optional[str] = None, frozen: Optional[bool] = Non
 class WindowProcess:
     url: str
     close_action: str = "tray"
+    # The per-session desktop secret. The window child needs it to report
+    # a folder-dialog result back to the server, and nothing else on this
+    # machine has it — which is what makes "a person chose this folder" a
+    # claim the server can check rather than one it has to take on faith.
+    # Empty in a launcher started without a server (tests, dev), in which
+    # case the child simply cannot report and says so.
+    session_secret: str = ""
     spawn: Callable = subprocess.Popen
     listener_factory: Callable = ipc.ControlListener
     connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS
@@ -118,6 +125,9 @@ class WindowProcess:
         )
         env[ipc.IPC_URL_ENV] = self.url
         env[ipc.IPC_CLOSE_ACTION_ENV] = self.close_action
+        if self.session_secret:
+            from app.launcher.server_process import SESSION_SECRET_ENV
+            env[SESSION_SECRET_ENV] = self.session_secret
         return env
 
     def start(self, base_env: Optional[dict] = None) -> bool:

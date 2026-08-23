@@ -269,19 +269,127 @@
     loadProjects();
   }
 
+  // ------------------------------------------------ native folder picker
+
+  /* A folder is chosen in a real Windows dialog, opened by the process
+   * that owns the window — not by this page, which cannot open one, and
+   * not by the server, which has no window.
+   *
+   * The page mints a request, hands the id across pywebview's bridge, and
+   * reads the answer back from the server. The answer deliberately does
+   * not come back through the bridge: routing it through an authenticated
+   * endpoint is what lets the server know a person really picked the
+   * folder, rather than taking this page's word for it.
+   */
+  const picker = {
+    add: {chosen: "", requestId: ""},
+    new: {chosen: "", requestId: ""},
+  };
+
+  function bridgeAvailable() {
+    return !!(window.pywebview && window.pywebview.api &&
+              typeof window.pywebview.api.choose_folder === "function");
+  }
+
+  async function pickFolder(which, purpose, chosenId, errorId) {
+    showError(errorId, "");
+    if (!bridgeAvailable()) {
+      // Said plainly rather than silently falling back: a Browse button
+      // that quietly does nothing is worse than no Browse button.
+      showError(errorId,
+        "JARVIS is running in a browser rather than its own window, so Windows " +
+        "cannot show a folder dialog here. Use “Type the folder path instead”.");
+      openManual(which);
+      return;
+    }
+
+    let minted;
+    try {
+      minted = await API.post("/coding/folder-dialog", {purpose});
+    } catch (e) {
+      showError(errorId, e.message);
+      return;
+    }
+    const requestId = minted.request.request_id;
+
+    let result;
+    try {
+      result = await window.pywebview.api.choose_folder(requestId, minted.request.prompt);
+    } catch (e) {
+      try { await API.post(`/coding/folder-dialog/${encodeURIComponent(requestId)}/cancel`, {}); }
+      catch (ignored) { /* the request expires on its own */ }
+      showError(errorId, "The folder dialog could not be opened.");
+      return;
+    }
+
+    // The bridge's answer is a convenience; the server's is the record.
+    let state;
+    try {
+      state = await API.get(`/coding/folder-dialog/${encodeURIComponent(requestId)}`);
+    } catch (e) {
+      showError(errorId, e.message);
+      return;
+    }
+    const request = state.request;
+
+    if (request.state === "selected") {
+      picker[which].chosen = request.path;
+      picker[which].requestId = requestId;
+      el(chosenId).textContent = request.path;
+      announce("Folder chosen.");
+    } else if (request.state === "cancelled") {
+      // Cancel changes nothing. No request is registered, no field is
+      // filled in, and any previous choice stands.
+      announce("Folder selection cancelled. Nothing was changed.");
+    } else {
+      showError(errorId, request.error || "No folder was chosen.");
+    }
+  }
+
+  function openManual(which) {
+    const details = el(which === "add" ? "coding-add-manual" : "coding-new-manual");
+    if (details) { details.open = true; }
+  }
+
+  function clearChoice(which, chosenId) {
+    picker[which].chosen = "";
+    picker[which].requestId = "";
+    el(chosenId).textContent = "No folder chosen yet.";
+  }
+
+  el("coding-add-browse").addEventListener("click", () =>
+    pickFolder("add", "add_project", "coding-add-chosen", "coding-add-error"));
+  el("coding-new-browse").addEventListener("click", () =>
+    pickFolder("new", "new_project_parent", "coding-new-chosen", "coding-new-error"));
+
   el("coding-add-form").addEventListener("submit", async event => {
     event.preventDefault();
     showError("coding-add-error", "");
-    const path = el("coding-add-path").value.trim();
-    if (!path) { showError("coding-add-error", "Enter the folder's full path."); return; }
+    const typed = el("coding-add-path").value.trim();
+    const requestId = picker.add.requestId;
+    if (!requestId && !typed) {
+      showError("coding-add-error",
+        "Choose a folder with Browse, or type its full path.");
+      return;
+    }
     try {
-      await API.post("/coding/projects", { path, name: el("coding-add-name").value.trim() });
+      await API.post("/coding/projects", {
+        // The id is preferred when both are present: it is the one the
+        // server can verify a person actually chose.
+        request_id: requestId,
+        path: requestId ? "" : typed,
+        name: el("coding-add-name").value.trim(),
+      });
     } catch (e) {
       showError("coding-add-error", e.message);
+      // A spent or expired selection cannot be reused, so the button must
+      // not keep offering it.
+      clearChoice("add", "coding-add-chosen");
       return;
     }
     el("coding-add-path").value = "";
     el("coding-add-name").value = "";
+    clearChoice("add", "coding-add-chosen");
     loadProjects();
     loadStatus();
   });
@@ -310,23 +418,155 @@
     describe();
   }
 
+  // --------------------------------------------- new project, in two steps
+
+  /* Step one produces a plan and writes nothing. Step two creates what the
+   * plan describes, and takes only the plan's id — so the thing the user
+   * read is the thing that runs. */
+
+  function planRow(list, label, value) {
+    const item = make("li");
+    item.appendChild(make("span", "kv-key", label));
+    item.appendChild(make("span", "kv-value", value));
+    list.appendChild(item);
+  }
+
+  function renderPlan(plan) {
+    const body = clear(el("coding-plan-body"));
+
+    const list = make("ul", "kv-list");
+    planRow(list, "Will be created at", plan.destination);
+    planRow(list, "Project name", plan.project_name);
+    planRow(list, "Starting point", `${plan.template_title} (${plan.stack})`);
+    planRow(list, "Files", `${plan.file_count} file(s)`);
+    planRow(list, "Git", plan.git_init
+      ? `git init, initial branch: ${plan.initial_branch || "not configured"}`
+      : "No repository is created");
+    planRow(list, "Dependencies", plan.dependencies.length
+      ? `${plan.dependencies.length} listed, none installed` : "None");
+    planRow(list, "Commands JARVIS will run", plan.commands.length
+      ? plan.commands.join(", ") : "None");
+    planRow(list, "Network access", plan.network_use === "none"
+      ? "None — every template is bundled with JARVIS" : plan.network_use);
+    planRow(list, "Approximate size", `${Math.max(1, Math.round(plan.approximate_bytes / 1024))} KB`);
+    body.appendChild(list);
+
+    body.appendChild(make("h3", "card-subtitle", "Exactly these files"));
+    const files = make("ul", "plain-list text-sm");
+    plan.files.forEach(f => files.appendChild(make("li", null, f)));
+    body.appendChild(files);
+
+    if (plan.dependencies.length) {
+      body.appendChild(make("h3", "card-subtitle", "Dependencies listed, not installed"));
+      const deps = make("ul", "plain-list text-sm");
+      plan.dependencies.forEach(d => deps.appendChild(make("li", null, d)));
+      body.appendChild(deps);
+    }
+
+    body.appendChild(make("h3", "card-subtitle", "Not created"));
+    const not = make("ul", "plain-list text-sm");
+    plan.protected_not_created.forEach(p => not.appendChild(make("li", null, p)));
+    body.appendChild(not);
+
+    body.appendChild(make("h3", "card-subtitle", "Checked afterwards"));
+    const checks = make("ul", "plain-list text-sm");
+    plan.validation.forEach(v => checks.appendChild(make("li", null, v)));
+    body.appendChild(checks);
+
+    if (plan.conflicts.length) {
+      const warn = make("div", "qa-blocked");
+      warn.appendChild(make("h3", "card-subtitle", "This cannot be created"));
+      const ul = make("ul", "plain-list text-sm");
+      plan.conflicts.forEach(c => ul.appendChild(make("li", null, c)));
+      warn.appendChild(ul);
+      body.appendChild(warn);
+    }
+
+    el("coding-plan-confirm").disabled = !plan.creatable;
+    el("coding-plan").hidden = false;
+    el("coding-plan").focus();
+    announce(plan.creatable
+      ? "Review what will be created, then confirm."
+      : "This project cannot be created. See the reason on screen.");
+  }
+
+  function hidePlan() {
+    state.plan = null;
+    el("coding-plan").hidden = true;
+    showError("coding-plan-error", "");
+  }
+
   el("coding-new-form").addEventListener("submit", async event => {
     event.preventDefault();
     showError("coding-new-error", "");
+    hidePlan();
+    const typed = el("coding-new-parent").value.trim();
+    const requestId = picker.new.requestId;
+    if (!requestId && !typed) {
+      showError("coding-new-error",
+        "Choose the folder to create it in with Browse, or type its full path.");
+      return;
+    }
+    let data;
     try {
-      await API.post("/coding/projects/create", {
-        parent_path: el("coding-new-parent").value.trim(),
+      data = await API.post("/coding/projects/plan", {
+        parent_request_id: requestId,
+        parent_path: requestId ? "" : typed,
         name: el("coding-new-name").value.trim(),
         template: el("coding-new-template").value,
       });
     } catch (e) {
       showError("coding-new-error", e.message);
+      clearChoice("new", "coding-new-chosen");
+      return;
+    }
+    // The request has been spent producing this plan; the plan now carries
+    // the canonical parent, so the picker choice is no longer needed.
+    clearChoice("new", "coding-new-chosen");
+    el("coding-new-chosen").textContent = data.plan.parent_path;
+    state.plan = data.plan;
+    renderPlan(data.plan);
+  });
+
+  el("coding-plan-confirm").addEventListener("click", async () => {
+    if (!state.plan) return;
+    showError("coding-plan-error", "");
+    el("coding-plan-confirm").disabled = true;
+    try {
+      await API.post("/coding/projects/create", {plan_id: state.plan.plan_id});
+    } catch (e) {
+      showError("coding-plan-error", e.message);
+      el("coding-plan-confirm").disabled = false;
       return;
     }
     el("coding-new-name").value = "";
+    el("coding-new-parent").value = "";
+    el("coding-new-chosen").textContent = "No folder chosen yet.";
+    hidePlan();
+    announce("Project created.");
     loadProjects();
     loadStatus();
   });
+
+  el("coding-plan-change").addEventListener("click", async () => {
+    await abandonPlan();
+    el("coding-new-name").focus();
+  });
+
+  el("coding-plan-cancel").addEventListener("click", async () => {
+    await abandonPlan();
+    announce("Cancelled. Nothing was created.");
+  });
+
+  async function abandonPlan() {
+    const plan = state.plan;
+    hidePlan();
+    if (!plan) return;
+    try {
+      await API.post(
+        `/coding/projects/plan/${encodeURIComponent(plan.plan_id)}/cancel`, {});
+    } catch (e) { /* a plan that is already gone needs no cancelling */ }
+  }
 
   // ------------------------------------------------------------- plan
 
@@ -888,6 +1128,90 @@
     entries.forEach(entry => ul.appendChild(make("li", null, entry)));
     box.appendChild(ul);
   }
+
+  // ---------------------------------------------------------- toolchain
+
+  const TOOL_STATES = {
+    available:   {badge: "ok",    label: "Available"},
+    missing:     {badge: "muted", label: "Not installed"},
+    unsupported: {badge: "warn",  label: "Unsupported version"},
+    refused:     {badge: "warn",  label: "Refused"},
+  };
+
+  async function loadToolchain() {
+    const container = clear(el("coding-tools"));
+    container.appendChild(make("p", "empty", "Checking…"));
+    let data;
+    try {
+      const suffix = state.projectId
+        ? `?project_id=${encodeURIComponent(state.projectId)}` : "";
+      data = await API.get(`/coding/toolchain${suffix}`);
+    } catch (e) {
+      clear(container).appendChild(make("p", "form-error", e.message));
+      return;
+    }
+    clear(container);
+
+    const list = make("ul", "plain-list");
+    list.style.listStyle = "none";
+    list.style.paddingLeft = "0";
+    data.tools.forEach(tool => {
+      const item = make("li");
+      item.style.marginBottom = "0.75rem";
+      const shown = TOOL_STATES[tool.state] || {badge: "muted", label: tool.state};
+      const head = make("p");
+      head.appendChild(make("strong", null, tool.display));
+      head.appendChild(make("span", `badge badge-${shown.badge}`, shown.label));
+      if (tool.version) head.appendChild(make("span", "text-sm text-muted", ` ${tool.version}`));
+      item.appendChild(head);
+      if (tool.found_via) {
+        item.appendChild(make("p", "text-xs text-muted", `Found via ${tool.found_via}.`));
+      }
+      if (tool.detail) item.appendChild(make("p", "text-sm", tool.detail));
+      // Always shown, available or not: what depends on a tool is the
+      // reason a person cares whether it is there.
+      tool.depends.forEach(d =>
+        item.appendChild(make("p", "text-xs text-muted", `Needed for: ${d}`)));
+      list.appendChild(item);
+    });
+    container.appendChild(list);
+
+    if (data.cannot_run && data.cannot_run.length) {
+      const warn = make("div", "qa-blocked");
+      warn.appendChild(make("h3", "card-subtitle", "What cannot run right now"));
+      const ul = make("ul", "plain-list text-sm");
+      data.cannot_run.forEach(line => ul.appendChild(make("li", null, line)));
+      warn.appendChild(ul);
+      container.appendChild(warn);
+    }
+
+    if (data.project_tools) {
+      container.appendChild(make("h3", "card-subtitle", "This project's own tools"));
+      const ul = make("ul", "plain-list text-sm");
+      data.project_tools.forEach(row => {
+        const li = make("li");
+        li.appendChild(make("strong", null, `${row.display}: `));
+        li.appendChild(make("span", null, row.detail));
+        ul.appendChild(li);
+      });
+      container.appendChild(ul);
+    }
+
+    if (data.virtual_environments) {
+      container.appendChild(make("h3", "card-subtitle", "Python environment"));
+      const ul = make("ul", "plain-list text-sm");
+      data.virtual_environments.forEach(v =>
+        ul.appendChild(make("li", null, v.detail)));
+      container.appendChild(ul);
+    }
+
+    container.appendChild(make("p", "text-xs text-muted",
+      "Nothing was installed and nothing on this computer was changed."));
+    announce("Tool check finished.");
+  }
+
+  el("coding-tools-refresh").addEventListener("click", loadToolchain);
+  el("tab-tools").addEventListener("click", loadToolchain);
 
   // ------------------------------------------------------------- diff
 

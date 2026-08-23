@@ -500,7 +500,27 @@ a:hover { color: var(--accent-hover); }
 .btn-danger   { background: var(--err-soft); border-color: rgba(239, 68, 68, 0.45); color: var(--err); }
 .btn-danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.22); border-color: var(--err); box-shadow: 0 0 10px rgba(239, 68, 68, 0.12); }
 
+.btn-secondary { background: var(--surface-raised); border-color: var(--border-bright); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); }
 .btn-sm { padding: 0.35rem 0.75rem; font-size: 0.78rem; }
+
+/* The folder a person chose. A Windows path can be very long, so it
+ * scrolls inside itself rather than pushing the page sideways — and it is
+ * focusable, because a container that scrolls must be reachable by
+ * keyboard to be scrolled. */
+.chosen-path {
+  margin: 0.5rem 0 0.25rem;
+  padding: 0.5rem 0.75rem;
+  font-family: var(--font-mono, ui-monospace, "Cascadia Code", Consolas, monospace);
+  font-size: 0.8125rem;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.chosen-path:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .btn-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
