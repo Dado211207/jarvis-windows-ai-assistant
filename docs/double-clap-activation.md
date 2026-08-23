@@ -203,3 +203,195 @@ the server's refractory interval collapses them into one activation.
 | Clap detection on the server, over an uploaded stream | Sends audio off the audio thread and across a process boundary — precisely the thing this design exists to avoid |
 | A single clap | Fires on doors, keyboards, and dropped cutlery. The pair is the discriminator |
 | Shipping it enabled | A feature that opens a microphone must be opted into, not out of |
+
+---
+
+## 7. One controller, because the booleans were the bug
+
+The first implementation kept the stream, the context and the node in
+three module-level variables in `app.js` and decided what to do with them
+from wherever the decision happened to be made. That produced the defect
+this pass was opened to fix: **privacy mode repainted an indicator and
+left the microphone open.**
+
+`app/ui/static/clap-controller.js` replaces that with one explicit state
+machine that owns the microphone. Nine states:
+
+| State | Meaning |
+|---|---|
+| `disabled` | The feature is off, or the page is quitting |
+| `starting` | `getUserMedia` is in flight |
+| `listening` | A live track and an active worklet |
+| `suspended` | Something else owns the audio (see §9) |
+| `calibrating` | A bounded calibration session owns it |
+| `privacy-blocked` | Privacy mode is on |
+| `microphone-unavailable` | The microphone could not be opened |
+| `stopping` | Releasing |
+| `error` | An unexpected failure |
+
+Three properties make it hold up where three booleans did not:
+
+- **One decision point.** `reconcile()` is the only function that may
+  start or tear down. Everything else — a settings change, privacy, a
+  suspension, a device change, calibration, quit — sets state and calls
+  it.
+- **Teardown is one function and it is synchronous.** `teardown()`
+  disconnects the node, disconnects the source, stops **every track**,
+  and closes the context. Stopping the tracks is what actually turns the
+  Windows microphone indicator off; closing the context alone does not.
+  `setPrivacyBlocked(true)` calls it before it does anything else, so
+  there is no window in which the indicator is still lit.
+- **A generation counter.** Every `start()` remembers the generation it
+  began in. A `start()` that resolves *after* a teardown belongs to a
+  world that no longer exists, so it stops the stream it just opened and
+  returns rather than installing a live microphone nobody asked for.
+  This is the race that a set of booleans cannot express.
+
+`isListening()` is the honest answer to "is the microphone open right
+now": an active worklet node **and** at least one audio track whose
+`readyState` is `live`. Nothing in the product is allowed to claim
+listening on anything less.
+
+---
+
+## 8. The microphone is chosen, not assumed
+
+The microphone dropdown on the Voice page used to move nothing but that
+page's own level meter. It is now the **one shared choice**: saved
+server-side (`mic_device_id`, on `preferences.STORABLE_KEYS`), applied to
+the diagnostics meter and to the clap listener, and passed to
+`getUserMedia` as `deviceId: { exact: … }`.
+
+A device id is not a credential — it is an opaque per-origin handle to a
+piece of hardware — which is why it is allowed in the preferences file at
+all. It is also not stable across browsers or profiles, which is why the
+page always reconciles it against `enumerateDevices()` before claiming it
+is selected.
+
+What happens when the chosen microphone is not there:
+
+1. `getUserMedia` with `{exact: id}` rejects (`OverconstrainedError` or
+   `NotFoundError`).
+2. The controller retries **once**, with no device pinned, and records
+   that it fell back.
+3. The Voice page says *"The chosen microphone was unavailable, so JARVIS
+   is using the system default."* It never claims the missing device is
+   in use.
+4. Diagnostics shows the dropdown fallen back to the default entry, with
+   *"The microphone you chose is not connected."*
+
+`devicechange` is bound once per page. It restarts **only** when the
+device actually in use has disappeared from `enumerateDevices()` —
+plugging in a webcam is not a reason to reopen an audio stream.
+
+---
+
+## 9. Suspension: reference-counted, not a flag
+
+Anything that needs exclusive audio, or that would put JARVIS's own voice
+into the detector, takes a named reason:
+
+| Reason | Taken by |
+|---|---|
+| `speaking` | Every speech path — Kokoro, a Windows natural voice, SAPI5, ElevenLabs, the per-message **Listen** button, **speak test**, the pronunciation preview, an automatically spoken reply |
+| `push-to-talk` | `setPttState()`, the single choke point every PTT path already goes through |
+| `microphone-test` | The diagnostics level meter |
+| `calibrating` | A calibration session |
+
+`suspend(reason)` / `resume(reason)` are backed by a `Set`, so two
+reasons in and one out leaves the listener suspended. Resuming schedules
+a reconcile after a short delay (`RESUME_DELAY_MS`), which is the
+post-playback refractory: a speaker's last click must not become the
+first half of a pair.
+
+There is **one** watcher for speech rather than eight hooks. Every speech
+path ends up asking the same server whether it is still speaking, so
+`suspendForSpeech()` takes the reason and a single poll of
+`GET /voice/speaking` releases it when the audio has finished — including
+when speech was stopped, cancelled, or failed. `withClapSuspended()`
+releases in a `finally`, so an exception cannot leave the listener
+suspended for good.
+
+A pair that arrives in the moment between a reason being taken and the
+teardown completing is discarded rather than acted on. **A clap can never
+approve or execute anything**: its only route is
+`POST /voice/clap/activate`, which takes no body and can only ask the
+window to come forward.
+
+---
+
+## 10. Calibration
+
+A bounded, explicitly started session that measures two claps and
+proposes three numbers.
+
+- It **owns the microphone for its duration**, so there is never a second
+  consumer, and it releases it on success, timeout, cancel, navigating
+  away, privacy mode and quit alike.
+- It is bounded by construction: `CALIBRATION_MAX_MS`, a timer that is
+  cleared on every exit path.
+- The worklet reports per-onset scalars — a time, a peak, a gap — **only**
+  when `processorOptions.calibrate` is set, which only a calibration
+  session sets. `tests/test_clap.py` asserts the guard encloses the
+  message.
+- Those scalars are read on the page and thrown away. Nothing posts them
+  anywhere; one test greps every `API.post` for them, and another
+  inspects every request a real browser made during a real calibration
+  session.
+- Nothing is saved until **Save** is pressed. What is saved is clamped
+  server-side to `SAFE_BOUNDS` — and only three values may be changed at
+  all. The attack test and the sustained-sound cut-off, which are what
+  separate a clap from speech, are not calibratable in either direction:
+  a room that needs those relaxed is a room where this feature should
+  stay off.
+
+---
+
+## 11. What the tray may say, and how it knows
+
+`app/voice/clap.py::tray_label()` composes the line; the tray only
+displays it. One place decides when "On" is honest.
+
+| Line | When |
+|---|---|
+| `Double-clap listening: On` | The feature is on, privacy is off, and a page reported a live microphone **recently** |
+| `Double-clap listening: Paused by Privacy Mode` | Privacy mode is on — checked before anything else |
+| `Double-clap listening: Temporarily paused` | Suspended, starting or stopping |
+| `Double-clap listening: Calibrating` | A calibration session is running |
+| `Double-clap listening: Microphone unavailable` | On, but nothing has proved a microphone is open |
+| `Double-clap listening: Off` | The feature is off |
+
+The page reports its own state to `POST /voice/clap/listener` (session
+token required, allowlisted values only — a status report that can carry
+an arbitrary string is a channel). The report **goes stale** after
+`LISTENER_FRESH_SECONDS`, so a closed or crashed tab cannot leave a false
+"On" behind; and the page **re-sends it on a timer** well inside that
+window, so a page that simply sits there listening does not decay into a
+false "unavailable". Staleness has to cut both ways or it is not honesty,
+just pessimism.
+
+---
+
+## 12. Demonstrating the regressions against the previous commit
+
+`tests/test_clap_controller.py` is written so it can be run against an
+*older* product commit without modification, which is how each fix here
+was shown to catch the defect it was written for. No history is rewritten
+and no branch is moved:
+
+```bash
+git worktree add /tmp/rc-before <previous-commit> --detach
+cp tests/test_clap_controller.py tests/conftest.py /tmp/rc-before/tests/
+cd /tmp/rc-before && pytest -m browser tests/test_clap_controller.py
+git worktree remove /tmp/rc-before --force
+```
+
+The instrumentation the tests install is deliberately independent of the
+product's internals — it wraps `getUserMedia`, the `AudioContext` and
+`AudioWorkletNode` constructors, `navigator.mediaDevices`' listeners,
+`setTimeout`/`clearTimeout` and `fetch` — and attributes resources by
+call stack, matching both `clap-controller.js` and the older
+`startClapListener`. So the headline assertion,
+`__liveClapTracks() === 0` after privacy mode is enabled, means exactly
+the same thing on both commits: on the older one it times out with the
+track still live.

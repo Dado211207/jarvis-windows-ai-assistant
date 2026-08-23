@@ -63,6 +63,23 @@ class TrayApiClient:
             pass
         return None
 
+    def clap_label(self) -> str:
+        """One line about the double-clap listener, or "" if unreachable.
+
+        The server composes it (app/voice/clap.py::tray_label) rather than
+        the tray, so there is one place that decides when "On" is honest —
+        and that place refuses to say it unless a page has recently
+        reported a live microphone. "" leaves the row out of the menu
+        entirely; a guess would be worse than a gap.
+        """
+        try:
+            response = self._client.get("/voice/clap")
+            if response.status_code == 200:
+                return str(response.json().get("tray_label") or "")
+        except Exception:
+            pass
+        return ""
+
     def set_privacy_mode(self, enable: bool) -> bool:
         token = self._session_token()
         if not token:

@@ -50,10 +50,11 @@ ordinary path and only when `tts_service.output_enabled` is already on.
 Somebody who has turned speech off gets a window, silently.
 """
 
+import json
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, Optional
 
 from app.logging_config import get_logger
 
@@ -118,6 +119,45 @@ SENSITIVITY_PROFILES: Dict[str, Dict[str, float]] = {
 }
 DEFAULT_SENSITIVITY = "normal"
 
+# What calibration is allowed to change, and the range each value may
+# take whatever a measurement suggests.
+#
+# Only three, and only the three a person clapping can actually inform:
+# how loud a clap has to be, and how far apart the two may fall. The
+# attack test and the sustained-sound cut-off are what separate a clap
+# from speech, and no calibration session may loosen them — a room that
+# needs those relaxed is a room where this feature should stay off.
+SAFE_BOUNDS = {
+    "absMin": (0.008, 0.30),
+    "minGap": (0.08, 0.40),
+    "maxGap": (0.25, 1.20),
+}
+# The second clap must have somewhere to land.
+MIN_GAP_SPREAD = 0.10
+
+# What the browser is allowed to say about its own listener. An
+# allowlist rather than free text: this is a status report, and a status
+# report that can carry an arbitrary string is a channel.
+LISTENER_STATES = (
+    "disabled", "starting", "listening", "suspended", "calibrating",
+    "privacy-blocked", "microphone-unavailable", "stopping", "error",
+)
+# A page that stops reporting is a page that may have been closed,
+# reloaded or crashed. After this, "listening" is no longer believed —
+# the tray must never claim a microphone is open because a dead tab once
+# said so.
+LISTENER_FRESH_SECONDS = 20.0
+
+# What the tray shows, per resolved state.
+TRAY_LABELS = {
+    "listening": "Double-clap listening: On",
+    "privacy-blocked": "Double-clap listening: Paused by Privacy Mode",
+    "suspended": "Double-clap listening: Temporarily paused",
+    "calibrating": "Double-clap listening: Calibrating",
+    "microphone-unavailable": "Double-clap listening: Microphone unavailable",
+    "off": "Double-clap listening: Off",
+}
+
 
 @dataclass
 class Activation:
@@ -138,6 +178,8 @@ class _State:
     last_activation: float = 0.0
     activations: int = 0
     last_reason: str = ""
+    listener_state: str = "disabled"
+    listener_reported_at: float = 0.0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -221,15 +263,89 @@ def set_greeting(value: str) -> str:
     return greeting()
 
 
+def device_id() -> str:
+    """The microphone this machine is set to use.
+
+    One choice, shared by the diagnostics level meter and the clap
+    listener, so the dropdown on the Voice page is not decoration. Empty
+    means "whatever Windows calls the default".
+    """
+    return _text("mic_device_id", "")
+
+
+def set_device_id(value: str) -> str:
+    _store("mic_device_id", (value or "").strip()[:200])
+    return device_id()
+
+
+def clamp_tuning(values: Dict) -> Dict[str, float]:
+    """Whatever calibration proposed, brought inside SAFE_BOUNDS.
+
+    Clamping rather than refusing: a measurement from a loud room is
+    still better information than the default, and the bounds are what
+    stop it becoming unusable. Anything that is not a number, or not one
+    of the three calibratable keys, is dropped.
+    """
+    cleaned: Dict[str, float] = {}
+    for key, (low, high) in SAFE_BOUNDS.items():
+        if key not in (values or {}):
+            continue
+        try:
+            number = float(values[key])
+        except (TypeError, ValueError):
+            continue
+        if number != number or number in (float("inf"), float("-inf")):  # NaN / inf
+            continue
+        cleaned[key] = round(min(high, max(low, number)), 4)
+
+    # The second clap must have somewhere to land, whatever order the two
+    # values arrived in.
+    if "minGap" in cleaned or "maxGap" in cleaned:
+        profile = SENSITIVITY_PROFILES[sensitivity()]
+        low = cleaned.get("minGap", profile["minGap"])
+        high = cleaned.get("maxGap", profile["maxGap"])
+        if high - low < MIN_GAP_SPREAD:
+            high = min(SAFE_BOUNDS["maxGap"][1], low + MIN_GAP_SPREAD)
+            if high - low < MIN_GAP_SPREAD:
+                low = max(SAFE_BOUNDS["minGap"][0], high - MIN_GAP_SPREAD)
+            cleaned["minGap"] = round(low, 4)
+            cleaned["maxGap"] = round(high, 4)
+    return cleaned
+
+
+def tuning() -> Dict[str, float]:
+    """Calibrated overrides, or an empty dict when nobody has calibrated."""
+    raw = _text("clap_tuning", "")
+    if not raw:
+        return {}
+    try:
+        return clamp_tuning(json.loads(raw))
+    except Exception:  # noqa: BLE001 — a corrupt preference means "not calibrated"
+        return {}
+
+
+def set_tuning(values: Optional[Dict]) -> Dict[str, float]:
+    """Save calibrated values, or clear them with None."""
+    if not values:
+        _store("clap_tuning", "")
+        return {}
+    cleaned = clamp_tuning(values)
+    _store("clap_tuning", json.dumps(cleaned, separators=(",", ":")) if cleaned else "")
+    return tuning()
+
+
 def detector_settings() -> Dict[str, float]:
-    """The tuning the worklet runs with.
+    """The tuning the worklet runs with: the chosen profile, with any
+    calibrated overrides on top.
 
     Served to the page rather than hardcoded in the JavaScript so there
     is one place these numbers live, and so a sensitivity change takes
     effect on the next start of the listener rather than the next
     release.
     """
-    return dict(SENSITIVITY_PROFILES[sensitivity()])
+    settings = dict(SENSITIVITY_PROFILES[sensitivity()])
+    settings.update(tuning())
+    return settings
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +428,70 @@ def _record(activation: Activation) -> Activation:
     return activation
 
 
+# ---------------------------------------------------------------------------
+# What the listener is actually doing.
+#
+# The tray is not allowed to say "On" because a preference says so — a
+# preference is a wish, and the microphone is a fact. The page that owns
+# the microphone reports its own state, and that report goes stale, so a
+# closed or crashed tab cannot leave the tray claiming a live microphone.
+# ---------------------------------------------------------------------------
+
+def report_listener_state(value: str) -> str:
+    """Record what the browser says its listener is doing.
+
+    An unrecognised value is refused rather than stored: this is a status
+    report from a page, and the allowlist is what keeps it one.
+    """
+    if value not in LISTENER_STATES:
+        logger.warning("Refused an unrecognised clap listener state: %r", value)
+        return listener_state()
+    with _state.lock:
+        _state.listener_state = value
+        _state.listener_reported_at = time.monotonic()
+    return listener_state()
+
+
+def listener_state() -> str:
+    """The resolved state, with staleness applied.
+
+    A report older than LISTENER_FRESH_SECONDS is not evidence of
+    anything; the answer falls back to what the settings can prove on
+    their own.
+    """
+    with _state.lock:
+        reported = _state.listener_state
+        at = _state.listener_reported_at
+    fresh = at and (time.monotonic() - at) < LISTENER_FRESH_SECONDS
+    if not fresh:
+        if not enabled():
+            return "disabled"
+        return "unknown"
+    return reported
+
+
+def tray_label() -> str:
+    """One line for the tray, true to what is actually running."""
+    if not enabled():
+        return TRAY_LABELS["off"]
+    try:
+        from app.core.privacy import privacy_mode
+        if privacy_mode.active:
+            return TRAY_LABELS["privacy-blocked"]
+    except Exception:  # pragma: no cover - import guard only
+        return TRAY_LABELS["off"]
+
+    resolved = listener_state()
+    if resolved in TRAY_LABELS:
+        return TRAY_LABELS[resolved]
+    if resolved in ("starting", "stopping"):
+        return TRAY_LABELS["suspended"]
+    # "unknown" and "error": switched on, but nothing has proved a
+    # microphone is open. Saying "On" here is the exact dishonesty this
+    # whole mechanism exists to prevent.
+    return TRAY_LABELS["microphone-unavailable"]
+
+
 def status() -> dict:
     """What the Voice page shows. No audio, no levels, no timestamps of
     anything but the last activation."""
@@ -342,6 +522,12 @@ def status() -> dict:
         "last_reason": last_reason,
         "seconds_since_activation": seconds_since,
         "min_interval_seconds": MIN_INTERVAL_SECONDS,
+        "device_id": device_id(),
+        "tuning": tuning(),
+        "calibrated": bool(tuning()),
+        "safe_bounds": {k: list(v) for k, v in SAFE_BOUNDS.items()},
+        "listener_state": listener_state(),
+        "tray_label": tray_label(),
     }
 
 
@@ -351,3 +537,5 @@ def reset_for_tests() -> None:
         _state.last_activation = 0.0
         _state.activations = 0
         _state.last_reason = ""
+        _state.listener_state = "disabled"
+        _state.listener_reported_at = 0.0

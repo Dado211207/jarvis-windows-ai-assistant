@@ -66,6 +66,11 @@ ICON_ASSET_PATH = Path(__file__).resolve().parent.parent / "ui" / "static" / "ic
 class TrayState:
     status: str = "starting"  # "running" | "offline" | "starting"
     privacy_active: Optional[bool] = None  # None = unknown (server unreachable)
+    # One line about the double-clap listener, straight from the server —
+    # which in turn only says "On" when the page that owns the microphone
+    # has recently reported a live one. Empty means the server has not
+    # been reached yet, and the row is left out rather than guessed at.
+    clap_label: str = ""
 
 
 @dataclass
@@ -110,15 +115,21 @@ def build_menu_entries(
     place in the product where a browser tab is offered: always
     available, for anyone who prefers one or whose window cannot open
     right now."""
-    return [
+    entries = [
         MenuEntry(status_label(state), None, enabled=False),
         MenuEntry("Open JARVIS", on_open_dashboard),
         MenuEntry("Open in Browser", on_open_in_browser),
         MenuEntry("Open Command Center", on_open_command_center),
         MenuEntry(privacy_label(state), on_toggle_privacy, enabled=state.privacy_active is not None),
-        MenuEntry("Restart JARVIS", on_restart),
-        MenuEntry("Quit JARVIS", on_quit),
     ]
+    # A status line, never a control: clapping is configured on the Voice
+    # page, and a tray entry that could switch a microphone on is a
+    # bigger thing than a tray entry should be.
+    if state.clap_label:
+        entries.append(MenuEntry(state.clap_label, None, enabled=False))
+    entries.append(MenuEntry("Restart JARVIS", on_restart))
+    entries.append(MenuEntry("Quit JARVIS", on_quit))
+    return entries
 
 
 def load_icon_image():
@@ -181,6 +192,7 @@ def _poll_loop(client: TrayApiClient, state: TrayState, icon, stop_event: thread
     while not stop_event.wait(POLL_INTERVAL_SECONDS):
         state.status = "running" if client.is_healthy() else "offline"
         state.privacy_active = client.privacy_active()
+        state.clap_label = client.clap_label()
         try:
             icon.update_menu()
         except Exception:

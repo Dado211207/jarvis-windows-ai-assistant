@@ -111,6 +111,9 @@
 
 </div>
 
+<!-- The clap listener's state machine, loaded first so app.js can hand
+     it the server's settings as soon as the page boots. -->
+<script src="/ui/static/clap-controller.js"></script>
 <script src="/ui/static/app.js"></script>
 {% block scripts %}{% endblock %}
 

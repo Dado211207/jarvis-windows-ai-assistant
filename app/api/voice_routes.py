@@ -652,6 +652,12 @@ class ClapStatusResponse(BaseModel):
     last_reason: str
     seconds_since_activation: Optional[float] = None
     min_interval_seconds: float
+    device_id: str = ""
+    tuning: dict = Field(default_factory=dict)
+    calibrated: bool = False
+    safe_bounds: dict = Field(default_factory=dict)
+    listener_state: str = "disabled"
+    tray_label: str = ""
 
 
 class ClapEnabledRequest(BaseModel):
@@ -662,6 +668,23 @@ class ClapSettingsRequest(BaseModel):
     sensitivity: Optional[str] = None
     greet: Optional[bool] = None
     greeting: Optional[str] = Field(default=None, max_length=200)
+    # The shared microphone choice. A device id, never a label.
+    device_id: Optional[str] = Field(default=None, max_length=200)
+    # Calibrated overrides. Clamped to SAFE_BOUNDS server-side whatever
+    # arrives, and `{}` clears them back to the chosen profile.
+    tuning: Optional[dict] = None
+
+
+class ClapListenerRequest(BaseModel):
+    """What the page says its own listener is doing.
+
+    One field, from a fixed allowlist. Deliberately not a free-text
+    status: a report that can carry an arbitrary string is a channel,
+    and this endpoint exists so the tray can stop guessing, not so the
+    page can say things.
+    """
+
+    state: str = Field(..., max_length=32)
 
 
 class ClapActivateResponse(BaseModel):
@@ -718,6 +741,29 @@ def set_clap_settings(req: ClapSettingsRequest) -> ClapStatusResponse:
         clap.set_greet_enabled(req.greet)
     if req.greeting is not None:
         clap.set_greeting(req.greeting)
+    if req.device_id is not None:
+        clap.set_device_id(req.device_id)
+    if req.tuning is not None:
+        clap.set_tuning(req.tuning)
+    return ClapStatusResponse(**clap.status())
+
+
+@router.post(
+    "/voice/clap/listener",
+    response_model=ClapStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def report_clap_listener(req: ClapListenerRequest) -> ClapStatusResponse:
+    """The page reporting what its own listener is actually doing.
+
+    This exists so the tray can tell the truth. A stored preference says
+    what somebody wanted; only the page that owns the microphone knows
+    whether one is open, and `clap.listener_state()` stops believing this
+    report once it goes stale.
+    """
+    from app.voice import clap
+
+    clap.report_listener_state(req.state)
     return ClapStatusResponse(**clap.status())
 
 

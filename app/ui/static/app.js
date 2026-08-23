@@ -323,6 +323,37 @@ function makeSpeakButton(getText) {
   return btn;
 }
 
+// ── Keeping JARVIS's own voice out of the clap detector ─────────────────────
+//
+// Every speech path — Kokoro, a Windows natural voice, SAPI5, ElevenLabs,
+// the per-message Listen button, "speak test", a spoken reply — ends up
+// asking the same server whether it is still speaking. So there is one
+// watcher rather than eight hooks: suspend before the audio starts, and
+// resume only when /voice/speaking says it has finished. The controller
+// adds its own short refractory on top, so the speaker's last click is
+// not the first half of a pair.
+let speechSuspendPoll = null;
+
+function suspendForSpeech() {
+  clapSuspend(CLAP_REASON.SPEAKING);
+  if (speechSuspendPoll) return;
+  speechSuspendPoll = setInterval(async () => {
+    let speaking = false;
+    try {
+      const r = await API.get("/voice/speaking");
+      speaking = !!(r && r.speaking);
+    } catch (e) {
+      speaking = false;   // an unanswerable question must not leave it suspended forever
+    }
+    if (!speaking) releaseSpeechSuspension();
+  }, SPEECH_POLL_MS);
+}
+
+function releaseSpeechSuspension() {
+  if (speechSuspendPoll) { clearInterval(speechSuspendPoll); speechSuspendPoll = null; }
+  clapResume(CLAP_REASON.SPEAKING);
+}
+
 function forgetSpeaking() {
   if (speakingPoll) { clearInterval(speakingPoll); speakingPoll = null; }
   if (speakingButton) paintSpeakButton(speakingButton, false);
@@ -349,6 +380,7 @@ function watchSpeech(btn) {
 async function stopSpeech() {
   const wasSpeaking = speakingButton !== null;
   forgetSpeaking();
+  releaseSpeechSuspension();
   if (!wasSpeaking) return;
   try {
     await API.post("/voice/stop", {});
@@ -364,17 +396,20 @@ async function speakOnDemand(text, btn) {
 
   const trimmed = (text || "").trim();
   if (!trimmed) return;
+  suspendForSpeech();
   try {
     const r = await API.post("/voice/speak-once", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
     if (r && r.success) {
       watchSpeech(btn);
       setChatStatus("");
     } else {
+      releaseSpeechSuspension();
       // The engine's own reason and the step that fixes it — never a
       // suggestion to go and find another program.
       setChatStatus((r && r.message) || "JARVIS could not speak that.");
     }
   } catch (e) {
+    releaseSpeechSuspension();
     setChatStatus("Could not speak that: " + e.message);
   }
 }
@@ -384,10 +419,13 @@ async function speakReply(text, btn) {
   const trimmed = (text || "").trim();
   if (!trimmed) return;
   await stopSpeech();
+  suspendForSpeech();
   try {
     const r = await API.post("/voice/speak", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
     if (r && r.success) watchSpeech(btn);
+    else releaseSpeechSuspension();
   } catch (e) {
+    releaseSpeechSuspension();
     // Speech is an enhancement; a failure here must never disturb the
     // conversation the user is reading.
     console.warn("could not speak the reply", e);
@@ -750,6 +788,15 @@ let pttUnavailable = false;
 
 function setPttState(state, message) {
   pttState = state;
+  // Requesting, listening and transcribing all own the microphone or the
+  // conversation; idle and error do not. Routing suspension through the
+  // one function every path already calls is what makes cancel, abort
+  // and failure release it too.
+  if (state === PTT_STATE.IDLE || state === PTT_STATE.ERROR) {
+    clapResume(CLAP_REASON.PTT);
+  } else {
+    clapSuspend(CLAP_REASON.PTT);
+  }
   const btn = $("ptt-button");
   const cancelBtn = $("ptt-cancel");
   const status = $("ptt-status");
@@ -1179,15 +1226,21 @@ async function refreshVoiceStatus() {
 }
 
 async function voiceCommand(cmd) {
+  // Covers "speak test" and anything else on the Voice page that can
+  // make a noise. Harmless for the commands that cannot: the watcher
+  // releases as soon as the server says nothing is speaking.
+  suspendForSpeech();
   try {
     await API.post("/command", { command: cmd });
     await refreshVoiceStatus();
   } catch (e) {
+    releaseSpeechSuspension();
     console.error("voice command error", e);
   }
 }
 
 async function voiceStop() {
+  releaseSpeechSuspension();
   try {
     await API.post("/voice/stop", {});
   } catch (e) {
@@ -1489,7 +1542,15 @@ async function refreshInputDevices() {
     );
 
     if (select) {
-      const chosen = select.value;
+      // The saved choice wins over whatever this dropdown happens to be
+      // showing: the list is rebuilt whenever devices change, and the
+      // preference is the thing that survived the restart.
+      let chosen = select.value;
+      try {
+        const saved = (await API.get("/voice/clap")).device_id;
+        if (saved) chosen = saved;
+      } catch (e) { /* keep whatever is on screen */ }
+
       while (select.options.length > 1) select.remove(1);
       inputs.forEach((device, index) => {
         const option = document.createElement("option");
@@ -1497,7 +1558,17 @@ async function refreshInputDevices() {
         option.textContent = device.label || `Microphone ${index + 1}`;
         select.appendChild(option);
       });
-      if (chosen) select.value = chosen;
+      // A saved device that is no longer plugged in must not silently
+      // read as "selected" — fall the dropdown back to the default entry
+      // so the screen matches what would actually open.
+      const known = Array.prototype.some.call(select.options, o => o.value === chosen);
+      select.value = known ? chosen : "";
+      const missing = $("diag-device-missing");
+      if (missing) {
+        missing.textContent = (chosen && !known)
+          ? "The microphone you chose is not connected. JARVIS will use the system default until it comes back."
+          : "";
+      }
     }
   } catch (e) {
     _setDiag("diag-mic-device", "Could not list devices", "text-err");
@@ -1505,6 +1576,7 @@ async function refreshInputDevices() {
 }
 
 function stopMicrophoneTest() {
+  clapResume(CLAP_REASON.MIC_TEST);
   if (diagLevelRaf) { cancelAnimationFrame(diagLevelRaf); diagLevelRaf = null; }
   if (diagLevelStream) {
     diagLevelStream.getTracks().forEach(track => track.stop());
@@ -1532,6 +1604,7 @@ async function testMicrophone() {
 
   if (button) button.disabled = true;
   if (message) message.textContent = "Asking for microphone permission…";
+  clapSuspend(CLAP_REASON.MIC_TEST);
 
   const deviceId = select && select.value ? select.value : null;
   const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
@@ -2044,6 +2117,7 @@ async function setPrivacyMode(active) {
   }
   await refreshSettingsPrivacy();
   refreshPrivacyIndicator();
+  await applyPrivacyToClap();
 }
 
 async function refreshStoredData() {
@@ -2847,6 +2921,7 @@ async function cancelVoiceInstall() {
 }
 
 async function testNeuralVoice() {
+  suspendForSpeech();
   const select = $("nv-voice-select");
   const message = $("nv-message");
   try {
@@ -2944,6 +3019,7 @@ async function refreshPronunciations() {
 }
 
 async function previewPronunciation() {
+  suspendForSpeech();
   const word = $("pron-word");
   const spoken = $("pron-spoken");
   const message = $("pron-message");
@@ -3166,7 +3242,10 @@ function initCloudVoice() {
   on("el-voice-save", "click", saveCloudVoice);
   on("el-settings-save", "click", saveCloudSettings);
   on("el-settings-reset", "click", () => _cloudAction("/voice/cloud/settings/reset", {}, "Resetting…"));
-  on("el-test", "click", () => _cloudAction("/voice/cloud/test", {}, "Speaking the test phrase…"));
+  on("el-test", "click", () => {
+    suspendForSpeech();
+    return _cloudAction("/voice/cloud/test", {}, "Speaking the test phrase…");
+  });
   on("el-stop", "click", voiceStop);
   on("el-engine", "change", () => _cloudAction("/voice/engine", { engine: $("el-engine").value }, "Switching…"));
   on("el-fallback", "change", () =>
@@ -3185,72 +3264,130 @@ function initCloudVoice() {
 
 // ── Double-clap activation ──────────────────────────────────────────────────
 //
-// The detector is app/ui/static/clap-processor.js, running on the audio
-// thread. This code starts and stops it and forwards one payload-free
-// message to the server; it never sees a sample or a level.
+// The state machine lives in app/ui/static/clap-controller.js, which owns
+// the microphone. This half is wiring: it tells the controller what the
+// server says, tells the server what the controller is actually doing,
+// and paints the result.
 //
 // It runs on every page rather than only the Voice page, because the
 // point of the feature is to work while JARVIS is minimised — and it is
 // only ever started when the stored setting says so, which is off until
 // somebody turns it on.
 
-let clapStream = null;
-let clapContext = null;
-let clapNode = null;
-let clapStarting = false;
+// Suspension reasons. One per exclusive user of the microphone or the
+// speakers, so two overlapping ones cannot resume the listener early.
+const CLAP_REASON = {
+  SPEAKING: "speaking",
+  PTT: "push-to-talk",
+  MIC_TEST: "microphone-test",
+  CALIBRATING: "calibrating",
+};
+
+let clapLastReported = "";
+let clapSafeBounds = {};
+let clapProposed = null;
 
 function clapListening() {
-  return !!clapContext;
+  return !!(window.ClapController && ClapController.isListening());
 }
 
-async function startClapListener(detector) {
-  if (clapListening() || clapStarting) return true;
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.AudioContext) {
-    return false;
-  }
-  clapStarting = true;
+function clapState() {
+  return window.ClapController ? ClapController.state() : "disabled";
+}
+
+// Every exclusive audio operation goes through these two, never through
+// a bare start/stop, so a missed release cannot leave the microphone off
+// for good and a double release cannot turn it on early.
+function clapSuspend(reason) {
+  if (window.ClapController) ClapController.suspend(reason);
+}
+
+function clapResume(reason) {
+  if (window.ClapController) ClapController.resume(reason);
+}
+
+// Runs an async operation with the listener suspended, releasing the
+// reason on success, failure and cancellation alike.
+async function withClapSuspended(reason, fn) {
+  clapSuspend(reason);
   try {
-    clapStream = await navigator.mediaDevices.getUserMedia({
-      // A clap is a transient. The three processors that exist to make
-      // speech intelligible all work against that: gain control chases
-      // the peak, noise suppression treats a broadband burst as noise,
-      // and echo cancellation is simply irrelevant here.
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-    });
-    clapContext = new AudioContext();
-    await clapContext.audioWorklet.addModule("/ui/static/clap-processor.js");
-    const source = clapContext.createMediaStreamSource(clapStream);
-    clapNode = new AudioWorkletNode(clapContext, "clap-processor", {
-      processorOptions: detector || {},
-    });
-    clapNode.port.onmessage = (event) => {
-      if (event.data && event.data.type === "clap-pair") onClapPair();
-    };
-    // Deliberately not connected to the destination: this reads the
-    // microphone, it does not play it back.
-    source.connect(clapNode);
-    return true;
-  } catch (e) {
-    stopClapListener();
-    return false;
+    return await fn();
   } finally {
-    clapStarting = false;
+    clapResume(reason);
   }
 }
 
-function stopClapListener() {
-  if (clapNode) {
-    try { clapNode.port.onmessage = null; clapNode.disconnect(); } catch (e) { /* already gone */ }
-    clapNode = null;
+// The tray asks the server what the listener is doing; the server only
+// knows because of this.
+//
+// Sent on every change *and* re-sent on a timer, because
+// app/voice/clap.py deliberately stops believing a report older than
+// LISTENER_FRESH_SECONDS. That staleness is what stops a closed or
+// crashed tab leaving a false "On" behind — but it also means a page
+// that sits in one state has to keep saying so, or the tray would decay
+// to "Microphone unavailable" while the microphone is plainly open. The
+// interval is comfortably shorter than the window it has to stay inside.
+const CLAP_HEARTBEAT_MS = 8000;
+let clapHeartbeat = null;
+
+async function sendClapListenerState(state) {
+  clapLastReported = state;
+  try {
+    await API.post("/voice/clap/listener", { state });
+  } catch (e) { /* the tray falls back to "unavailable" on its own */ }
+}
+
+function reportClapListenerState(snapshot) {
+  if (snapshot.state !== clapLastReported) sendClapListenerState(snapshot.state);
+  if (!clapHeartbeat) {
+    clapHeartbeat = setInterval(() => sendClapListenerState(clapState()), CLAP_HEARTBEAT_MS);
   }
-  if (clapStream) {
-    clapStream.getTracks().forEach(track => track.stop());
-    clapStream = null;
+}
+
+function stopClapHeartbeat() {
+  if (clapHeartbeat) {
+    clearInterval(clapHeartbeat);
+    clapHeartbeat = null;
   }
-  if (clapContext) {
-    try { clapContext.close(); } catch (e) { /* already closed */ }
-    clapContext = null;
+}
+
+function renderClapState() {
+  const el = $("clap-state");
+  if (!el) return;
+  const labels = {
+    "listening": "Listening for claps",
+    "starting": "Starting…",
+    "suspended": "Temporarily paused",
+    "calibrating": "Calibrating",
+    "privacy-blocked": "Paused by privacy mode",
+    "microphone-unavailable": "Microphone unavailable",
+    "stopping": "Stopping…",
+    "error": "Error",
+    "disabled": "Off",
+  };
+  const state = clapState();
+  el.textContent = labels[state] || "Off";
+  el.className = `status-row-value${state === "listening" ? " text-ok" : (
+    state === "privacy-blocked" || state === "microphone-unavailable" || state === "error" ? " text-err" : "")}`;
+
+  // What is actually open, which is not always what was chosen.
+  const active = $("clap-active-device");
+  if (active) {
+    if (!clapListening()) {
+      active.textContent = "";
+    } else if (ClapController.usingFallback()) {
+      active.textContent = "The chosen microphone was unavailable, so JARVIS is using the system default.";
+      active.className = "text-xs mt-2 text-err";
+    } else {
+      active.textContent = "Using the selected microphone.";
+      active.className = "text-xs mt-2 text-muted";
+    }
   }
+}
+
+function onClapControllerChange(snapshot) {
+  renderClapState();
+  reportClapListenerState(snapshot);
 }
 
 async function onClapPair() {
@@ -3265,20 +3402,14 @@ async function onClapPair() {
       message.className = `text-xs mt-2 ${r.accepted ? "text-ok" : "text-muted"}`;
     }
     if (!r.accepted && (r.reason === "disabled" || r.reason === "privacy_mode")) {
-      stopClapListener();
-      renderClapState(false);
+      // The server and this page disagree about the settings. The server
+      // is right; re-read rather than guess.
+      refreshClap(false);
     }
   } catch (e) {
     // A failed activation is not worth telling anyone about; the next
     // clap will try again.
   }
-}
-
-function renderClapState(listening) {
-  const state = $("clap-state");
-  if (!state) return;
-  state.textContent = listening ? "Listening for claps" : "Off";
-  state.className = `status-row-value${listening ? " text-ok" : ""}`;
 }
 
 function renderClapStatus(s) {
@@ -3291,7 +3422,18 @@ function renderClapStatus(s) {
   if (greet) greet.checked = !!s.greet;
   const greeting = $("clap-greeting");
   if (greeting && document.activeElement !== greeting) greeting.value = s.greeting || "";
-  renderClapState(clapListening());
+  clapSafeBounds = s.safe_bounds || {};
+
+  const calibrated = $("clap-calibrated");
+  if (calibrated) {
+    calibrated.textContent = s.calibrated
+      ? "Calibrated for this room."
+      : "Using the standard settings for the chosen sensitivity.";
+  }
+  const reset = $("clap-cal-reset");
+  if (reset) reset.disabled = !s.calibrated;
+
+  renderClapState();
 
   const message = $("clap-message");
   if (message && s.privacy_blocking && s.enabled) {
@@ -3300,16 +3442,17 @@ function renderClapStatus(s) {
   }
 }
 
-// Applies whatever the server says: start the listener, stop it, or
-// restart it so a sensitivity change takes effect.
+// Hands the server's settings to the controller, which decides whether
+// that means start, stop, restart or nothing.
 async function applyClapSetting(status, restart) {
-  if (!status.enabled || status.privacy_blocking) {
-    stopClapListener();
-  } else if (restart) {
-    stopClapListener();
-    await startClapListener(status.detector);
-  } else if (!clapListening()) {
-    await startClapListener(status.detector);
+  if (window.ClapController) {
+    await ClapController.configure({
+      enabled: status.enabled,
+      privacyBlocked: status.privacy_blocking,
+      detector: status.detector,
+      deviceId: status.device_id || "",
+      forceRestart: !!restart,
+    });
   }
   renderClapStatus(status);
 }
@@ -3318,6 +3461,23 @@ async function refreshClap(restart) {
   try {
     await applyClapSetting(await API.get("/voice/clap"), restart);
   } catch (e) { /* a status read that fails leaves the listener as it is */ }
+}
+
+// Privacy mode changed somewhere — Settings, a chat command, another
+// tab, the tray. The microphone stops here and now; the settings re-read
+// afterwards only decides whether anything should start again.
+//
+// This is the defect this pass exists to fix: the old code refreshed the
+// privacy *indicator* on this event and left the microphone open.
+async function applyPrivacyToClap() {
+  let active = true;   // unreadable privacy state is treated as "on"
+  try {
+    const r = await API.get("/privacy/status");
+    active = !!r.active;
+  } catch (e) { /* keep the safe reading */ }
+  if (window.ClapController) await ClapController.setPrivacyBlocked(active);
+  if (!active) await refreshClap(false);
+  renderClapState();
 }
 
 async function setClapEnabled(enabled) {
@@ -3341,18 +3501,171 @@ async function setClapEnabled(enabled) {
   }
 }
 
-async function saveClapSettings(restart) {
+async function saveClapSettings(restart, extra) {
   const sensitivity = $("clap-sensitivity");
   const greet = $("clap-greet");
   const greeting = $("clap-greeting");
+  const body = {
+    sensitivity: sensitivity ? sensitivity.value : null,
+    greet: greet ? greet.checked : null,
+    greeting: greeting ? greeting.value : null,
+  };
+  Object.assign(body, extra || {});
   try {
-    const status = await API.post("/voice/clap/settings", {
-      sensitivity: sensitivity ? sensitivity.value : null,
-      greet: greet ? greet.checked : null,
-      greeting: greeting ? greeting.value : null,
-    });
+    const status = await API.post("/voice/clap/settings", body);
     await applyClapSetting(status, restart);
-  } catch (e) { /* leave the controls showing what the user typed */ }
+    return status;
+  } catch (e) {
+    return null;
+  }
+}
+
+// The shared microphone choice. Saving it restarts the listener onto the
+// new device — the controller stops the old stream before opening the
+// new one, so there is never a moment with two.
+async function setSharedMicrophone(deviceId) {
+  await saveClapSettings(true, { device_id: deviceId || "" });
+}
+
+// ── Calibration ─────────────────────────────────────────────────────────────
+//
+// Bounded, explicitly started, and entirely local. The onset scalars the
+// worklet reports during a session are read here and thrown away; nothing
+// posts them anywhere, and a test asserts that.
+
+function clapCalMessage(text, tone) {
+  const el = $("clap-cal-message");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `text-xs mt-2 ${tone || "text-muted"}`;
+}
+
+function describeOnsets(onsets, detector) {
+  // Turns two measured onsets into something a person can act on.
+  const lines = [];
+  if (!onsets.length) return ["No clap was detected. Try clapping harder, or closer to the microphone."];
+  lines.push("First clap detected.");
+  const first = onsets[0];
+  if (first.peak < (detector.absMin || 0.035)) lines.push("It was very quiet.");
+  if (first.peak > 0.95) lines.push("It was loud enough to clip — try a little further from the microphone.");
+  if (onsets.length < 2) {
+    lines.push("No second clap arrived in time. Clap twice, about a quarter of a second apart.");
+    return lines;
+  }
+  const gap = onsets[1].gap;
+  lines.push(`Second clap detected ${Math.round(gap * 1000)} ms later.`);
+  if (gap < (detector.minGap || 0.12)) lines.push("That was faster than the current setting allows.");
+  if (gap > (detector.maxGap || 0.7)) lines.push("That was slower than the current setting allows.");
+  return lines;
+}
+
+function proposeTuning(onsets) {
+  // Conservative: set the loudness floor below the quieter of the two
+  // claps with margin, and widen the gap window around what was actually
+  // clapped. The server clamps all of it to SAFE_BOUNDS regardless.
+  const peaks = onsets.map(o => o.peak).filter(p => typeof p === "number" && p > 0);
+  const gap = onsets.length >= 2 ? onsets[1].gap : null;
+  const proposal = {};
+  if (peaks.length) proposal.absMin = Math.max(0.008, Math.min(...peaks) * 0.45);
+  if (gap && gap > 0) {
+    proposal.minGap = Math.max(0.08, gap * 0.5);
+    proposal.maxGap = Math.min(1.2, gap * 1.8);
+  }
+  return proposal;
+}
+
+function renderProposal(proposal) {
+  const el = $("clap-cal-proposal");
+  if (!el) return;
+  if (!proposal || !Object.keys(proposal).length) {
+    el.textContent = "";
+    return;
+  }
+  const parts = [];
+  if (proposal.absMin !== undefined) parts.push(`minimum loudness ${proposal.absMin.toFixed(3)}`);
+  if (proposal.minGap !== undefined) parts.push(`fastest gap ${Math.round(proposal.minGap * 1000)} ms`);
+  if (proposal.maxGap !== undefined) parts.push(`slowest gap ${Math.round(proposal.maxGap * 1000)} ms`);
+  el.textContent = `Proposed: ${parts.join(", ")}. Nothing is saved until you press Save.`;
+}
+
+async function startClapCalibration() {
+  if (!window.ClapController) return;
+  const startBtn = $("clap-cal-start");
+  const saveBtn = $("clap-cal-save");
+  const cancelBtn = $("clap-cal-cancel");
+  clapProposed = null;
+  renderProposal(null);
+  if (saveBtn) saveBtn.disabled = true;
+
+  let detector = {};
+  try {
+    detector = (await API.get("/voice/clap")).detector || {};
+  } catch (e) { /* fall back to whatever the worklet defaults to */ }
+
+  clapSuspend(CLAP_REASON.CALIBRATING);
+  const result = await ClapController.startCalibration({
+    onOnset: (onsets) => {
+      clapCalMessage(describeOnsets(onsets, detector).join(" "), "text-muted");
+    },
+    onFinish: (outcome, onsets) => {
+      if (startBtn) startBtn.disabled = false;
+      if (cancelBtn) cancelBtn.disabled = true;
+      clapResume(CLAP_REASON.CALIBRATING);
+      if (outcome === "cancelled") {
+        clapCalMessage("Calibration cancelled. The microphone was released.", "text-muted");
+        return;
+      }
+      if (outcome === "timeout" && onsets.length < 2) {
+        clapCalMessage(describeOnsets(onsets, detector).join(" ")
+          + " Calibration stopped and the microphone was released.", "text-err");
+        return;
+      }
+      clapProposed = proposeTuning(onsets);
+      clapCalMessage(describeOnsets(onsets, detector).join(" ") + " Double clap accepted.", "text-ok");
+      renderProposal(clapProposed);
+      if (saveBtn) saveBtn.disabled = !Object.keys(clapProposed).length;
+    },
+  });
+
+  if (!result.ok) {
+    clapResume(CLAP_REASON.CALIBRATING);
+    if (startBtn) startBtn.disabled = false;
+    clapCalMessage(result.reason === "privacy"
+      ? "Privacy mode is on, so the microphone was not opened."
+      : "The microphone could not be opened for calibration.", "text-err");
+    return;
+  }
+  if (startBtn) startBtn.disabled = true;
+  if (cancelBtn) cancelBtn.disabled = false;
+  clapCalMessage("Listening — clap twice, about a quarter of a second apart.", "text-muted");
+}
+
+function cancelClapCalibration() {
+  if (window.ClapController) ClapController.stopCalibration();
+}
+
+async function saveClapCalibration() {
+  if (!clapProposed) return;
+  const status = await saveClapSettings(true, { tuning: clapProposed });
+  if (status) {
+    clapProposed = null;
+    renderProposal(null);
+    const saveBtn = $("clap-cal-save");
+    if (saveBtn) saveBtn.disabled = true;
+    clapCalMessage("Saved. JARVIS is using the calibrated settings.", "text-ok");
+  } else {
+    clapCalMessage("Could not save the calibrated settings.", "text-err");
+  }
+}
+
+async function resetClapCalibration() {
+  const status = await saveClapSettings(true, { tuning: {} });
+  clapProposed = null;
+  renderProposal(null);
+  const saveBtn = $("clap-cal-save");
+  if (saveBtn) saveBtn.disabled = true;
+  clapCalMessage(status ? "Reset to the standard settings." : "Could not reset the settings.",
+                 status ? "text-ok" : "text-err");
 }
 
 function initClapControls() {
@@ -3364,6 +3677,15 @@ function initClapControls() {
   if (sensitivity) sensitivity.addEventListener("change", () => saveClapSettings(true));
   if (greet) greet.addEventListener("change", () => saveClapSettings(false));
   if (save) save.addEventListener("click", () => saveClapSettings(false));
+
+  const calStart = $("clap-cal-start");
+  const calCancel = $("clap-cal-cancel");
+  const calSave = $("clap-cal-save");
+  const calReset = $("clap-cal-reset");
+  if (calStart) calStart.addEventListener("click", startClapCalibration);
+  if (calCancel) calCancel.addEventListener("click", cancelClapCalibration);
+  if (calSave) calSave.addEventListener("click", saveClapCalibration);
+  if (calReset) calReset.addEventListener("click", resetClapCalibration);
 }
 
 function initVoice() {
@@ -3387,6 +3709,14 @@ function initVoice() {
 
   const inputToggle = $("voice-input-toggle");
   if (inputToggle) inputToggle.addEventListener("change", () => setVoiceInputEnabled(inputToggle.checked));
+
+  // The microphone dropdown is the one shared choice: the level meter
+  // and the clap listener both use it, and it is saved server-side so it
+  // survives a restart. It used to move nothing but this page's own test.
+  const deviceSelect = $("diag-device-select");
+  if (deviceSelect) {
+    deviceSelect.addEventListener("change", () => setSharedMicrophone(deviceSelect.value));
+  }
 
   const testMic = $("diag-test-mic");
   const refreshDiag = $("diag-refresh");
@@ -3796,6 +4126,11 @@ function handleStreamEvent(evt) {
   // instant it changes anywhere (chat command, another tab, voice).
   if (evt.type === "action_result" && evt.payload && evt.payload.tool_name === "set_privacy_mode") {
     refreshPrivacyIndicator();
+    // And release the microphone. Repainting the indicator while the
+    // clap listener kept running is the defect this line replaces:
+    // privacy mode has to mean the capture stops, not that a label
+    // changed colour.
+    applyPrivacyToClap();
   }
 
   // Keep the Actions page's pending list live when an action anywhere
@@ -3862,8 +4197,19 @@ document.addEventListener("DOMContentLoaded", () => {
   // works while JARVIS is minimised, whatever page happens to be open.
   // refreshClap() starts nothing unless the stored setting says to, and
   // that setting is off until somebody turns it on.
+  if (window.ClapController) {
+    ClapController.onClapPair(onClapPair);
+    ClapController.onChange(onClapControllerChange);
+  }
   refreshClap(false);
-  window.addEventListener("pagehide", stopClapListener);
+  // Navigating away, closing the tab and quitting all end the same way:
+  // every track stopped and every context closed before this page goes.
+  window.addEventListener("pagehide", () => {
+    if (window.ClapController) ClapController.setQuitting();
+    // The heartbeat stops with the page, which is what makes the
+    // server's staleness window mean something.
+    stopClapHeartbeat();
+  });
 
   const path = window.location.pathname.replace(/\/+$/, "");
 

@@ -309,7 +309,32 @@
     <p class="text-xs text-muted mt-2">
       Only spoken if <em>Speak replies aloud</em> is already on above.
     </p>
+    <p id="clap-active-device" class="text-xs mt-2" aria-live="polite"></p>
     <p id="clap-message" class="text-xs mt-2" aria-live="polite"></p>
+
+    {# Calibration. Bounded, explicitly started, and entirely local — the
+       loudness and timing of two claps, measured in this page and thrown
+       away. Nothing is recorded and nothing is sent. #}
+    <h3 class="text-xs text-muted mt-3">Calibrate for this room</h3>
+    <p class="text-xs text-muted mt-2">
+      Clap twice and JARVIS will measure how loud it was and how far apart the two claps fell,
+      then suggest settings. <strong>No audio is recorded, saved, sent anywhere or turned into
+      words</strong> &mdash; only the loudness and the timing, and only while you are calibrating.
+      The microphone is released as soon as it finishes, times out or you cancel.
+      Nothing changes until you press Save.
+    </p>
+    <div class="status-row mt-3">
+      <span class="status-row-label">Current settings</span>
+      <span id="clap-calibrated" class="status-row-value">&mdash;</span>
+    </div>
+    <div class="btn-row mt-3">
+      <button id="clap-cal-start" class="btn btn-primary" type="button">Start calibration</button>
+      <button id="clap-cal-cancel" class="btn btn-ghost" type="button" disabled>Cancel</button>
+      <button id="clap-cal-save" class="btn btn-primary" type="button" disabled>Save</button>
+      <button id="clap-cal-reset" class="btn btn-ghost" type="button">Reset to defaults</button>
+    </div>
+    <p id="clap-cal-message" class="text-xs mt-2" aria-live="polite"></p>
+    <p id="clap-cal-proposal" class="text-xs text-muted mt-2" aria-live="polite"></p>
   </div>
 
   {#
@@ -393,12 +418,16 @@
 
     <div class="mt-3">
       <label class="text-xs text-muted" for="diag-device-select">Microphone to use</label>
+      <p class="text-xs text-muted mt-2">
+        One choice, used by the test below and by clap detection. It is remembered across restarts.
+      </p>
       <select id="diag-device-select" class="input mt-2" aria-label="Microphone to use">
         <option value="">System default</option>
       </select>
     </div>
 
     <div class="btn-row mt-3">
+      <p id="diag-device-missing" class="text-xs text-err mt-2" aria-live="polite"></p>
       <button id="diag-test-mic" class="btn btn-primary" type="button">Test microphone</button>
       <button id="diag-refresh" class="btn btn-ghost" type="button">Run diagnostics again</button>
     </div>

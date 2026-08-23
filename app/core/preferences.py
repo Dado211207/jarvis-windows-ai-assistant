@@ -87,6 +87,15 @@ STORABLE_KEYS = (
     # if anything — to say when the window appears. No audio, no levels
     # and no timestamps are ever stored here or anywhere else.
     "clap_enabled", "clap_sensitivity", "clap_greet", "clap_greeting",
+    # Calibrated detector overrides, clamped to app/voice/clap.py's
+    # SAFE_BOUNDS before they are ever written or read back.
+    "clap_tuning",
+    # Which microphone this machine uses. One choice, shared by the
+    # diagnostics level meter and the clap listener, so the dropdown on
+    # the Voice page is not decoration. A device id is not a credential
+    # and not audio; it is the same string the browser already hands out
+    # to any page with microphone permission.
+    "mic_device_id",
 )
 
 # What a name is allowed to be. Deliberately generous about content and

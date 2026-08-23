@@ -314,7 +314,13 @@ def test_privacy_mode_stops_the_listener(live_server, clap_browser, armed, tmp_p
 def test_switching_it_off_stops_the_microphone(live_server, clap_browser, armed, tmp_path):
     """The stream and the audio context must both be released — a
     listener that is "off" but still holding the microphone is the
-    failure this feature must never have."""
+    failure this feature must never have.
+
+    tests/test_clap_controller.py asserts this against the real
+    MediaStreamTrack and AudioContext objects; this is the same claim
+    made through the controller's own answer, in the file that owns the
+    end-to-end audio path.
+    """
     clip = build_clip("near_silence", tmp_path)
 
     browser = clap_browser(clip)
@@ -326,5 +332,6 @@ def test_switching_it_off_stops_the_microphone(live_server, clap_browser, armed,
     page.click("#clap-toggle")
     page.wait_for_function("clapListening() === false", timeout=10000)
 
-    assert page.evaluate("clapStream === null && clapContext === null && clapNode === null")
+    assert page.evaluate("ClapController.state()") == "disabled"
+    assert page.evaluate("ClapController.activeDeviceId()") == ""
     context.close()

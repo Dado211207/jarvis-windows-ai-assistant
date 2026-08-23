@@ -59,12 +59,25 @@ jobs:
         run: playwright install --with-deps chromium
 
       - name: Run browser + accessibility tests
-        # test_clap_detection.py is here rather than in the default run
-        # because it needs a real Chromium: the double-clap detector is
-        # exercised against a real microphone capture path with
-        # synthesised audio, which is the only way to know it fires on a
-        # clap and stays quiet on speech.
-        run: pytest -m browser tests/test_playwright_e2e.py tests/test_clap_detection.py -v
+        # These are here rather than in the default run because they need
+        # a real Chromium.
+        #
+        # test_clap_detection.py exercises the detector against a real
+        # microphone capture path with synthesised audio, which is the
+        # only way to know it fires on a clap and stays quiet on speech.
+        #
+        # test_clap_controller.py asserts the listener's lifecycle
+        # against real MediaStreamTracks, AudioContexts, worklet nodes,
+        # listeners and timers — privacy mode releasing the microphone,
+        # the selected device reaching getUserMedia, reference-counted
+        # suspension, and bounded calibration. A mocked version of any of
+        # it would have passed against the build that left the microphone
+        # running.
+        run: >
+          pytest -m browser -v
+          tests/test_playwright_e2e.py
+          tests/test_clap_detection.py
+          tests/test_clap_controller.py
         env:
           JARVIS_DB_PATH: /tmp/ci_jarvis_browser_test.db
           JARVIS_LOG_LEVEL: WARNING

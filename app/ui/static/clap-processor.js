@@ -54,10 +54,23 @@ class ClapProcessor extends AudioWorkletProcessor {
       this[key] = Number.isFinite(value) && value > 0 ? value : DEFAULTS[key];
     }
 
+    // Calibration mode, and only calibration mode, additionally reports
+    // one scalar triple per onset so the Voice page can say "that was
+    // too quiet" or "the second clap was too slow" instead of just
+    // failing silently. It is off unless a person pressed Calibrate.
+    //
+    // Three numbers — a time, a peak level, a gap — are strictly less
+    // than the amplitude this processor already computes, they are the
+    // minimum needed to give useful advice, and app/ui/static/app.js
+    // never sends them anywhere. In ordinary listening the only thing
+    // that ever leaves this thread is still the payload-free pair below.
+    this.calibrate = !!(given && given.calibrate);
+
     this.noiseFloor = 0.002;
     this.prevRms = 0;
     this.inTransient = false;
     this.transientStart = 0;
+    this.transientPeak = 0;
     this.lastClapAt = -999;
     this.mutedUntil = -999;
     this.sustainedUntil = -999;
@@ -81,6 +94,7 @@ class ClapProcessor extends AudioWorkletProcessor {
 
     if (this.inTransient) {
       const duration = now - this.transientStart;
+      if (peak > this.transientPeak) this.transientPeak = peak;
       if (rms < threshold * 0.5) {
         this.inTransient = false;
         if (duration <= this.maxTransient) this._clap(now - duration);
@@ -97,6 +111,7 @@ class ClapProcessor extends AudioWorkletProcessor {
       if (rms >= threshold && peak >= this.absMin && sharp && now >= this.sustainedUntil) {
         this.inTransient = true;
         this.transientStart = now;
+        this.transientPeak = peak;
       } else if (rms < threshold) {
         // Track the background only while nothing is happening, or a
         // clap would raise the floor it is measured against.
@@ -111,13 +126,20 @@ class ClapProcessor extends AudioWorkletProcessor {
   _clap(at) {
     if (at < this.mutedUntil) return;
     const gap = at - this.lastClapAt;
+    const peak = this.transientPeak;
+    if (this.calibrate) {
+      // Guarded, and only ever here: three scalars, for a person who
+      // pressed Calibrate and is looking at the result.
+      this.port.postMessage({ type: "clap-onset", at: at, peak: peak, gap: gap });
+    }
     if (gap >= this.minGap && gap <= this.maxGap) {
       this.lastClapAt = -999;
       this.mutedUntil = at + this.refractory;
       this.port.postMessage({ type: "clap-pair" });
     } else {
       // A single clap, or a mistimed second one. Remembered as the
-      // possible first half of a pair; never reported.
+      // possible first half of a pair; never reported outside
+      // calibration.
       this.lastClapAt = at;
     }
   }

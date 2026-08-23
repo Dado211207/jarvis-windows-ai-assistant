@@ -179,6 +179,44 @@ carry the full reasoning; these are the lines that may not move.
   only a genuine pair activates anything. Never replace it with a mock:
   a state machine asserted against itself proves nothing about whether
   speech sets it off.
+- **Privacy mode releases the microphone, it does not merely relabel
+  it.** The failure this replaces is a build that repainted the privacy
+  indicator and left the capture running. `setPrivacyBlocked(true)` in
+  `app/ui/static/clap-controller.js` tears down synchronously: every
+  track stopped, the source and worklet disconnected, the `AudioContext`
+  closed. Stopping the tracks is what turns the Windows
+  microphone-in-use indicator off; closing the context alone does not.
+- **One controller owns the microphone.** `clap-controller.js` is a
+  single state machine with nine states and one decision point
+  (`reconcile()`); nothing else may call `start()` or `teardown()`.
+  Scattered booleans are what produced the defect above, so do not
+  reintroduce them — and do not split the file: the cohesion is the
+  reason it holds.
+- **Suspension is reference-counted.** Speech, push-to-talk, the
+  microphone test and calibration each take a named reason. Two reasons
+  in and one out leaves the listener suspended. Every path releases its
+  reason on success, failure and cancellation alike.
+- **The microphone dropdown is the one shared choice**, not a
+  diagnostic. It reaches `getUserMedia` as `deviceId: {exact: …}`. A
+  missing device falls back to the system default **and says so**;
+  claiming the chosen device is active when it is not is the failure
+  mode this exists to prevent. There is never more than one clap stream.
+- **Calibration is bounded, local and opt-in.** It owns the microphone
+  for its duration and releases it on success, timeout, cancel,
+  navigation, privacy and quit. The per-onset scalars exist only behind
+  the worklet's `calibrate` guard, never leave the page, and nothing is
+  saved without an explicit Save — clamped server-side to `SAFE_BOUNDS`.
+  The attack and sustained-sound thresholds are never calibratable.
+- **The tray may say "On" only while a page has recently proved a live
+  microphone.** `clap.py::tray_label()` composes the line and refuses
+  "On" for a stale report; the page re-sends its report well inside
+  `LISTENER_FRESH_SECONDS` so the reverse dishonesty — "Microphone
+  unavailable" while it is plainly listening — cannot happen either.
+- **The lifecycle assertions are on resources, never on flags.**
+  `tests/test_clap_controller.py` asserts against real
+  `MediaStreamTrack`s, `AudioContext`s, worklet nodes, listeners and
+  timers in a real browser. A test that reads a boolean would have passed
+  against the broken build.
 
 ## Memory secret rules (non-negotiable)
 
