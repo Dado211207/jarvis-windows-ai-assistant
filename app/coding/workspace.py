@@ -307,6 +307,31 @@ def canonical_root(raw: str) -> Path:
     return resolved
 
 
+def protected_summary() -> dict:
+    """What is protected, for the UI to render.
+
+    Derived from the same frozensets `is_protected()` consults, so the
+    page cannot describe a protection the code does not enforce, or miss
+    one it does. A hand-written list in a template drifts the first time
+    somebody adds an entry here and does not think to update the page.
+    """
+    return {
+        "filenames": sorted(PROTECTED_FILENAMES),
+        "suffixes": sorted(PROTECTED_SUFFIXES),
+        "directories": sorted(PROTECTED_DIR_COMPONENTS),
+        "pattern_examples": [
+            ".env.local, .env.production and anything else beginning .env",
+            "secrets.yaml, secret.json and similar",
+            "anything named *.private.*",
+        ],
+        "note": (
+            "JARVIS reports that these files exist and how big they are, and never "
+            "reads a byte of their contents. Nothing from them reaches the AI model, "
+            "the activity log, a diff, a screenshot or a task record."
+        ),
+    }
+
+
 def is_protected(relative: PurePath) -> Optional[str]:
     """Why this project-relative path is protected, or None if it is not.
 

@@ -48,7 +48,7 @@ VIEWPORTS = {
 }
 
 PAGES = ["/ui/", "/ui/chat", "/ui/actions", "/ui/logs", "/ui/memory", "/ui/voice", "/ui/help",
-         "/ui/setup", "/ui/settings", "/ui/diagnostics"]
+         "/ui/setup", "/ui/settings", "/ui/diagnostics", "/ui/coding"]
 
 
 # ---------------------------------------------------------------------------

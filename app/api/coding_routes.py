@@ -22,7 +22,7 @@ from app.api.session import require_session_token
 from app.coding import commands as command_policy
 from app.coding import gitsafe, limits, projects, registry, stacks, tasks
 from app.coding.runner import ledger
-from app.coding.workspace import WorkspaceViolation
+from app.coding.workspace import WorkspaceViolation, protected_summary
 from app.core.errors import ErrorCategory, to_safe_error
 from app.logging_config import get_logger
 
@@ -106,6 +106,10 @@ async def coding_status() -> dict:
         "live_processes": ledger.live_count(),
         "capabilities": registry.as_matrix(),
         "risk_matrix": command_policy.describe_matrix(),
+        # Rendered by the page rather than written into the template, so
+        # what the user is shown comes from the same frozensets
+        # is_protected() enforces and cannot drift from them.
+        "protected": protected_summary(),
         "limits": {
             "max_steps": limits.MAX_STEPS,
             "max_commands": limits.MAX_COMMANDS,
