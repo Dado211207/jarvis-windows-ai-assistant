@@ -15,6 +15,20 @@ import pytest
 from app.launcher import ipc
 
 
+# A timed wait can finish a hair before the clock it is measured against
+# agrees that its deadline passed. Thread.join() converts its timeout
+# once and then waits on an OS primitive whose granularity is the system
+# tick — 15.625 ms on Windows by default — while time.monotonic() reads
+# the high-resolution counter. A Windows CI runner measured 0.4999999997
+# for a 0.5 s join and failed an exact `0.5 <= elapsed`. This tolerance
+# is two orders of magnitude below any real defect (an accept() that
+# ignored its timeout returns in microseconds) and comfortably above the
+# granularity that produced the shortfall. It is not a widened timeout:
+# the upper bound, which is what proves accept() cannot block forever,
+# is untouched.
+CLOCK_SLACK_SECONDS = 0.05
+
+
 # ---------------------------------------------------------------------------
 # Command validation
 # ---------------------------------------------------------------------------
@@ -197,7 +211,7 @@ def test_a_client_with_the_wrong_secret_is_rejected(listener):
     assert accepted is False
 
 
-def test_accept_gives_up_instead_of_blocking_forever(listener):
+def test_accept_gives_up_instead_of_blocking_forever(listener, caplog):
     """The defect this exists for: accept() had no timeout at all, so a
     window child that died before connecting parked the parent's *main
     thread* permanently — no window, no tray, no error dialog, and no way
@@ -208,12 +222,19 @@ def test_accept_gives_up_instead_of_blocking_forever(listener):
 
     listener_obj, _ = listener
 
-    started = time.monotonic()
-    accepted = listener_obj.accept(timeout_seconds=0.5)
-    elapsed = time.monotonic() - started
+    with caplog.at_level("ERROR"):
+        started = time.monotonic()
+        accepted = listener_obj.accept(timeout_seconds=0.5)
+        elapsed = time.monotonic() - started
 
     assert accepted is False
-    assert 0.5 <= elapsed < 5.0, "accept() must return on its own deadline"
+    assert elapsed >= 0.5 - CLOCK_SLACK_SECONDS, "accept() returned without waiting its deadline"
+    assert elapsed < 5.0, "accept() must return on its own deadline"
+    # The diagnostic has to name the deadline that actually elapsed; the
+    # first version formatted it with %.0f and reported this wait, which
+    # is the one the test just measured at half a second, as "within 0s".
+    assert any("within 0.5s" in record.message for record in caplog.records), \
+        "the abandonment log must report the real timeout"
 
 
 def test_a_timed_out_accept_releases_its_waiting_thread(listener):

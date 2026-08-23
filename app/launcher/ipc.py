@@ -214,7 +214,10 @@ class ControlListener:
 
         if worker.is_alive():
             logger.error(
-                "Window child did not connect within %.0fs; abandoning the control channel.",
+                # %.3g, not %.0f: a sub-second timeout printed as "within
+                # 0s" reads like the wait never happened, which is the
+                # opposite of what this line is reporting.
+                "Window child did not connect within %.3gs; abandoning the control channel.",
                 timeout_seconds,
             )
             # Closing the listener is what releases the parked accept()

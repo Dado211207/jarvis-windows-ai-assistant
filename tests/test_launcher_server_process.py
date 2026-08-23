@@ -9,12 +9,16 @@ real running server in test_health_wait_succeeds_against_a_real_server.
 """
 
 import socket
-import subprocess
-import sys
 import time
-from pathlib import Path
 
 import pytest
+
+
+# See the identical constant in test_launcher_ipc.py: a timed wait can
+# finish fractionally before time.monotonic() agrees its deadline passed,
+# because the wait and the measurement read different clocks. The bound
+# still fails a kill that skipped the grace window entirely.
+CLOCK_SLACK_SECONDS = 0.05
 
 
 def _free_port() -> int:
@@ -295,7 +299,7 @@ def test_stop_kills_only_after_the_bounded_timeout(isolated_logs):
 
     assert stubborn.terminate_calls == 1, "terminate must be tried before kill"
     assert stubborn.kill_calls == 1
-    assert elapsed >= 0.5, "kill must not pre-empt the graceful window"
+    assert elapsed >= 0.5 - CLOCK_SLACK_SECONDS, "kill must not pre-empt the graceful window"
 
 
 def test_no_process_is_signalled_that_this_instance_did_not_start():
