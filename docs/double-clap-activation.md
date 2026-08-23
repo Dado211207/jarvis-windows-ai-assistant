@@ -252,6 +252,14 @@ now": an active worklet node **and** at least one audio track whose
 `readyState` is `live`. Nothing in the product is allowed to claim
 listening on anything less.
 
+`pagehide` tells the controller the page is going away and everything is
+released. `pageshow` with `persisted` tells it the opposite: a page
+restored from the back/forward cache is alive again, never runs
+`DOMContentLoaded` a second time, and would otherwise still be carrying
+`quitting` from its own `pagehide`. Whether a browser ever caches a page
+that was holding a microphone is a decision that changes between
+versions; handling both halves costs nothing when it does not.
+
 ---
 
 ## 8. The microphone is chosen, not assumed
@@ -280,9 +288,13 @@ What happens when the chosen microphone is not there:
 4. Diagnostics shows the dropdown fallen back to the default entry, with
    *"The microphone you chose is not connected."*
 
-`devicechange` is bound once per page. It restarts **only** when the
-device actually in use has disappeared from `enumerateDevices()` —
-plugging in a webcam is not a reason to reopen an audio stream.
+`devicechange` is bound once per page, and bound *before* the first
+attempt to open a microphone rather than after a successful one — a
+machine with no microphone at all still has to hear about one being
+plugged in, or "microphone unavailable" would be permanent until the
+page was reloaded. It restarts **only** when the device actually in use
+has disappeared from `enumerateDevices()`; plugging in a webcam is not a
+reason to reopen an audio stream.
 
 ---
 

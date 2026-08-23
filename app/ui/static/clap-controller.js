@@ -61,7 +61,6 @@ const ClapController = (function () {
   let resumeTimer = null;
   let calibration = null;
   let quitting = false;
-  let micUnavailable = false;
   let activeDeviceId = "";
   let usingFallback = false;
   let deviceChangeBound = false;
@@ -186,7 +185,6 @@ const ClapController = (function () {
     // Deliberately not connected to the destination: this reads the
     // microphone, it does not play it back.
     source.connect(node);
-    bindDeviceChange();
     return true;
   }
 
@@ -203,10 +201,16 @@ const ClapController = (function () {
     try {
       if (quitting) { teardown(); setState(STATE.DISABLED); return; }
       if (calibration) { setState(STATE.CALIBRATING); return; }
-      if (!settings.enabled) { teardown(); micUnavailable = false; setState(STATE.DISABLED); return; }
+      if (!settings.enabled) { teardown(); setState(STATE.DISABLED); return; }
       if (settings.privacyBlocked) { teardown(); setState(STATE.PRIVACY_BLOCKED); return; }
       if (reasons.size > 0) { teardown(); setState(STATE.SUSPENDED); return; }
       if (isListening()) { setState(STATE.LISTENING); return; }
+
+      // Bound here rather than after a successful start, so a machine
+      // with no microphone at all still hears about one being plugged in.
+      // Binding it inside start() meant "microphone unavailable" was
+      // permanent until the page was reloaded.
+      bindDeviceChange();
 
       teardown();                        // never stack two streams
       if (!supported()) { setState(STATE.MIC_UNAVAILABLE); return; }
@@ -214,11 +218,9 @@ const ClapController = (function () {
       try {
         const ok = await start(settings.detector || {}, onWorkletMessage);
         if (!ok) return;                 // superseded; whoever superseded us sets the state
-        micUnavailable = false;
         setState(STATE.LISTENING);
       } catch (e) {
         teardown();
-        micUnavailable = true;
         setState(STATE.MIC_UNAVAILABLE);
       }
     } finally {
@@ -301,7 +303,6 @@ const ClapController = (function () {
     } catch (e) {
       calibration = null;
       teardown();
-      micUnavailable = true;
       setState(STATE.MIC_UNAVAILABLE);
       return { ok: false, reason: "microphone" };
     }
@@ -417,10 +418,17 @@ const ClapController = (function () {
 
     setQuitting: function () { quitting = true; stopCalibration(); teardown(); setState(STATE.DISABLED); notify(); },
 
+    // A page restored from the back/forward cache is alive again, and its
+    // own `pagehide` already ran. Without this, Back into the Voice page
+    // would find `quitting` still true from that pagehide and never
+    // listen again. Whether a page holding a microphone is ever cached is
+    // a browser decision that changes between versions; this costs
+    // nothing when it is not.
+    setRestored: function () { quitting = false; },
+
     // Tests only: forget everything so one case cannot colour the next.
     _resetForTests: function () {
       quitting = false;
-      micUnavailable = false;
       reasons.clear();
       stopCalibration();
       teardown();

@@ -4215,6 +4215,15 @@ document.addEventListener("DOMContentLoaded", () => {
     // server's staleness window mean something.
     stopClapHeartbeat();
   });
+  // …and the other half. A page restored from the back/forward cache
+  // never runs DOMContentLoaded again, so without this, Back into the
+  // Voice page would be a page that had already declared itself gone.
+  window.addEventListener("pageshow", (evt) => {
+    if (!evt.persisted) return;
+    if (window.ClapController) ClapController.setRestored();
+    clapLastReported = "";
+    refreshClap(true);
+  });
 
   const path = window.location.pathname.replace(/\/+$/, "");
 

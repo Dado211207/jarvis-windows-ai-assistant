@@ -126,6 +126,12 @@ INSTRUMENT = r"""
 
   const md = navigator.mediaDevices;
 
+  // "This computer has no microphone", switchable at runtime, so a test
+  // can watch one appear.
+  let denyAll = false;
+  window.__denyMicrophone = function () { denyAll = true; };
+  window.__allowMicrophone = function () { denyAll = false; };
+
   const realGum = md.getUserMedia.bind(md);
   md.getUserMedia = function (constraints) {
     const record = {
@@ -135,6 +141,13 @@ INSTRUMENT = r"""
       error: "",
     };
     window.__mic.calls.push(record);
+    if (denyAll) {
+      record.ok = false;
+      record.error = "NotFoundError";
+      const err = new Error("No microphone");
+      err.name = "NotFoundError";
+      return Promise.reject(err);
+    }
     return realGum(constraints).then(function (s) {
       record.ok = true;
       window.__mic.streams.push({ stream: s, fromController: record.fromController });
@@ -376,7 +389,7 @@ def voice_page(playwright_instance, tmp_path, live_server):
 
     browsers = []
 
-    def _open(wav=None, wait_for_listening=True):
+    def _open(wav=None, wait_for_listening=True, deny_microphone=False):
         clip = wav or quiet_clip(tmp_path)
         try:
             browser = playwright_instance.chromium.launch(
@@ -394,6 +407,8 @@ def voice_page(playwright_instance, tmp_path, live_server):
         context = browser.new_context(permissions=["microphone"])
         page = context.new_page()
         page.add_init_script(INSTRUMENT)
+        if deny_microphone:
+            page.add_init_script("window.__denyMicrophone();")
         errors = []
         page.on("pageerror", lambda exc: errors.append(str(exc)))
         page.goto(f"{BASE_URL}/ui/voice", wait_until="networkidle")
@@ -1094,6 +1109,43 @@ def test_leaving_the_page_releases_the_microphone(voice_page):
 
     assert session.settled() == (0, 0, 0), "navigating away orphaned the microphone"
     assert session.state() == "disabled"
+
+
+def test_a_page_restored_from_the_back_forward_cache_listens_again(voice_page):
+    """A cached page never runs DOMContentLoaded again, and its own
+    `pagehide` already told the controller it was going away. Without the
+    `pageshow` half, Back into the Voice page would be a page that had
+    declared itself gone and would never open a microphone again."""
+    session = voice_page()
+    session.page.evaluate("window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+    assert session.settled() == (0, 0, 0)
+
+    session.page.evaluate(
+        "window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))"
+    )
+
+    wait_for(session, "clapListening() === true", timeout=20.0)
+    assert session.live() == 1, "the restored page did not get exactly one listener back"
+    assert session.contexts() == 1
+    assert session.nodes() == 1
+
+
+def test_a_microphone_that_appears_later_is_picked_up(voice_page):
+    """A machine with no microphone at all must still hear about one
+    being plugged in. The `devicechange` listener used to be bound only
+    after a *successful* start, which made "microphone unavailable"
+    permanent until the page was reloaded."""
+    session = voice_page(deny_microphone=True, wait_for_listening=False)
+    wait_for(session, "clapState() === 'microphone-unavailable'", timeout=20.0)
+    assert session.page.evaluate("__deviceChangeListeners") == 1, (
+        "nothing was listening for a microphone to appear"
+    )
+
+    session.page.evaluate("__allowMicrophone()")
+    session.page.evaluate("navigator.mediaDevices.dispatchEvent(new Event('devicechange'))")
+
+    wait_for(session, "clapListening() === true", timeout=20.0)
+    assert session.live() == 1
 
 
 def test_a_quitting_page_does_not_reopen_the_microphone(voice_page):

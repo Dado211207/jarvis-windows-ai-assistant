@@ -75,6 +75,7 @@ synthesised WAV, so the whole path from the microphone down is genuine.
 | An exception inside a suspended operation still releases its reason | `…::test_an_exception_inside_a_suspended_operation_still_releases_it` |
 | Push-to-talk suspends the clap listener and releases it | `…::test_push_to_talk_suspends_and_releases_the_clap_listener` |
 | A failed transcription still releases it | `…::test_a_failed_transcription_still_releases_the_listener` |
+| A microphone test that could not open a device still releases it | `…::test_a_failed_microphone_test_still_releases_the_clap_listener` |
 
 ## Calibration
 
@@ -103,6 +104,8 @@ synthesised WAV, so the whole path from the microphone down is genuine.
 | Claim | Proved by |
 |---|---|
 | Leaving the page releases every resource | `tests/test_clap_controller.py::test_leaving_the_page_releases_the_microphone` |
+| A page restored from the back/forward cache listens again | `…::test_a_page_restored_from_the_back_forward_cache_listens_again` |
+| A microphone plugged in later is picked up without a reload | `…::test_a_microphone_that_appears_later_is_picked_up` |
 | A quitting page does not reopen the microphone | `…::test_a_quitting_page_does_not_reopen_the_microphone` |
 | Navigating away and back leaves exactly one listener | `…::test_navigating_away_and_back_leaves_exactly_one_listener` |
 | A reload leaves one listener and an honest report | `…::test_a_reload_leaves_one_listener_and_an_honest_report` |
@@ -113,20 +116,23 @@ synthesised WAV, so the whole path from the microphone down is genuine.
 | Claim | Proved by |
 |---|---|
 | Ten install/launch/quit cycles leave no orphaned JARVIS or WebView2 process | `scripts/test_clean_install.py` (Windows CI) |
-| Only processes provably descended from one JARVIS started are ever terminated | `tests/test_process_tree.py` |
-| Uninstall preserving data, reinstall, and full purge | `scripts/test_clean_install.py` |
+| Uninstall preserving data, reinstall, and full purge | `scripts/test_clean_install.py` phases B and C |
+| A v0.1 ZIP database is carried forward once, without being modified | `scripts/test_clean_install.py` phase H |
 | The installer's checksum file matches the executable it ships | the Windows Installer workflow |
 
 ## Security invariants
 
 | Claim | Proved by |
 |---|---|
-| A credential-shaped memory is refused before any database write | `tests/test_secret_guard.py`, `tests/test_memory_secrets.py` |
-| There is exactly one `INSERT INTO memories` in the codebase | `tests/test_memory_secrets.py` |
-| Tool inputs are redacted before a log line, the audit trail or a WebSocket event | `tests/test_redaction.py` (with non-empty log fixtures) |
-| `/api/pull` is reachable from one module only; `model_puller.start()` from one endpoint only | `tests/test_local_ai_models.py` (AST walk over `app/`) |
-| The API binds to `127.0.0.1` only | `tests/test_api.py` |
-| No ElevenLabs request is made in any test, ever | `tests/test_elevenlabs.py` (every call mocked; the real host is never contacted) |
+| A credential-shaped memory is refused before any database write | `tests/test_secret_guard.py::test_the_guard_runs_before_the_privacy_check` |
+| The database layer refuses even when called directly, and no rejected secret leaves a byte behind | `…::test_the_database_layer_refuses_even_when_called_directly`, `…::test_no_rejected_secret_leaves_a_single_byte_in_the_database` |
+| There is exactly one place a memory row can be created | `…::test_the_database_layer_is_the_only_place_memory_rows_are_created` |
+| Tool inputs are redacted before a log line, the audit trail or a WebSocket event | `tests/test_redaction.py`, `tests/test_audit_and_log_redaction.py` (non-empty log fixtures, pinned level) |
+| `/api/pull` is reachable from one module only; `model_puller.start()` from one endpoint only | `tests/test_local_ai.py` (AST walk over every module in `app/`) |
+| The API binds to `127.0.0.1` only, and no mutating endpoint is unprotected | `tests/test_security_invariants.py` |
+| Only processes provably descended from a JARVIS this launcher started are ever terminated | `tests/test_launcher_process_tree.py` |
+| No ElevenLabs request is made in any test, ever | `tests/test_elevenlabs.py` (every call through a mock transport; the real host is never contacted) |
+| Cloud audio never reaches the disk | `tests/test_elevenlabs.py::test_cloud_audio_never_reaches_the_disk` |
 
 ---
 
