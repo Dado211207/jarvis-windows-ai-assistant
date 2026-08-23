@@ -56,8 +56,8 @@
     "project_id": "0fe86eaa2c94",
     "request": "add a footer",
     "created_at": 1787492381.3651896,
-    "state": "awaiting_plan_approval",
-    "updated_at": 1787492381.4048407,
+    "state": "interrupted",
+    "updated_at": 1787494390.4129775,
     "plan": {
       "task_id": "c4c85ab2e14c451c",
       "objective": "add a footer",

@@ -162,3 +162,79 @@ def test_delete_always_requires_approval():
     capability = registry.get("delete_file")
     assert capability is not None
     assert capability.always_requires_approval is True
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle: nothing outlives the server
+# ---------------------------------------------------------------------------
+
+def test_shutdown_ends_every_process_coding_workspace_owns(tmp_path):
+    """A dev server that outlives JARVIS holds its port and its file
+    handles, and the user has no way left to stop it."""
+    import sys
+    import time
+
+    import psutil
+    from fastapi.testclient import TestClient
+
+    from app.api.server import create_app
+    from app.coding.runner import CommandHandle, build_environment, ledger
+
+    handle = CommandHandle(
+        [sys.executable, "-c", "import time\nwhile True: time.sleep(0.2)"],
+        tmp_path, "project")
+    handle.start(build_environment())
+    ledger.track(handle)
+    pid = handle.pid
+
+    with TestClient(create_app()) as client:
+        client.get("/health")
+    # Leaving the context manager runs the shutdown half of the lifespan.
+
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        try:
+            process = psutil.Process(pid)
+            if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                break
+        except psutil.NoSuchProcess:
+            break
+        time.sleep(0.1)
+    else:
+        ledger.stop_all("test cleanup")
+        pytest.fail(f"a coding process (pid {pid}) survived server shutdown")
+
+
+def test_startup_reclassifies_a_task_that_was_running_when_the_process_died(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api.server import create_app
+    from app.coding import tasks
+
+    monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
+    record = tasks.create("p1", "a long task")
+    tasks.set_state(record, tasks.TaskState.RUNNING)
+
+    with TestClient(create_app()) as client:
+        client.get("/health")
+
+    assert tasks.get(record.id).state == tasks.TaskState.INTERRUPTED.value
+
+
+def test_an_interrupted_task_is_offered_not_resumed(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.api.server import create_app
+    from app.coding import sessions, tasks
+
+    monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
+    record = tasks.create("p1", "a long task")
+    tasks.set_state(record, tasks.TaskState.RUNNING)
+
+    with TestClient(create_app()) as client:
+        client.get("/health")
+        listed = client.get("/coding/tasks").json()
+        assert record.id in listed["interrupted"]
+        # Nothing is running: it was reported, not restarted.
+        assert sessions.live_ids() == []
+        assert client.get(f"/coding/tasks/{record.id}/live").json()["live"] is False

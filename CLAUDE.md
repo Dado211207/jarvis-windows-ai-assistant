@@ -69,6 +69,71 @@ how Claude Code sessions should work on this codebase.
   `POST /command` could not reach, and the approval gate applies
   identically.
 
+## Coding Workspace rules (non-negotiable)
+
+Coding Workspace is a **separate, explicitly-entered mode** for working on
+the user's own code projects. See `docs/coding-workspace-architecture.md`
+for the trust boundaries and `docs/desktop-capability-roadmap.md` for what
+was deliberately left out.
+
+- **The ordinary assistant gains nothing from its existence.** Coding
+  capabilities live in `app/coding/registry.py`, are never added to
+  `app.core.tool_registry.registry`, and are not reachable through
+  `router.find_route()`. `tests/test_coding_isolation.py` asserts both,
+  plus an AST walk proving no module under `app/coding/` imports the
+  global registry. Off until the user adds a project.
+- **`app/coding/workspace.py` is the only way a path enters the feature.**
+  It re-canonicalises the root on every call, compares component-wise
+  rather than by string prefix (`/a/b-evil` is not inside `/a/b`), and
+  refuses link escapes, device paths, alternate data streams, reserved
+  device names and UNC. A second path-checking routine anywhere is a
+  defect — that is how `canonical_root()` and `resolve()` drifted apart
+  once already.
+- **A protected file is never read, and the check runs before the read.**
+  The list is `PROTECTED_FILENAMES/SUFFIXES/DIR_COMPONENTS/PATTERNS`, and
+  `protected_summary()` is what the UI renders, so the page cannot
+  describe a protection the code does not enforce. No secret value may
+  reach model context, a log, a diff, a screenshot or a task record.
+- **The model never executes anything.** A provider returns a string; it
+  is parsed and validated against `app/coding/schema.py`'s closed,
+  discriminated union with `extra="forbid"` before anything looks at it.
+  An invented tool name and a `skip_approval` field are both validation
+  errors. The injection defence is structural, not semantic — do not
+  replace it with prompt wording.
+- **Repository content is untrusted, including `package.json`.** A
+  project's declared script is AUTO only after its *body* is screened for
+  blocked programs, and an entry whose body cannot be read fails closed.
+  A repository does not get to write its own permission slip.
+- **`shell=True` never, and no command line is ever built.** argv only.
+  `BLOCKED_PROGRAMS` is refused at every approval level; a user cannot
+  approve `powershell`. Install commands disclose the registry, and
+  report licence and size as unknown rather than querying the registry to
+  find out — that would be a network request made because the user is
+  being asked whether to permit one.
+- **Every child gets an allowlisted environment**, so no `npm install`
+  postinstall script ever sees `ANTHROPIC_API_KEY`. A key that is dropped
+  is logged, never silently discarded.
+- **No Git verb that can destroy work.** No `reset --hard`, no forced
+  checkout, no `clean`, no history rewrite, no push, no branch deletion,
+  no remote change. Isolation is a worktree on a task branch; if that is
+  not safe, JARVIS stops and explains rather than continuing, and working
+  in place is an explicit choice the user makes, never a default.
+- **The user's own changes are recorded before anything starts** and are
+  labelled as theirs in every diff. Undo checks each file against the
+  hash JARVIS last wrote and skips one the user has edited since.
+- **A preview is loopback-only, owned, and truthfully reported.**
+  "Running" means the owned process is alive *and* the endpoint answers.
+  A port somebody else is using is neither adopted nor killed.
+- **"Not checked" is never reported as zero.** A browser check that did
+  not run reports `None` and says why. Writing `0` after looking at
+  nothing is the defect `browser_qa.py` exists to prevent.
+- **Nothing is pushed, merged, deployed or cloned in this version**, and
+  `GET /coding/status` publishes that list rather than leaving it implied.
+- **No test may reach a package registry or a real service.**
+  `tests/test_coding_agent.py` carries an autouse guard that turns an
+  accidental `npm install` into a failure — it was added because one
+  actually happened.
+
 ## Preferences store rules (non-negotiable)
 
 - **`app/core/preferences.py` is an allowlist, not a settings store.**
@@ -549,6 +614,19 @@ should be built on top of; see `docs/audit-v0.2.md` and
 > media device) remain deferred — see `docs/audit-v0.2.md`,
 > `docs/THREAT_MODEL.md`, and the PR description for the exact scope and
 > honest gaps.
+
+> **Coding Workspace** (infrastructure, not a numbered phase): a separate
+> explicitly-entered mode for working on the user's own code projects —
+> containment boundary, protected-path engine, patch-based editing with
+> stale-base detection, a three-tier command policy, process-tree
+> ownership, Git worktree isolation that never touches uncommitted work,
+> a closed proposal schema as the prompt-injection defence, a loopback
+> preview with real browser checks, and its own page. Pushing, pull
+> requests, merging, deployment, remote cloning and general web browsing
+> are all deliberately excluded — see `docs/desktop-capability-roadmap.md`
+> for each one's reason. Browser checks need Playwright, which the
+> packaged build does not carry; it reports that rather than reporting
+> zero problems.
 
 > **Desktop release-candidate pass** (also not a numbered phase, and
 > deliberately using its own numbering in the PR): the packaged Windows

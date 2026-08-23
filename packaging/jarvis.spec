@@ -17,7 +17,7 @@ stays gitignored.
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 repo_root = Path(SPECPATH).resolve().parent  # packaging/jarvis.spec -> repo root
@@ -38,6 +38,16 @@ hidden_imports = [
     "comtypes.client",
     "keyring.backends.Windows",
 ]
+
+# Coding Workspace. Most of app/coding is reached through imports written
+# inside functions — `from app.coding import templates` sits in the route
+# that scaffolds a project, not at module scope — so that the ordinary
+# assistant never pays to import a module it will not use. PyInstaller's
+# analysis does follow function-level imports, but the cost of it missing
+# one is a page that works in a source checkout and fails only in the
+# installed .exe, which is the most expensive place to find out. Naming
+# the package outright removes the question.
+hidden_imports += collect_submodules("app.coding")
 
 # webview/pythonnet (native desktop window, release-candidate packaging
 # pass — see app/launcher/webview_window.py and

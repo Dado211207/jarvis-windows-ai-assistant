@@ -34,10 +34,31 @@ async def lifespan(app: FastAPI):
     if runtime.state == RuntimeState.BOOTING:
         runtime.transition(RuntimeState.STANDBY, reason="startup complete")
 
+    # A coding task recorded as RUNNING cannot be running: nothing
+    # survived the restart. Reclassify it as interrupted so the page
+    # offers inspect/archive/undo instead of a spinner over a task that
+    # stopped existing. Deliberately never resumed — re-running a command
+    # whose outcome nobody observed is how a half-finished install
+    # becomes two.
+    try:
+        from app.coding import tasks as coding_tasks
+        coding_tasks.mark_interrupted_on_startup()
+    except Exception:  # noqa: BLE001 — optional data is not worth a failed start
+        logger.warning("Could not reconcile interrupted coding tasks.", exc_info=True)
+
     yield
 
     from app.voice.tts import tts_service
     tts_service.stop()  # release any in-progress speech before the process exits
+
+    # Every process Coding Workspace owns — commands and previews — ends
+    # with the server. A dev server that outlives JARVIS holds its port
+    # and its file handles, and the user has no way left to stop it.
+    try:
+        from app.coding import sessions as coding_sessions
+        coding_sessions.stop_all("server shutting down")
+    except Exception:  # noqa: BLE001 — shutdown must complete regardless
+        logger.warning("Coding Workspace cleanup failed during shutdown.", exc_info=True)
 
     runtime.try_transition(RuntimeState.OFFLINE, reason="shutdown")
     logger.info("JARVIS API shutting down.")
