@@ -188,39 +188,56 @@ def test_the_structure_check_finds_the_planted_defects():
 # Browser checks
 # ---------------------------------------------------------------------------
 
-def test_availability_is_reported_with_a_reason_when_it_is_false(monkeypatch, tmp_path):
-    """Two different absences, two different reasons.
+class _FakeSession:
+    """A preview that is up and owned, without a real process behind it."""
 
-    Which one applies depends on the machine: a Windows CI runner has no
-    Playwright package at all, a Linux dev box has the package but may
-    have no browser. Both are legitimate, and both must name the thing
-    that is missing and what would provide it — that is the property
-    under test, not which of the two it happens to be.
+    def __init__(self, port: int = 9999) -> None:
+        self.state = preview.PreviewState(
+            running=True, port=port, url=f"http://127.0.0.1:{port}/")
+
+    def verify_ownership(self):
+        return True, ""
+
+
+def _no_engine(monkeypatch):
+    """Make this machine look like one with no Chromium at all."""
+    from app.coding import browser_engine
+
+    monkeypatch.setattr(browser_engine, "find_engine", lambda: None)
+    monkeypatch.setattr(browser_qa.browser_engine, "find_engine", lambda: None)
+
+
+def test_availability_is_reported_with_a_reason_when_it_is_false(monkeypatch):
+    """No engine names what is missing *and* the step that provides it.
+
+    The reason differs by platform — on Windows it is Edge or the
+    WebView2 Runtime, elsewhere it is Chromium — and which one applies is
+    not the property under test. That both are named, and that neither
+    tells the user to install a developer tool they should not need, is.
     """
-    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "nothing-here"))
+    _no_engine(monkeypatch)
     result = browser_qa.availability()
     assert result.available is False
-    reason = result.reason.lower()
-    assert "playwright" in reason, reason
-    assert "chromium" in reason or "does not include" in reason, reason
+    assert result.reason
+    from app.coding import browser_engine
+
+    assert browser_engine.unavailable_fix()
 
 
-def test_an_unavailable_browser_reports_not_checked_never_zero(monkeypatch, tmp_path):
+def test_an_unavailable_browser_reports_not_checked_never_zero(monkeypatch):
     """The defect this replaces wrote `console_errors = 0` after looking
     at nothing. On screen, that is a clean page."""
-    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "nothing-here"))
+    _no_engine(monkeypatch)
 
-    class FakeSession:
-        class _S:
-            running = True
-            port = 9999
-        state = _S()
-
-    findings = browser_qa.run_checks(FakeSession(), "/", task_id="t")
+    findings = browser_qa.run_checks(_FakeSession(), "/", task_id="t")
     assert findings.available is False
     assert findings.console_errors is None
     assert findings.failed_requests is None
-    assert "not run" in findings.summary().lower()
+    assert findings.state.value == "engine_unavailable"
+    # And the one-line summary names the state rather than reading like a
+    # result: no counts, no "0 console errors".
+    assert findings.state.headline in findings.summary()
+    assert "0 console error" not in findings.summary()
 
 
 def test_a_fresh_preview_state_has_not_been_browser_checked():
@@ -410,38 +427,53 @@ def test_a_browser_check_works_from_a_thread_that_has_an_event_loop(served):
     assert findings.http_status == 200
 
 
-def test_a_browser_failure_reason_names_the_problem_not_just_the_type(monkeypatch):
-    """`type(exc).__name__` is `Error` for nearly every Playwright
-    failure, so the message it produced — "could not complete (Error)" —
-    told the user nothing they could act on. Playwright writes its own
-    first line, and it names the real problem."""
-    class FakeSession:
-        class _S:
-            running = True
-            port = 4321
-        state = _S()
+def test_a_browser_that_will_not_start_reports_the_engine_not_a_page_failure(monkeypatch):
+    """An engine that is present but unlaunchable is an engine problem.
 
-    monkeypatch.setattr(browser_qa, "availability",
-                        lambda: browser_qa.BrowserAvailability(True))
+    Reporting it as a failed check would tell the user their page is
+    broken when the truth is that their browser installation is, and
+    would send them to look in the wrong place.
+    """
+    from app.coding import browser_engine
 
-    class PlaywrightShapedError(Exception):
-        pass
+    monkeypatch.setattr(
+        browser_qa.browser_engine, "find_engine",
+        lambda: browser_engine.Engine("edge", "Microsoft Edge",
+                                      "/nowhere/msedge.exe", "1.2.3"))
 
-    def explode():
-        raise PlaywrightShapedError(
-            "Executable doesn't exist at /nowhere/chrome\nTry playwright install")
+    def refuse(self):
+        raise FileNotFoundError("/nowhere/msedge.exe")
 
-    class FakeModule:
-        @staticmethod
-        def sync_playwright():
-            explode()
+    monkeypatch.setattr(browser_qa._OwnedBrowser, "start", refuse)
 
-    monkeypatch.setitem(__import__("sys").modules, "playwright.sync_api", FakeModule)
-
-    findings = browser_qa.run_checks(FakeSession(), "/", task_id="t")
+    findings = browser_qa.run_checks(_FakeSession(4321), "/", task_id="t")
+    assert findings.state.value == "engine_unavailable"
     assert findings.available is False
-    assert "Executable doesn't exist" in findings.reason
-    assert "\n" not in findings.reason, "only the first line may be shown"
+    assert findings.console_errors is None
+    assert findings.fix, "an unavailable engine must name the step that fixes it"
+    assert len(findings.reason) < 300
+    assert "\n" not in findings.reason
+
+
+def test_a_browser_failure_reason_never_carries_a_stack_or_a_path(monkeypatch):
+    """The message a user reads is one bounded line with no filesystem
+    path in it: a full Windows path contains the account name."""
+    from app.coding import browser_engine
+
+    monkeypatch.setattr(
+        browser_qa.browser_engine, "find_engine",
+        lambda: browser_engine.Engine("edge", "Microsoft Edge",
+                                      r"C:\Users\someone\msedge.exe"))
+
+    def explode(self):
+        raise RuntimeError("boom\n  File \"C:\\Users\\someone\\thing.py\", line 3")
+
+    monkeypatch.setattr(browser_qa._OwnedBrowser, "start", explode)
+
+    findings = browser_qa.run_checks(_FakeSession(4321), "/", task_id="t")
+    assert findings.available is False
+    assert "someone" not in findings.reason
+    assert "\n" not in findings.reason
     assert len(findings.reason) < 300
 
 

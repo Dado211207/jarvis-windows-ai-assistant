@@ -691,21 +691,202 @@
       container.appendChild(make("p", "form-error", preview.last_error));
     }
 
-    const checked = preview.browser_checked;
-    container.appendChild(make("p", "text-sm",
-      checked
-        ? `Browser check: ${preview.console_errors} console error(s), ` +
-          `${preview.failed_requests} failed request(s).`
-        : "Browser check: not run in this build, so nothing is claimed about " +
-          "console errors or failed requests."));
+    container.appendChild(browserCheckNode(preview.browser));
+  }
 
-    if (preview.screenshot) {
-      const image = document.createElement("img");
-      image.src = `/coding/screenshots/${encodeURIComponent(preview.screenshot)}`;
-      image.alt = "Screenshot of the preview page taken during the last browser check.";
-      image.className = "preview-shot";
-      container.appendChild(image);
+  // ---------------------------------------------------- browser check
+
+  // What each of the seven states means, in words a person can act on.
+  // The version this replaces had two — findings, or "not available" —
+  // so a timeout, a refused navigation, a machine with no browser and a
+  // cancelled check all rendered identically.
+  const QA_STATES = {
+    passed:               {badge: "ok",   label: "Passed"},
+    failed:               {badge: "warn", label: "Failed"},
+    blocked:              {badge: "warn", label: "Blocked by security policy"},
+    timed_out:            {badge: "warn", label: "Timed out"},
+    engine_unavailable:   {badge: "muted", label: "Browser engine unavailable"},
+    preview_unavailable:  {badge: "muted", label: "Preview unavailable"},
+    cancelled:            {badge: "muted", label: "Cancelled"},
+  };
+
+  // `null` means nothing looked; `0` means something looked and found
+  // none. Rendering both as "0" is the defect this whole subsystem exists
+  // to avoid, so the two never share a code path.
+  function count(value, singular, plural) {
+    if (value === null || value === undefined) return `${singular}: not checked`;
+    return `${value} ${value === 1 ? singular : (plural || singular + "s")}`;
+  }
+
+  function row(list, label, value) {
+    const item = make("li");
+    item.appendChild(make("span", "kv-key", label));
+    item.appendChild(make("span", "kv-value", value));
+    list.appendChild(item);
+  }
+
+  function browserCheckNode(qa) {
+    const box = make("div", "qa-block");
+    box.appendChild(make("h3", "card-title", "Browser check"));
+
+    if (!qa) {
+      box.appendChild(make("p", "empty",
+        "No browser check has run for this preview yet. Nothing is claimed " +
+        "about console errors, failed requests or layout."));
+      return box;
     }
+
+    const state = QA_STATES[qa.state] || {badge: "muted", label: qa.headline || "Unknown"};
+    const header = make("p");
+    header.appendChild(make("span", `badge badge-${state.badge}`, state.label));
+    if (qa.engine) {
+      header.appendChild(make("span", "text-sm text-muted",
+        ` ${qa.engine}${qa.engine_version ? " " + qa.engine_version : ""}`));
+    }
+    box.appendChild(header);
+
+    if (qa.reason) box.appendChild(make("p", "text-sm", qa.reason));
+    if (qa.fix) box.appendChild(make("p", "text-sm text-muted", qa.fix));
+
+    // `opened` is the server's record that a browser actually loaded the
+    // page. Gating on it rather than on the state name matters: a check
+    // that fell over before launching is also "failed", and it has no
+    // findings. Inventing rows of zeroes for it is what must not happen.
+    if (!qa.opened) {
+      if (qa.blocked_origins && qa.blocked_origins.length) {
+        box.appendChild(blockedNode(qa.blocked_origins));
+      }
+      return box;
+    }
+
+    const list = make("ul", "kv-list");
+    row(list, "Route", qa.route || "/");
+    row(list, "HTTP status", qa.http_status === null ? "not checked" : String(qa.http_status));
+    row(list, "Title", qa.title || "(none)");
+    row(list, "Language", qa.lang || "(not declared)");
+    row(list, "Top-level headings", count(qa.h1_count, "<h1> element"));
+    row(list, "Console errors", count(qa.console_errors, "error"));
+    row(list, "Page errors", count(qa.page_errors, "uncaught error"));
+    row(list, "Failed requests", count(qa.failed_requests, "request"));
+    row(list, "Broken images", count(qa.broken_images, "image"));
+    row(list, "Accessibility", count(qa.accessibility_findings, "finding"));
+    row(list, "Duration", `${qa.duration_seconds}s`);
+    if (qa.checked_at) {
+      row(list, "Checked at", new Date(qa.checked_at * 1000).toLocaleString());
+    }
+    box.appendChild(list);
+
+    if (qa.truncated) {
+      box.appendChild(make("p", "text-sm text-muted",
+        "There was more output than JARVIS keeps. The counts above are complete; " +
+        "the examples below are the first few."));
+    }
+
+    detailList(box, "Console errors", qa.console_messages);
+    detailList(box, "Uncaught page errors", qa.page_error_messages);
+    detailList(box, "Failed requests", (qa.failed_request_details || [])
+      .concat(qa.http_error_details || []));
+    detailList(box, "Broken images", qa.broken_image_details);
+
+    if (qa.accessibility_details && qa.accessibility_details.length) {
+      box.appendChild(make("h4", "card-subtitle", "Accessibility findings"));
+      const ul = make("ul", "plain-list text-sm");
+      qa.accessibility_details.forEach(f => {
+        const li = make("li");
+        li.appendChild(make("code", null, f.rule));
+        li.appendChild(make("span", null, ` — ${f.detail}`));
+        ul.appendChild(li);
+      });
+      box.appendChild(ul);
+    }
+    if (qa.accessibility_rules && qa.accessibility_rules.length) {
+      const details = document.createElement("details");
+      details.className = "text-sm";
+      const summary = document.createElement("summary");
+      // So "0 findings" can be read for what it is: nine structural rules
+      // passed, not a full accessibility audit passed.
+      summary.textContent =
+        `What this checks (${qa.accessibility_rules.length} rules, not a full audit)`;
+      details.appendChild(summary);
+      const ul = make("ul", "plain-list");
+      qa.accessibility_rules.forEach(r =>
+        ul.appendChild(make("li", null, `${r.rule} — ${r.description}`)));
+      details.appendChild(ul);
+      box.appendChild(details);
+    }
+
+    if (qa.horizontal_overflow) {
+      box.appendChild(make("h4", "card-subtitle", "Horizontal overflow by width"));
+      const ul = make("ul", "plain-list text-sm");
+      Object.keys(qa.horizontal_overflow).forEach(width => {
+        const v = qa.horizontal_overflow[width];
+        const li = make("li", null,
+          `${width}px — ${v.overflows
+            ? `overflows (content ${v.scroll_width}px in ${v.client_width}px)`
+            : "no overflow"}`);
+        if (v.overflows && v.culprits && v.culprits.length) {
+          li.appendChild(make("span", "text-muted", ` · ${v.culprits.join(", ")}`));
+        }
+        ul.appendChild(li);
+      });
+      box.appendChild(ul);
+    }
+
+    if (qa.reduced_motion) {
+      box.appendChild(make("p", "text-sm",
+        qa.reduced_motion.respects_reduced_motion
+          ? "Reduced motion: respected — nothing animates when the system asks for less motion."
+          : `Reduced motion: ${qa.reduced_motion.still_animating} element(s) still animate` +
+            (qa.reduced_motion.examples && qa.reduced_motion.examples.length
+              ? ` (${qa.reduced_motion.examples.join(", ")})` : "") + "."));
+    }
+
+    if (qa.blocked_origins && qa.blocked_origins.length) {
+      box.appendChild(blockedNode(qa.blocked_origins));
+    }
+    if (qa.downloads_blocked) {
+      box.appendChild(make("p", "text-sm text-muted",
+        `${qa.downloads_blocked} download(s) the page started were refused.`));
+    }
+    if (qa.dialogs_dismissed) {
+      box.appendChild(make("p", "text-sm text-muted",
+        `${qa.dialogs_dismissed} dialog(s) the page opened were dismissed.`));
+    }
+    if (qa.scanned_all === false) {
+      box.appendChild(make("p", "text-sm text-muted",
+        "The page has more elements than JARVIS scans, so these findings cover " +
+        "part of it rather than all of it."));
+    }
+
+    if (qa.screenshot) {
+      const image = document.createElement("img");
+      image.src = `/coding/screenshots/${encodeURIComponent(qa.screenshot)}`;
+      image.alt = `Screenshot of ${qa.route || "the page"} taken during the browser check.`;
+      image.className = "preview-shot";
+      box.appendChild(image);
+    }
+    return box;
+  }
+
+  function blockedNode(entries) {
+    const wrap = make("div", "qa-blocked");
+    wrap.appendChild(make("h4", "card-subtitle",
+      "Requests JARVIS stopped from leaving this computer"));
+    wrap.appendChild(make("p", "text-sm text-muted",
+      "Browser checks only ever open this task's own preview on 127.0.0.1. " +
+      "Nothing below was fetched."));
+    const ul = make("ul", "plain-list text-sm");
+    entries.forEach(entry => ul.appendChild(make("li", null, entry)));
+    wrap.appendChild(ul);
+    return wrap;
+  }
+
+  function detailList(box, label, entries) {
+    if (!entries || !entries.length) return;
+    box.appendChild(make("h4", "card-subtitle", label));
+    const ul = make("ul", "plain-list text-sm");
+    entries.forEach(entry => ul.appendChild(make("li", null, entry)));
+    box.appendChild(ul);
   }
 
   // ------------------------------------------------------------- diff

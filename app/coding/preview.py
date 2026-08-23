@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.coding import limits, tasks
-from app.coding.runner import CommandHandle, build_environment, ledger
+from app.coding.runner import CommandHandle, _identity_for_pid, build_environment, ledger
 from app.logging_config import get_logger
 
 logger = get_logger("coding.preview")
@@ -96,6 +96,15 @@ class PreviewState:
     console_errors: Optional[int] = None
     failed_requests: Optional[int] = None
     browser_checked: bool = False
+    # Which of the seven browser-QA outcomes the last check reached. Empty
+    # until one has run — `browser_checked` alone could not distinguish a
+    # machine with no engine from a check that was cancelled.
+    browser_state: str = ""
+    browser_reason: str = ""
+    #: The whole of the last check, for the Preview panel to render. The
+    #: scalar fields above stay because task records written before this
+    #: existed carry them, and a stored record must not become unreadable.
+    browser: Optional[Dict[str, object]] = None
     screenshot: str = ""
 
     def as_dict(self) -> dict:
@@ -111,6 +120,9 @@ class PreviewState:
             "console_errors": self.console_errors,
             "failed_requests": self.failed_requests,
             "browser_checked": self.browser_checked,
+            "browser_state": self.browser_state,
+            "browser_reason": self.browser_reason,
+            "browser": self.browser,
             "screenshot": self.screenshot,
             "bound_to": LOOPBACK,
         }
@@ -145,6 +157,49 @@ class PreviewSession:
             self._state.running = bool(port and port_in_use(port))
             if not self._state.running and not self._state.last_error:
                 self._state.last_error = "The preview process is running but not answering yet."
+
+    def verify_ownership(self) -> tuple:
+        """Prove this session's process is still the one JARVIS started.
+
+        Returns `(ok, reason)`. Browser QA calls this immediately before it
+        navigates, because "the port answers" is not the same claim as
+        "the process we started is answering". Windows recycles PIDs, and
+        a preview that died and left its port to something else would
+        otherwise be checked as though it were ours — JARVIS would open a
+        stranger's application, screenshot it, and file the findings
+        against the user's project.
+
+        The comparison is a `ProcessIdentity` — PID *plus* creation time —
+        the same rule `app/launcher/process_tree.py` applies to anything it
+        signals.
+        """
+        with self._lock:
+            handle = self._handle
+            port = self._state.port
+        if handle is None or handle._process is None:
+            return False, "No preview process belongs to this task."
+        if handle._process.poll() is not None:
+            return False, "The preview process has exited."
+        if not port:
+            return False, "The preview has no port."
+
+        expected = handle._own
+        if expected is None or not expected.is_verifiable:
+            # psutil absent, or the process was not inspectable when it
+            # started. Unverifiable is not the same as wrong: the Popen
+            # object is still a live handle to the child we launched, so
+            # ownership holds even though the stronger check cannot run.
+            return True, "identity not verifiable on this machine"
+
+        current = _identity_for_pid(handle._process.pid)
+        if current is None:
+            return False, "The preview process could not be inspected."
+        if not expected.matches(current.create_time):
+            return False, (
+                "The process on the preview's PID is not the one JARVIS started "
+                "(the PID has been reused)."
+            )
+        return True, ""
 
     def start(self, root: Path, argv: List[str], script: str) -> PreviewState:
         if self.state.running:
@@ -316,10 +371,16 @@ def handle(context, proposal):
     # that never ran.
     from app.coding import browser_qa
 
-    findings = browser_qa.run_checks(session, proposal.route, task_id=context.task_id)
+    findings = browser_qa.run_checks(
+        session, proposal.route, task_id=context.task_id,
+        cancel=getattr(context, "cancel", None),
+    )
     session._state.console_errors = findings.console_errors
     session._state.failed_requests = findings.failed_requests
     session._state.browser_checked = findings.available
+    session._state.browser_state = findings.state.value
+    session._state.browser_reason = findings.reason
+    session._state.browser = findings.as_dict()
     session._state.screenshot = findings.screenshot
 
     summary = (
