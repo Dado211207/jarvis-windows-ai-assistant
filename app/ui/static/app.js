@@ -1612,6 +1612,11 @@ async function testMicrophone() {
   try {
     diagLevelStream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (e) {
+    // Releases CLAP_REASON.MIC_TEST as well as tidying up. Returning
+    // without this left the clap listener suspended until the page was
+    // closed — a microphone that could not be opened for a five-second
+    // level test is no reason to stop listening for claps for good.
+    stopMicrophoneTest();
     if (button) button.disabled = false;
     // Name the actual cause: a denied prompt and an absent device need
     // different things from the user.

@@ -254,6 +254,20 @@ INSTRUMENT = r"""
     return n;
   };
 
+  // Refuse the microphone to everything on the page except the clap
+  // listener. That is how a test can fail the diagnostics level meter
+  // without also failing the listener's own restart, which is the thing
+  // being measured.
+  window.__denyNonClapMicrophone = function () {
+    const real = md.getUserMedia.bind(md);
+    md.getUserMedia = function () {
+      if (fromController()) return real.apply(md, arguments);
+      const err = new Error("Permission denied");
+      err.name = "NotAllowedError";
+      return Promise.reject(err);
+    };
+  };
+
   // Make one microphone vanish from enumerateDevices without unplugging
   // anything — the software half of pulling a USB microphone out.
   window.__hideDevice = function (id) {
@@ -791,6 +805,31 @@ def test_push_to_talk_suspends_and_releases_the_clap_listener(voice_page):
     assert session.settled() == (0, 0, 0), "the clap listener held the microphone during push-to-talk"
 
     session.page.evaluate("setPttState(PTT_STATE.IDLE)")
+    wait_for(session, "clapListening() === true", timeout=15.0)
+    assert session.live() == 1
+
+
+def test_a_failed_microphone_test_still_releases_the_clap_listener(voice_page):
+    """The diagnostics level meter takes the microphone for a few seconds.
+
+    When it cannot open one at all, it still has to give the clap
+    listener back. Before this test the denied-permission path returned
+    early without releasing its reason, and the listener stayed suspended
+    until the page was closed — a five-second level test that failed was
+    no reason to stop listening for claps for good.
+    """
+    session = voice_page()
+    session.page.evaluate("__denyNonClapMicrophone()")
+
+    session.page.click("#diag-test-mic")
+    session.page.wait_for_function(
+        "document.getElementById('diag-test-message').textContent.indexOf('denied') !== -1",
+        timeout=15000,
+    )
+
+    assert session.page.evaluate("ClapController.suspendedBy()") == [], (
+        "the microphone test kept its suspension after failing"
+    )
     wait_for(session, "clapListening() === true", timeout=15.0)
     assert session.live() == 1
 
