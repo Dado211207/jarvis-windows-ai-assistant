@@ -55,6 +55,20 @@ class TaskIdRequest(BaseModel):
     task_id: str = Field(min_length=1, max_length=64)
 
 
+class StartApprovedTaskRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=64)
+    # Deliberately separate, and deliberately defaulting to False: §6 of
+    # the brief requires that when isolation is not safe JARVIS stops and
+    # explains rather than continuing. Working in the user's own folder
+    # has to be something they chose, not something that happened.
+    allow_in_place: bool = False
+
+
+class ApprovalDecisionRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=64)
+    granted: bool
+
+
 def _safe_failure(exc: Exception, context: str) -> HTTPException:
     """Never return raw exception text — the existing invariant test
     checks for this across every endpoint."""
@@ -363,55 +377,30 @@ async def plan_coding_task(body: StartTaskRequest) -> dict:
 def _provider_disclosure(privacy_active: bool) -> dict:
     """What the user is told before any project content moves.
 
+    Asks `loop.resolve_provider()` — the same call the task itself makes
+    — rather than reading preferences and describing what they imply.
+    An earlier version did the latter, which meant the plan could say
+    "Anthropic, content leaves your device" while the task then ran on
+    Ollama, or vice versa. A disclosure that is computed separately from
+    the thing it discloses is a disclosure that can be wrong.
+
     Never claims a small local model is up to a large change — the
     `capability_note` says so in plain words rather than letting the
     absence of a warning imply competence.
     """
-    from app.core.preferences import load as load_preferences
+    from app.coding import loop
 
-    preferences = load_preferences()
-    provider = preferences.get("ai_provider", "anthropic")
-    model = preferences.get("ollama_model", "")
-
-    if privacy_active:
-        return {
-            "provider": "blocked",
-            "location": "none",
-            "content_leaves_device": False,
-            "note": (
-                "Privacy mode is on. JARVIS will not send any project content to a "
-                "cloud model. Switch to a local provider, or turn privacy mode off, "
-                "to run a coding task."
-            ),
-            "blocked": True,
-        }
-
-    if provider == "ollama":
-        return {
-            "provider": "ollama",
-            "model": model or "(none selected)",
-            "location": "local",
-            "content_leaves_device": False,
-            "note": "Project content stays on this machine.",
-            "capability_note": (
-                "A small local model may not reliably complete a large or subtle "
-                "repository change. JARVIS will report what it could not finish "
-                "rather than claim success."
-            ),
-            "blocked": False,
-        }
-
-    return {
-        "provider": "anthropic",
-        "location": "cloud",
-        "content_leaves_device": True,
-        "note": (
-            "Selected file contents from this project will be sent to Anthropic to "
-            "complete the task. Protected files (.env, keys, certificates, .git "
-            "internals) are never included."
-        ),
-        "blocked": False,
-    }
+    _, choice = loop.resolve_provider()
+    payload = choice.as_dict()
+    payload["blocked"] = not choice.ready
+    payload["note"] = payload.pop("privacy_note", "")
+    if privacy_active and choice.is_cloud:
+        payload["note"] = (
+            "Privacy mode is on. JARVIS will not send any project content to a "
+            "cloud model. Switch to a local provider, or turn privacy mode off, "
+            "to run a coding task."
+        )
+    return payload
 
 
 @router.post("/tasks/stop", dependencies=[Depends(require_session_token)])
@@ -438,3 +427,170 @@ async def stop_all_processes() -> dict:
     owns, right now."""
     reports = ledger.stop_all("user requested stop-all")
     return {"stopped": len(reports), "reports": reports}
+
+
+# --------------------------------------------------------------------------
+# Running a task
+# --------------------------------------------------------------------------
+
+@router.post("/tasks/start", dependencies=[Depends(require_session_token)])
+async def start_coding_task(body: StartApprovedTaskRequest) -> dict:
+    """Approve the plan and begin.
+
+    Returns as soon as the task is running, not when it finishes: a
+    coding task takes minutes, and a request the window cannot cancel is
+    a window that appears to have hung.
+    """
+    from app.coding import service
+
+    try:
+        return service.start_task(body.task_id, allow_in_place=body.allow_in_place)
+    except service.StartRefused as exc:
+        raise HTTPException(status_code=409, detail=exc.reason,
+                            headers=None) from None
+    except Exception as exc:  # noqa: BLE001
+        raise _safe_failure(exc, "start coding task") from None
+
+
+@router.post("/tasks/decide", dependencies=[Depends(require_session_token)])
+async def decide_coding_approval(body: ApprovalDecisionRequest) -> dict:
+    """Approve or decline what a running task is waiting on.
+
+    A grant is recorded against the exact argv or path that was shown.
+    Approving `npm install left-pad` does not approve `npm install`, and
+    does not carry into the next task.
+    """
+    from app.coding import service
+
+    try:
+        return service.decide(body.task_id, body.granted)
+    except service.StartRefused as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from None
+    except Exception as exc:  # noqa: BLE001
+        raise _safe_failure(exc, "record a coding approval") from None
+
+
+@router.get("/tasks/{task_id}/live")
+async def coding_task_live(task_id: str) -> dict:
+    """What is happening right now — from the live session, not the record.
+
+    A stored state of "running" survives a restart; a running task does
+    not. When there is no live session the answer is "not running", so
+    the page cannot show a spinner for a task that stopped existing.
+    """
+    from app.coding import service
+
+    return service.live_state(task_id)
+
+
+class CommitRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=500)
+    approved: bool = False
+
+
+@router.post("/tasks/commit", dependencies=[Depends(require_session_token)])
+async def commit_task_changes(body: CommitRequest) -> dict:
+    """Commit the task's own changes, locally, after explicit approval.
+
+    Nothing is pushed. There is no endpoint in this version that pushes,
+    opens a pull request, merges or deploys — see `GET /coding/status`'s
+    `disabled_in_this_version`.
+    """
+    record = tasks.get(body.task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No such task.")
+
+    root = Path(record.isolation.get("worktree_path") or "")
+    if not root.is_dir():
+        try:
+            root = projects.resolve_root(record.project_id)
+        except WorkspaceViolation as exc:
+            raise HTTPException(status_code=404, detail=exc.reason) from None
+
+    paths = [str(f.get("path")) for f in record.files_changed if f.get("path")]
+    if not paths:
+        raise HTTPException(status_code=400, detail="This task changed no files.")
+
+    proposal = gitsafe.build_commit_proposal(root, body.message, paths)
+    if not body.approved:
+        return {"committed": False, "proposal": proposal.as_dict(),
+                "message": "Nothing was committed. Approve the proposal to commit."}
+
+    committed, message = gitsafe.commit(root, proposal, approved=True)
+    tasks.append_step(record, "note", message, {"committed": committed}, ok=committed)
+    tasks.save(record)
+    return {"committed": committed, "message": message, "pushed": False}
+
+
+class UndoRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/tasks/undo", dependencies=[Depends(require_session_token)])
+async def undo_task_changes(body: UndoRequest) -> dict:
+    """Undo JARVIS's own uncommitted changes from this task, and nothing else.
+
+    Every file is checked against the hash JARVIS last wrote before it is
+    touched. A file the user has edited since does not match, and is left
+    exactly as it is — reported as skipped rather than reverted.
+    """
+    record = tasks.get(body.task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No such task.")
+
+    root = Path(record.isolation.get("worktree_path") or "")
+    if not root.is_dir():
+        try:
+            root = projects.resolve_root(record.project_id)
+        except WorkspaceViolation as exc:
+            raise HTTPException(status_code=404, detail=exc.reason) from None
+
+    paths = [str(f["path"]) for f in record.files_changed if f.get("path")]
+    expected = {str(f["path"]): f.get("after_sha256") for f in record.files_changed
+                if f.get("path")}
+    results = gitsafe.undo_task_edits(root, paths, expected)
+    reverted = [r for r in results if r.get("reverted")]
+    skipped = [r for r in results if not r.get("reverted")]
+    tasks.append_step(record, "note",
+                      f"Undid {len(reverted)} of JARVIS's own change(s).",
+                      {"reverted": len(reverted), "skipped": len(skipped)})
+    tasks.save(record)
+    return {
+        "reverted": reverted,
+        "skipped": skipped,
+        "message": (
+            f"{len(reverted)} file(s) put back. "
+            + (f"{len(skipped)} left alone because they changed after JARVIS wrote them."
+               if skipped else "")
+        ),
+    }
+
+
+@router.get("/screenshots/{name}")
+async def coding_screenshot(name: str):
+    """Serve one browser-check screenshot.
+
+    The name is matched against the directory listing rather than joined
+    onto a path, so there is no string a caller can supply that reaches a
+    file JARVIS did not write there.
+    """
+    from fastapi.responses import FileResponse
+
+    from app.coding import browser_qa
+
+    directory = browser_qa.screenshot_dir()
+    if directory is None:
+        raise HTTPException(status_code=404, detail="No screenshots are available.")
+    for candidate in directory.glob("*.png"):
+        if candidate.name == name:
+            return FileResponse(str(candidate), media_type="image/png")
+    raise HTTPException(status_code=404, detail="No such screenshot.")
+
+
+@router.get("/browser-check")
+async def browser_check_availability() -> dict:
+    """Whether real browser checks can run in this build."""
+    from app.coding import browser_qa
+
+    return browser_qa.availability().as_dict()

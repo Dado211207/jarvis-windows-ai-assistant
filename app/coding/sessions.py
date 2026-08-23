@@ -28,12 +28,12 @@ from app.logging_config import get_logger
 logger = get_logger("coding.sessions")
 
 _lock = threading.Lock()
-_live: Dict[str, object] = {}       # task_id -> TaskContext
+_live: Dict[str, object] = {}       # task_id -> TaskRunner
 
 
-def register(context) -> None:
+def register(runner) -> None:
     with _lock:
-        _live[context.task_id] = context
+        _live[runner.context.task_id] = runner
 
 
 def unregister(task_id: str) -> None:
@@ -53,15 +53,19 @@ def live_ids() -> List[str]:
 
 def stop(task_id: str) -> dict:
     """Stop one task completely."""
-    context = get(task_id)
-    if context is None:
+    runner = get(task_id)
+    if runner is None:
         return {
             "stopped": False,
             "reason": "That task is not running.",
             "processes_stopped": 0,
         }
 
-    context.stop_requested = True
+    # `request_stop` sets the flag the loop checks *and* cancels the model
+    # request in flight. Setting the flag alone would leave Stop waiting
+    # for however long the provider takes to finish answering.
+    context = runner.context
+    runner.request_stop()
 
     reports: List[dict] = []
     preview = getattr(context, "preview", None)
