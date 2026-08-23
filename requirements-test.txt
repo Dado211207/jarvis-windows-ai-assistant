@@ -8,5 +8,19 @@
 #   playwright install chromium
 #   pytest -m browser tests/test_playwright_e2e.py
 #
+# Chromium is the one that matters: JARVIS's own window is WebView2, so
+# Chromium is the engine the product actually runs in, and the clap suite
+# additionally needs Chromium's file-backed fake microphone
+# (--use-file-for-fake-audio-capture), which no other engine has.
+#
+# tests/test_playwright_e2e.py alone can also be run against WebKit as a
+# portability check, once its browser and system libraries are present:
+#
+#   playwright install webkit && playwright install-deps webkit
+#   JARVIS_TEST_BROWSER=webkit pytest -m browser tests/test_playwright_e2e.py
+#
+# Result on this branch: 103 passed, 1 skipped — the skip is the
+# push-to-talk test, whose fake capture device is a Chromium launch flag.
+#
 playwright>=1.48.0
 axe-playwright-python>=0.1.8

@@ -59,23 +59,42 @@ PAGES = ["/ui/", "/ui/chat", "/ui/actions", "/ui/logs", "/ui/memory", "/ui/voice
 def browser_instance(playwright_instance):
     """One browser for this suite. The Playwright driver itself is shared
     with tests/test_clap_detection.py via conftest — see the note there
-    for why it cannot be opened twice."""
+    for why it cannot be opened twice.
+
+    Chromium by default, because JARVIS's own window *is* Chromium: the
+    product runs in WebView2 and in nothing else. `JARVIS_TEST_BROWSER=
+    webkit` runs this suite against WebKit instead, which is a
+    portability check on the pages rather than a check on the product as
+    shipped. The clap suite has no such switch and cannot have one — it
+    presents a WAV file as a microphone, which only Chromium can do."""
+    import os
+
     from tests.conftest import chromium_executable_path
 
+    engine = os.environ.get("JARVIS_TEST_BROWSER", "chromium").strip().lower()
     try:
-        browser = playwright_instance.chromium.launch(
-            executable_path=chromium_executable_path(),
-            args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
-        )
+        if engine == "webkit":
+            browser = playwright_instance.webkit.launch()
+        else:
+            browser = playwright_instance.chromium.launch(
+                executable_path=chromium_executable_path(),
+                args=["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+            )
     except Exception as exc:
-        pytest.skip(f"chromium is not available — run `playwright install chromium` ({exc})")
+        pytest.skip(f"{engine} is not available — run `playwright install {engine}` ({exc})")
     yield browser
     browser.close()
 
 
 @pytest.fixture
 def page(live_server, browser_instance):
-    context = browser_instance.new_context(permissions=["microphone"])
+    # Only Chromium has a microphone permission to grant ahead of time;
+    # asking WebKit for one it does not implement fails the context, not
+    # the test it was meant to enable.
+    if browser_instance.browser_type.name == "chromium":
+        context = browser_instance.new_context(permissions=["microphone"])
+    else:
+        context = browser_instance.new_context()
     pg = context.new_page()
     pg.errors = []
     pg.on("pageerror", lambda exc: pg.errors.append(str(exc)))
@@ -704,7 +723,15 @@ def test_privacy_indicator_updates_live(page):
 # 14 & 15. Push-to-talk available vs. degraded state
 # ---------------------------------------------------------------------------
 
-def test_push_to_talk_available_with_fake_adapter(page):
+def test_push_to_talk_available_with_fake_adapter(page, browser_instance):
+    # Pressing the button opens a real capture stream, so this one needs a
+    # microphone the browser will hand over without a prompt. That is
+    # Chromium's --use-fake-device-for-media-stream and nothing else;
+    # WebKit has no equivalent, so under JARVIS_TEST_BROWSER=webkit the
+    # precondition is genuinely absent rather than the feature broken.
+    if browser_instance.browser_type.name != "chromium":
+        pytest.skip("a fake capture device is a Chromium-only launch flag")
+
     page.goto(url("/ui/chat"), wait_until="networkidle")
     page.wait_for_timeout(500)
     assert page.is_disabled("#ptt-button") is False

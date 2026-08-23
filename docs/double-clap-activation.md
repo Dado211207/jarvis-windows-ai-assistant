@@ -441,3 +441,43 @@ findings rather than noise:
 | `ReferenceError: setSharedMicrophone is not defined` | the selected-microphone tests | the dropdown moved nothing but the level meter |
 | `Page.click: Timeout 30000ms exceeded` | every calibration test | the buttons did not exist |
 | `KeyError: 'listener_state'` | the tray tests | the server had nothing to tell the tray |
+
+## 13. Which browsers this is tested in, and which one matters
+
+JARVIS's window is WebView2. WebView2 is Chromium. So Chromium is not
+one browser among several here — it is *the* browser the product runs
+in, and every claim in this document was measured there.
+
+Two of the three browser suites can only ever run in Chromium, and it is
+worth being precise about why rather than calling it a limitation:
+
+- `tests/test_clap_detection.py` plays synthesised claps, speech, a hum
+  and silence through the microphone. Presenting a WAV file as a capture
+  device is `--use-file-for-fake-audio-capture`, a Chromium launch flag
+  with no equivalent anywhere else. Without it there is no audio to
+  detect and the suite would be asserting against silence.
+- `tests/test_clap_controller.py` instruments `getUserMedia`, the
+  `AudioContext` and `AudioWorkletNode` constructors to count live
+  tracks, open contexts and connected nodes. That instrumentation is
+  portable, but the microphone it needs is not, for the same reason.
+
+`tests/test_playwright_e2e.py` — the page, navigation, WebSocket,
+approval and accessibility suite — has no such dependency, and it takes
+`JARVIS_TEST_BROWSER=webkit` as a portability check:
+
+```
+$ playwright install webkit && playwright install-deps webkit
+$ JARVIS_TEST_BROWSER=webkit pytest -m browser tests/test_playwright_e2e.py
+103 passed, 1 skipped
+```
+
+The skip is `test_push_to_talk_available_with_fake_adapter`, which opens
+a real capture stream and therefore needs the Chromium flag above. It
+skips with that reason rather than failing, because a missing capture
+device is an absent precondition, not a broken feature — and a test that
+reported "push-to-talk is broken" when the browser simply has no
+microphone to offer would be exactly the kind of accurate-sounding
+falsehood the rest of this document exists to avoid.
+
+WebKit is a portability signal, not a coverage requirement: nothing
+JARVIS ships ever renders in it.
