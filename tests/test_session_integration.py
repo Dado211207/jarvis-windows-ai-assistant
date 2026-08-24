@@ -154,9 +154,8 @@ def test_actions_cancel_requires_valid_token(raw_client):
     assert r.status_code == 403
 
 
-def test_get_endpoints_never_require_a_session_token(raw_client):
-    """Only state-changing endpoints are gated — GET requests need
-    nothing extra, exactly matching the requirement's scope."""
+def test_health_never_requires_a_session_token(raw_client):
+    """Health is the bootstrap that issues the token, so it must stay open."""
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
     with TestClient(jarvis_app, raise_server_exceptions=True) as fresh_client:
@@ -195,3 +194,116 @@ def test_session_token_never_appears_in_logs(raw_client, caplog):
 
     assert token not in caplog.text
     assert "wrong-token-value-xyz" not in caplog.text
+
+# --- Host validation and sensitive reads ---
+
+def _canonical_base_url() -> str:
+    from app.config import settings
+    return f"http://127.0.0.1:{settings.jarvis_port}"
+
+
+def test_dns_rebinding_host_is_rejected_before_cookie_issuance():
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+
+    with TestClient(jarvis_app, base_url=_canonical_base_url(), raise_server_exceptions=True) as client:
+        response = client.get(
+            "/health",
+            headers={"host": "attacker.example:5555"},
+        )
+
+    assert response.status_code == 400
+    assert "set-cookie" not in response.headers
+    assert COOKIE_NAME not in response.cookies
+
+
+def test_dns_rebinding_host_cannot_reach_a_sensitive_get_even_with_fabricated_tokens():
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+
+    guessed = "attacker-controlled-token"
+    with TestClient(jarvis_app, base_url=_canonical_base_url(), raise_server_exceptions=True) as client:
+        response = client.get(
+            "/logs",
+            headers={
+                "host": "attacker.example:5555",
+                "cookie": f"{COOKIE_NAME}={guessed}",
+                HEADER_NAME: guessed,
+            },
+        )
+
+    # Host validation runs before routing/session validation and must not
+    # refresh the attacker's cookie.
+    assert response.status_code == 400
+    assert "set-cookie" not in response.headers
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+def test_canonical_hosts_preserve_health_bootstrap(host):
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+    from app.config import settings
+
+    with TestClient(jarvis_app, base_url=_canonical_base_url(), raise_server_exceptions=True) as client:
+        response = client.get("/health", headers={"host": f"{host}:{settings.jarvis_port}"})
+
+    assert response.status_code == 200
+    assert COOKIE_NAME in response.cookies
+
+
+@pytest.mark.parametrize("path", [
+    "/conversation",
+    "/memory",
+    "/memory/search?q=coffee",
+    "/logs",
+    "/diagnostics",
+    "/voice/diagnostics",
+    "/privacy/data",
+    "/actions/pending",
+    "/actions/history",
+    "/actions/not-a-real-action",
+])
+def test_sensitive_gets_reject_a_client_without_the_session_header(path):
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+
+    with TestClient(jarvis_app, base_url=_canonical_base_url(), raise_server_exceptions=True) as client:
+        response = client.get(path)
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("/conversation", 200),
+    ("/memory", 200),
+    ("/memory/search?q=coffee", 200),
+    ("/logs", 200),
+    ("/diagnostics", 200),
+    ("/voice/diagnostics", 200),
+    ("/privacy/data", 200),
+    ("/actions/pending", 200),
+    ("/actions/history", 200),
+    ("/actions/not-a-real-action", 404),
+])
+def test_dashboard_session_can_read_sensitive_gets(path, expected):
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
+
+    with TestClient(jarvis_app, base_url=_canonical_base_url(), raise_server_exceptions=True) as client:
+        prime_session(client)
+        response = client.get(path)
+
+    assert response.status_code == expected
+
+
+def test_onboarding_and_health_boot_without_a_session_header():
+    from fastapi.testclient import TestClient
+    from app.api.server import app as jarvis_app
+
+    with TestClient(jarvis_app, base_url=_canonical_base_url(), raise_server_exceptions=True) as client:
+        assert client.get("/health").status_code == 200
+        # The cookie now exists, but deliberately no echo header: these
+        # routes must stay usable before dashboard JavaScript is ready.
+        assert client.get("/onboarding/readiness").status_code == 200
+        assert client.get("/ui/setup").status_code == 200
