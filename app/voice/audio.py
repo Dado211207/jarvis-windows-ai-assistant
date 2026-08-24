@@ -38,6 +38,19 @@ SAMPLE_WIDTH_BYTES = 2  # 16-bit PCM
 CHANNELS = 1
 
 
+def valid_wav_bytes(value: bytes) -> bool:
+    """Validate the RIFF/WAVE container before handing it to winsound."""
+    if not isinstance(value, bytes) or len(value) < 44:
+        return False
+    if value[:4] != b"RIFF" or value[8:12] != b"WAVE":
+        return False
+    try:
+        with wave.open(io.BytesIO(value), "rb") as wav:
+            return wav.getnchannels() > 0 and wav.getsampwidth() > 0
+    except (EOFError, wave.Error):
+        return False
+
+
 def playback_available() -> bool:
     if sys.platform != "win32":
         return False
@@ -119,7 +132,7 @@ class Player:
 
     def is_playing(self) -> bool:
         with self._lock:
-            return self._thread is not None and self._thread.is_alive()
+            return self._state.playing
 
     def _set(self, **fields) -> None:
         with self._lock:
@@ -162,12 +175,22 @@ class Player:
         self.wait(timeout=2.0)
         with self._lock:
             self._cancel = threading.Event()
-            return self._cancel
+            cancel = self._cancel
+        self._set(playing=True, stopped=False, chunks_played=0, seconds_played=0.0)
+        return cancel
 
     def is_current(self, cancel: threading.Event) -> bool:
         """Whether *cancel* still owns the right to start playback."""
         with self._lock:
             return cancel is self._cancel and not cancel.is_set()
+
+    def abandon(self, cancel: threading.Event) -> None:
+        """Release a synthesis reservation that will never reach playback."""
+        with self._lock:
+            if cancel is self._cancel:
+                cancel.set()
+                self._state.playing = False
+                self._state.stopped = True
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         thread = self._thread
@@ -241,16 +264,23 @@ class Player:
             self._thread = thread
         thread.start()
 
-    def play_wav_bytes(self, wav_bytes: bytes) -> None:
+    def play_wav_bytes(self, wav_bytes: bytes) -> bool:
         """Play one complete WAV, for an engine that produces a whole
         utterance at once rather than a stream of sentences."""
+        if not valid_wav_bytes(wav_bytes):
+            logger.warning("Refused invalid RIFF/WAVE playback bytes.")
+            return False
         self.play_stream([_RawWav(wav_bytes)], sample_rate=0)
+        return True
 
     def play_wav_bytes_if_current(
         self, wav_bytes: bytes, cancel: threading.Event,
     ) -> bool:
         """Play delayed WAV bytes only if Stop has not superseded them."""
-        if not self.is_current(cancel):
+        valid = valid_wav_bytes(wav_bytes)
+        if not self.is_current(cancel) or not valid:
+            if not valid:
+                logger.warning("Refused invalid RIFF/WAVE playback bytes.")
             return False
         self._start_stream([_RawWav(wav_bytes)], sample_rate=0, cancel=cancel)
         return self.is_current(cancel)

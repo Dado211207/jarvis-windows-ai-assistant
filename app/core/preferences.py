@@ -34,7 +34,7 @@ app down over a settings file.
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from app.core.app_paths import config_dir
 from app.logging_config import get_logger
@@ -81,6 +81,10 @@ STORABLE_KEYS = (
     # there is no key here for it to refuse.
     "tts_engine", "elevenlabs_voice_id", "elevenlabs_voice_name",
     "elevenlabs_settings", "elevenlabs_fallback",
+    # OpenAI Speech preferences. The credential itself is deliberately
+    # absent: openai_voice_key_configured is only a non-secret status bit.
+    "openai_voice_key_configured", "openai_tts_model", "openai_tts_voice",
+    "openai_tts_speed", "openai_tts_instructions", "openai_tts_fallback",
     # Double-clap activation (app/voice/clap.py). Four settings, all of
     # them decisions about a room: whether to listen at all (off until
     # somebody turns it on), how loud a transient has to be, and what —
@@ -174,23 +178,41 @@ def store(key: str, value: Optional[str]) -> bool:
     refused rather than stored, so this can never quietly become a
     browser-writable settings backdoor.
     """
-    if key not in STORABLE_KEYS:
-        logger.warning("Refused to store an unlisted preference key: %r", key)
+    return store_many({key: value})
+
+
+def store_many(values: Mapping[str, Optional[str]]) -> bool:
+    """Atomically persist several allowlisted preferences.
+
+    OpenAI voice settings are one logical choice. Writing four separate
+    versions could leave a half-old profile after a disk error, so the
+    complete JSON is replaced only after the temporary file is durable.
+    """
+    unknown = [key for key in values if key not in STORABLE_KEYS]
+    if unknown:
+        logger.warning("Refused to store unlisted preference keys: %r", unknown)
         return False
 
     data = load()
-    if value is None or not str(value).strip():
-        data.pop(key, None)
-    else:
-        data[key] = str(value).strip()
+    for key, value in values.items():
+        if value is None or not str(value).strip():
+            data.pop(key, None)
+        else:
+            data[key] = str(value).strip()
 
     path = _path_or_none()
     if path is None:
         return False
+    temporary = path.with_name(path.name + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        temporary.replace(path)
         return True
     except Exception:  # noqa: BLE001
         logger.warning("Could not write the preferences file.", exc_info=True)
+        try:
+            temporary.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
         return False

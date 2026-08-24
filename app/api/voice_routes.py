@@ -66,7 +66,10 @@ class VoiceEngineStatusResponse(BaseModel):
     install_dir: str
 
 
-@router.get("/voice/engine-status", response_model=VoiceEngineStatusResponse)
+@router.get(
+    "/voice/engine-status", response_model=VoiceEngineStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def voice_engine_status() -> VoiceEngineStatusResponse:
     """What is installed, what is speaking, and what each tier reported."""
     return VoiceEngineStatusResponse(**voice_status.snapshot())
@@ -144,7 +147,10 @@ class InstallVoiceRequest(BaseModel):
     voice_key: str = Field(default=assets.DEFAULT_VOICE_KEY)
 
 
-@router.get("/voice/install-preview", response_model=VoiceInstallPreview)
+@router.get(
+    "/voice/install-preview", response_model=VoiceInstallPreview,
+    dependencies=[Depends(require_session_token)],
+)
 def install_preview(voice_key: str = assets.DEFAULT_VOICE_KEY) -> VoiceInstallPreview:
     """Exactly what would be downloaded, before anything is.
 
@@ -166,7 +172,10 @@ def install_preview(voice_key: str = assets.DEFAULT_VOICE_KEY) -> VoiceInstallPr
     )
 
 
-@router.get("/voice/install-status", response_model=VoiceInstallStatusResponse)
+@router.get(
+    "/voice/install-status", response_model=VoiceInstallStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def install_status() -> VoiceInstallStatusResponse:
     state = install.voice_installer.state()
     return VoiceInstallStatusResponse(
@@ -239,7 +248,11 @@ def test_voice(req: TestVoiceRequest) -> TestVoiceResponse:
     voice_key = req.voice_key or engines.selected_voice_key()
     text = (req.text or TEST_PHRASE)[:300]
 
-    outcome = engines.speak(text, voice_key=voice_key, speed=engines.selected_speed())
+    # This card compares the local/Kokoro voice. A selected cloud provider
+    # must not turn a local A/B button into a billable cloud request.
+    outcome = engines.speak_local(
+        text, voice_key=voice_key, speed=engines.selected_speed(),
+    )
     return TestVoiceResponse(
         success=outcome.started, message=outcome.message, engine=outcome.engine,
     )
@@ -287,7 +300,10 @@ def _pronunciations_response() -> PronunciationsResponse:
     )
 
 
-@router.get("/voice/pronunciations", response_model=PronunciationsResponse)
+@router.get(
+    "/voice/pronunciations", response_model=PronunciationsResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def list_pronunciations() -> PronunciationsResponse:
     """Saved pronunciations, plus whether the name from first run is one
     JARVIS would otherwise spell out."""
@@ -350,7 +366,10 @@ class LicenceComponent(BaseModel):
     acknowledgement: str = ""
 
 
-@router.get("/voice/licences", response_model=List[LicenceComponent])
+@router.get(
+    "/voice/licences", response_model=List[LicenceComponent],
+    dependencies=[Depends(require_session_token)],
+)
 def voice_licences() -> List[LicenceComponent]:
     """What the voice is made of and under what terms.
 
@@ -428,7 +447,10 @@ def _cloud_response(success: bool, message: str) -> CloudActionResponse:
     )
 
 
-@router.get("/voice/cloud", response_model=CloudVoiceStatusResponse)
+@router.get(
+    "/voice/cloud", response_model=CloudVoiceStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def cloud_status() -> CloudVoiceStatusResponse:
     return CloudVoiceStatusResponse(**engines.cloud_status())
 
@@ -495,7 +517,9 @@ def validate_cloud_key() -> CloudActionResponse:
     key = get_elevenlabs_key()
     if not key:
         return _cloud_response(False, elevenlabs._MESSAGES[elevenlabs.NOT_CONFIGURED])
-    ok, message = elevenlabs.validate_key(key)
+    ok, message = elevenlabs.validate_key(
+        key, privacy_guard=lambda: not privacy_mode.active,
+    )
     return _cloud_response(ok, message)
 
 
@@ -523,7 +547,9 @@ def refresh_cloud_voices() -> CloudVoiceListResponse:
             success=False, message=elevenlabs._MESSAGES[elevenlabs.NOT_CONFIGURED], voices=[],
         )
     try:
-        voices = elevenlabs.list_voices(key)
+        voices = elevenlabs.list_voices(
+            key, privacy_guard=lambda: not privacy_mode.active,
+        )
     except elevenlabs.ElevenLabsError as exc:
         return CloudVoiceListResponse(success=False, message=exc.message, voices=[])
     return CloudVoiceListResponse(
@@ -552,6 +578,10 @@ def select_cloud_voice(req: SelectCloudVoiceRequest) -> CloudActionResponse:
 def select_engine(req: SelectEngineRequest) -> CloudActionResponse:
     """Choose either cloud provider, or go back to the local chain."""
     chosen = engines.set_selected_engine(req.engine)
+    if chosen is None:
+        return _cloud_response(
+            False, "The speech provider choice could not be saved; the previous choice remains active.",
+        )
     if chosen == engines.OPENAI:
         return _cloud_response(True, "JARVIS will use OpenAI Speech for opted-in voice output.")
     if chosen == engines.ELEVENLABS:
@@ -612,27 +642,36 @@ def test_cloud_voice() -> CloudActionResponse:
     from app.core.privacy import privacy_mode
     from app.voice import audio, elevenlabs
 
+    deadline = elevenlabs.new_deadline()
+    cancel = audio.player.begin_utterance()
     if privacy_mode.active:
+        audio.player.abandon(cancel)
         return _cloud_response(
             False, "Privacy mode is on, so no text was sent to ElevenLabs.",
         )
     key = get_elevenlabs_key()
     if not key:
+        audio.player.abandon(cancel)
         return _cloud_response(False, elevenlabs._MESSAGES[elevenlabs.NOT_CONFIGURED])
     voice_id = engines.selected_cloud_voice_id()
     if not voice_id:
+        audio.player.abandon(cancel)
         return _cloud_response(False, "Choose a voice first.")
 
     try:
         wav = elevenlabs.synthesise_wav(
             elevenlabs.TEST_PHRASE, voice_id=voice_id, api_key=key,
             settings=engines.cloud_settings(),
+            cancel=cancel, privacy_guard=lambda: not privacy_mode.active,
+            deadline=deadline,
         )
     except elevenlabs.ElevenLabsError as exc:
+        audio.player.abandon(cancel)
         return _cloud_response(False, exc.message)
 
-    engines.stop()  # one utterance at a time, like every other speech path
-    audio.player.play_wav_bytes(wav)
+    if not audio.player.play_wav_bytes_if_current(wav, cancel):
+        audio.player.abandon(cancel)
+        return _cloud_response(False, "ElevenLabs speech was stopped or returned invalid WAV audio.")
     return _cloud_response(True, f"Speaking: “{elevenlabs.TEST_PHRASE}”")
 
 
@@ -683,7 +722,10 @@ def _openai_response(success: bool, message: str) -> OpenAIActionResponse:
     )
 
 
-@router.get("/voice/openai", response_model=OpenAIVoiceStatusResponse)
+@router.get(
+    "/voice/openai", response_model=OpenAIVoiceStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def openai_voice_status() -> OpenAIVoiceStatusResponse:
     # Deliberately does not load the credential or contact OpenAI.
     return OpenAIVoiceStatusResponse(**engines.openai_status())
@@ -706,7 +748,14 @@ def save_openai_key(req: SaveCloudKeyRequest) -> OpenAIActionResponse:
             False,
             "The Windows Credential Manager could not be written to. The key was not stored elsewhere.",
         )
-    engines.set_openai_key_configured(True)
+    if engines.set_openai_key_configured(True) is None:
+        from app.core.credentials import clear_openai_key
+
+        clear_openai_key()
+        return _openai_response(
+            False,
+            "The key was not kept because its non-secret status could not be saved.",
+        )
     return _openai_response(True, "OpenAI voice key saved to the Windows Credential Manager.")
 
 
@@ -720,7 +769,11 @@ def delete_openai_key() -> OpenAIActionResponse:
 
     if not clear_openai_key():
         return _openai_response(False, "The Windows Credential Manager could not be reached.")
-    engines.set_openai_key_configured(False)
+    if engines.set_openai_key_configured(False) is None:
+        return _openai_response(
+            False,
+            "The key was removed, but the saved status could not be updated. Restart and check it again.",
+        )
     return _openai_response(True, "OpenAI voice key removed.")
 
 
@@ -739,7 +792,9 @@ def validate_openai_key() -> OpenAIActionResponse:
     key = get_openai_key()
     if not key:
         return _openai_response(False, openai_tts._MESSAGES[openai_tts.NOT_CONFIGURED])
-    ok, message = openai_tts.validate_key(key)
+    ok, message = openai_tts.validate_key(
+        key, privacy_guard=lambda: not privacy_mode.active,
+    )
     return _openai_response(ok, message)
 
 
@@ -750,9 +805,13 @@ def validate_openai_key() -> OpenAIActionResponse:
 )
 def save_openai_settings(req: OpenAISettingsRequest) -> OpenAIActionResponse:
     try:
-        engines.set_openai_settings(req.model, req.voice, req.speed, req.instructions)
+        saved = engines.set_openai_settings(
+            req.model, req.voice, req.speed, req.instructions,
+        )
     except ValueError as exc:
         return _openai_response(False, str(exc))
+    if saved is None:
+        return _openai_response(False, "OpenAI voice settings could not be saved.")
     return _openai_response(True, "OpenAI voice settings saved.")
 
 
@@ -764,12 +823,14 @@ def save_openai_settings(req: OpenAISettingsRequest) -> OpenAIActionResponse:
 def reset_openai_settings() -> OpenAIActionResponse:
     from app.voice import openai_tts
 
-    engines.set_openai_settings(
+    saved = engines.set_openai_settings(
         openai_tts.DEFAULT_MODEL,
         openai_tts.DEFAULT_VOICE,
         openai_tts.DEFAULT_SPEED,
         openai_tts.DEFAULT_INSTRUCTIONS,
     )
+    if saved is None:
+        return _openai_response(False, "The original OpenAI profile could not be saved.")
     return _openai_response(True, "OpenAI voice settings reset to the original profile.")
 
 
@@ -780,6 +841,8 @@ def reset_openai_settings() -> OpenAIActionResponse:
 )
 def set_openai_fallback(req: CloudFallbackRequest) -> OpenAIActionResponse:
     allowed = engines.set_openai_fallback_allowed(req.allowed)
+    if allowed is None:
+        return _openai_response(False, "The OpenAI fallback choice could not be saved.")
     return _openai_response(
         True,
         (
@@ -801,13 +864,16 @@ def test_openai_voice() -> OpenAIActionResponse:
     from app.core.privacy import privacy_mode
     from app.voice import audio, openai_tts
 
+    deadline = openai_tts.new_deadline()
+    cancel = audio.player.begin_utterance()
     if privacy_mode.active:
+        audio.player.abandon(cancel)
         return _openai_response(False, "Privacy mode is on, so no text was sent to OpenAI.")
     key = get_openai_key()
     if not key:
+        audio.player.abandon(cancel)
         return _openai_response(False, openai_tts._MESSAGES[openai_tts.NOT_CONFIGURED])
 
-    cancel = audio.player.begin_utterance()
     try:
         wav = openai_tts.synthesise_wav(
             openai_tts.TEST_PHRASE,
@@ -817,10 +883,14 @@ def test_openai_voice() -> OpenAIActionResponse:
             speed=engines.selected_openai_speed(),
             instructions=engines.selected_openai_instructions(),
             cancel=cancel,
+            privacy_guard=lambda: not privacy_mode.active,
+            deadline=deadline,
         )
     except openai_tts.OpenAITTSError as exc:
+        audio.player.abandon(cancel)
         return _openai_response(False, exc.message)
     if not audio.player.play_wav_bytes_if_current(wav, cancel):
+        audio.player.abandon(cancel)
         return _openai_response(False, openai_tts._MESSAGES[openai_tts.CANCELLED])
     return _openai_response(True, f"Speaking: “{openai_tts.TEST_PHRASE}”")
 
@@ -897,12 +967,15 @@ _CLAP_REASONS = {
 }
 
 
-@router.get("/voice/clap", response_model=ClapStatusResponse)
+@router.get(
+    "/voice/clap", response_model=ClapStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def clap_status() -> ClapStatusResponse:
     """Settings, detector tuning and what happened last.
 
-    Readable without the session token, like every other status read —
-    it reports no audio and no content, only whether a feature is on.
+    Session-bound because microphone/listener state is still private device
+    state even though this response never contains captured audio.
     """
     from app.voice import clap
 

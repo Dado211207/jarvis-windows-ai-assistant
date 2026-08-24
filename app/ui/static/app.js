@@ -312,6 +312,9 @@ const STOP_GLYPH  = "■";   // ■
 
 let speakingButton = null;
 let speakingPoll = null;
+let speechRequestPending = false;
+let speechRequestGeneration = 0;
+let speechClickPending = false;
 
 function paintSpeakButton(btn, speaking) {
   if (!btn) return;
@@ -379,6 +382,7 @@ function forgetSpeaking() {
   if (speakingPoll) { clearInterval(speakingPoll); speakingPoll = null; }
   if (speakingButton) paintSpeakButton(speakingButton, false);
   speakingButton = null;
+  speechRequestPending = false;
 }
 
 // Speech ends on its own and the server can only report that it *started*,
@@ -391,6 +395,7 @@ function watchSpeech(btn) {
   speakingPoll = setInterval(async () => {
     try {
       const r = await API.get("/voice/speaking");
+      if (speechRequestPending) return;
       if (!r || !r.speaking) forgetSpeaking();
     } catch (e) {
       forgetSpeaking();   // an unanswerable question must not leave a stuck button
@@ -399,7 +404,8 @@ function watchSpeech(btn) {
 }
 
 async function stopSpeech() {
-  const wasSpeaking = speakingButton !== null;
+  const wasSpeaking = speakingButton !== null || speechRequestPending;
+  speechRequestGeneration += 1;
   forgetSpeaking();
   releaseSpeechSuspension();
   if (!wasSpeaking) return;
@@ -410,16 +416,32 @@ async function stopSpeech() {
   }
 }
 
+function beginSpeechRequest(btn) {
+  forgetSpeaking();
+  speechRequestGeneration += 1;
+  speechRequestPending = true;
+  speakingButton = btn;
+  paintSpeakButton(btn, true);  // Stop is available while cloud synthesis waits
+  return speechRequestGeneration;
+}
+
+// The one place a speech response turns into what the user sees.
+//
+// Two requirements meet here and both are kept. The cloud pass needs the
+// generation guard in the callers, so a reply that arrives after Stop —
+// or after a second click — paints nothing. The chat pass needs a single
+// rendering path, so the fallback notice cannot be shown one way on the
+// per-message button and another way on an automatic reply.
+//
+// `fallback` is a structured object rather than a bare string: a
+// successful local fallback is still a provider failure the user has to
+// see, and a caller should not have to parse prose to detect one.
 function handleSpeechResponse(result, btn, clearOrdinaryStatus) {
   if (!result || !result.success) return false;
   watchSpeech(btn);
-  const fallback = typeof result.fallback_message === "string"
-    ? result.fallback_message.trim()
-    : "";
-  if (fallback) {
-    // A successful local fallback is still a provider failure the user
-    // needs to see. Never erase this just because playback started.
-    setChatStatus(fallback);
+  if (result.fallback) {
+    // Never erase this just because playback started.
+    setChatStatus(result.message || "");
   } else if (clearOrdinaryStatus) {
     setChatStatus("");
   }
@@ -428,21 +450,37 @@ function handleSpeechResponse(result, btn, clearOrdinaryStatus) {
 
 // The speaker button on one message.
 async function speakOnDemand(text, btn) {
-  if (speakingButton === btn) { await stopSpeech(); return; }
+  // Treat a rapid second click as Stop even if the first click is still
+  // yielding before its POST. This bounds a double-click to at most one
+  // billable cloud request (and commonly zero), rather than racing two.
+  if (speakingButton === btn || speechClickPending) {
+    speechClickPending = false;
+    await stopSpeech();
+    return;
+  }
+  speechClickPending = true;
   await stopSpeech();
+  if (!speechClickPending) return;
 
   const trimmed = (text || "").trim();
-  if (!trimmed) return;
+  if (!trimmed) { speechClickPending = false; return; }
   suspendForSpeech();
+  const generation = beginSpeechRequest(btn);
+  speechClickPending = false;
   try {
     const r = await API.post("/voice/speak-once", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
+    if (generation !== speechRequestGeneration) return;
+    speechRequestPending = false;
     if (!handleSpeechResponse(r, btn, true)) {
+      forgetSpeaking();
       releaseSpeechSuspension();
       // The engine's own reason and the step that fixes it — never a
       // suggestion to go and find another program.
       setChatStatus((r && r.message) || "JARVIS could not speak that.");
     }
   } catch (e) {
+    if (generation !== speechRequestGeneration) return;
+    forgetSpeaking();
     releaseSpeechSuspension();
     setChatStatus("Could not speak that: " + e.message);
   }
@@ -454,10 +492,18 @@ async function speakReply(text, btn) {
   if (!trimmed) return;
   await stopSpeech();
   suspendForSpeech();
+  const generation = beginSpeechRequest(btn);
   try {
     const r = await API.post("/voice/speak", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
-    if (!handleSpeechResponse(r, btn, false)) releaseSpeechSuspension();
+    if (generation !== speechRequestGeneration) return;
+    speechRequestPending = false;
+    if (!handleSpeechResponse(r, btn, false)) {
+      forgetSpeaking();
+      releaseSpeechSuspension();
+    }
   } catch (e) {
+    if (generation !== speechRequestGeneration) return;
+    forgetSpeaking();
     releaseSpeechSuspension();
     // Speech is an enhancement; a failure here must never disturb the
     // conversation the user is reading.

@@ -43,9 +43,12 @@ request when a v3 model is selected rather than sent and silently
 ignored.
 """
 
+import concurrent.futures
 import json
+import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from threading import Event
+from typing import Callable, List, Optional, Tuple
 
 from app.logging_config import get_logger
 from app.voice.samples import AB_TEST_PHRASE
@@ -75,6 +78,7 @@ OUTPUT_FORMAT = "wav_24000"
 
 CONNECT_TIMEOUT_SECONDS = 10.0
 READ_TIMEOUT_SECONDS = 30.0
+TOTAL_TIMEOUT_SECONDS = 40.0
 # A spoken reply is seconds of audio, not minutes. 24 kHz 16-bit mono is
 # ~48 KB/s, so this is roughly three minutes of speech — generous for a
 # reply, and a hard stop long before memory is a concern.
@@ -122,6 +126,8 @@ OFFLINE = "offline"
 BAD_RESPONSE = "bad_response"
 NOT_CONFIGURED = "not_configured"
 PROVIDER_ERROR = "provider_error"
+CANCELLED = "cancelled"
+PRIVACY = "privacy"
 
 
 @dataclass
@@ -173,6 +179,8 @@ _MESSAGES = {
     PROVIDER_ERROR: (
         "ElevenLabs could not produce that audio. Nothing was played."
     ),
+    CANCELLED: "ElevenLabs speech was stopped before playback.",
+    PRIVACY: "Privacy mode is on, so no text was sent to ElevenLabs.",
 }
 
 
@@ -247,7 +255,10 @@ def _client(timeout_read: float):
     return httpx.Client(
         base_url=API_BASE,
         follow_redirects=False,
-        timeout=httpx.Timeout(timeout_read, connect=CONNECT_TIMEOUT_SECONDS),
+        trust_env=False,
+        timeout=httpx.Timeout(
+            timeout_read, connect=min(CONNECT_TIMEOUT_SECONDS, timeout_read),
+        ),
     )
 
 
@@ -298,12 +309,32 @@ def _looks_like_quota(response) -> bool:
     return "quota" in body or "credits" in body or "exceeds" in body
 
 
-def _read_bounded(response, limit: int) -> bytes:
+def new_deadline() -> float:
+    return time.monotonic() + TOTAL_TIMEOUT_SECONDS
+
+
+def _check_request_allowed(
+    cancel: Optional[Event],
+    deadline: float,
+    privacy_guard: Optional[Callable[[], bool]],
+) -> None:
+    if cancel is not None and cancel.is_set():
+        raise _fail(CANCELLED)
+    if time.monotonic() >= deadline:
+        raise _fail(TIMEOUT)
+    if privacy_guard is not None and not privacy_guard():
+        raise _fail(PRIVACY)
+
+
+def _read_bounded(
+    response, limit: int, cancel: Optional[Event], deadline: float,
+) -> bytes:
     """Read at most *limit* bytes, then stop. A response that keeps going
     is a response that stops being read."""
     chunks = []
     total = 0
     for chunk in response.iter_bytes():
+        _check_request_allowed(cancel, deadline, None)
         chunks.append(chunk)
         total += len(chunk)
         if total > limit:
@@ -312,8 +343,18 @@ def _read_bounded(response, limit: int) -> bytes:
     return b"".join(chunks)
 
 
-def _call(method: str, path: str, api_key: str, *, json_body: Optional[dict] = None,
-          expect_audio: bool = False, read_timeout: float = READ_TIMEOUT_SECONDS) -> bytes:
+def _call_network(
+    method: str,
+    path: str,
+    api_key: str,
+    *,
+    json_body: Optional[dict] = None,
+    expect_audio: bool = False,
+    read_timeout: float = READ_TIMEOUT_SECONDS,
+    cancel: Optional[Event] = None,
+    privacy_guard: Optional[Callable[[], bool]] = None,
+    deadline: Optional[float] = None,
+) -> bytes:
     """One request, fully guarded. Returns the raw body.
 
     Every exception out of here is an ElevenLabsError. httpx exceptions
@@ -325,19 +366,24 @@ def _call(method: str, path: str, api_key: str, *, json_body: Optional[dict] = N
 
     if not api_key:
         raise _fail(NOT_CONFIGURED)
+    deadline = deadline if deadline is not None else new_deadline()
+    _check_request_allowed(cancel, deadline, privacy_guard)
 
     try:
-        with _client(read_timeout) as client:
+        remaining = max(0.001, deadline - time.monotonic())
+        with _client(min(read_timeout, remaining)) as client:
+            _check_request_allowed(cancel, deadline, privacy_guard)
             with client.stream(
                 method, path, headers=_headers(api_key),
                 json=json_body if json_body is not None else None,
             ) as response:
                 limit = MAX_AUDIO_BYTES if expect_audio else MAX_JSON_BYTES
-                body = _read_bounded(response, limit)
+                body = _read_bounded(response, limit, cancel, deadline)
                 # Guarded after reading so an error body can be inspected
                 # for a quota signal, and before a single byte is used.
                 response._content = body  # noqa: SLF001 - so .content works below
                 _guard_response(response, expect_audio=expect_audio)
+                _check_request_allowed(cancel, deadline, privacy_guard)
                 return body
     except ElevenLabsError:
         raise
@@ -348,6 +394,45 @@ def _call(method: str, path: str, api_key: str, *, json_body: Optional[dict] = N
     except Exception:  # noqa: BLE001
         logger.warning("ElevenLabs request failed.", exc_info=False)
         raise _fail(PROVIDER_ERROR) from None
+
+
+def _call(
+    method: str,
+    path: str,
+    api_key: str,
+    *,
+    json_body: Optional[dict] = None,
+    expect_audio: bool = False,
+    read_timeout: float = READ_TIMEOUT_SECONDS,
+    cancel: Optional[Event] = None,
+    privacy_guard: Optional[Callable[[], bool]] = None,
+    deadline: Optional[float] = None,
+) -> bytes:
+    """Bound the sum of connect, headers and all response chunks."""
+    deadline = deadline if deadline is not None else new_deadline()
+    _check_request_allowed(cancel, deadline, privacy_guard)
+    remaining = max(0.001, deadline - time.monotonic())
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="jarvis-elevenlabs-tts",
+    )
+    future = executor.submit(
+        _call_network,
+        method,
+        path,
+        api_key,
+        json_body=json_body,
+        expect_audio=expect_audio,
+        read_timeout=min(read_timeout, remaining),
+        cancel=cancel,
+        privacy_guard=privacy_guard,
+        deadline=deadline,
+    )
+    try:
+        return future.result(timeout=remaining)
+    except concurrent.futures.TimeoutError:
+        raise _fail(TIMEOUT) from None
+    finally:
+        executor.shutdown(wait=False)
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +457,9 @@ class Voice:
         }
 
 
-def validate_key(api_key: str) -> Tuple[bool, str]:
+def validate_key(
+    api_key: str, privacy_guard: Optional[Callable[[], bool]] = None,
+) -> Tuple[bool, str]:
     """Ask ElevenLabs whether this key works, only when somebody asks.
 
     Uses the subscription endpoint because it is the cheapest authenticated
@@ -380,7 +467,10 @@ def validate_key(api_key: str) -> Tuple[bool, str]:
     Returns (ok, message); never raises.
     """
     try:
-        body = _call("GET", SUBSCRIPTION_PATH, api_key, read_timeout=15.0)
+        body = _call(
+            "GET", SUBSCRIPTION_PATH, api_key, read_timeout=15.0,
+            privacy_guard=privacy_guard,
+        )
     except ElevenLabsError as exc:
         return False, exc.message
 
@@ -400,14 +490,19 @@ def validate_key(api_key: str) -> Tuple[bool, str]:
     return True, (f"The key works{f' ({tier} plan)' if tier else ''}.{suffix}")
 
 
-def list_voices(api_key: str) -> List[Voice]:
+def list_voices(
+    api_key: str, privacy_guard: Optional[Callable[[], bool]] = None,
+) -> List[Voice]:
     """The voices this account can actually use.
 
     Only what is needed to show a human-readable picker is kept. The rest
     of ElevenLabs' voice object — sharing state, verification records,
     sample lists — is somebody else's data model, not ours to store.
     """
-    body = _call("GET", VOICES_PATH, api_key, read_timeout=20.0)
+    body = _call(
+        "GET", VOICES_PATH, api_key, read_timeout=20.0,
+        privacy_guard=privacy_guard,
+    )
     try:
         data = json.loads(body.decode("utf-8", errors="replace"))
     except Exception:  # noqa: BLE001
@@ -442,6 +537,9 @@ def synthesise_wav(
     api_key: str,
     settings: Optional[dict] = None,
     model_id: str = DEFAULT_MODEL,
+    cancel: Optional[Event] = None,
+    privacy_guard: Optional[Callable[[], bool]] = None,
+    deadline: Optional[float] = None,
 ) -> bytes:
     """Turn *text* into WAV bytes. Raises ElevenLabsError, never anything else.
 
@@ -464,9 +562,10 @@ def synthesise_wav(
     }
     body = _call(
         "POST", TTS_PATH.format(voice_id=voice_id), api_key,
-        json_body=payload, expect_audio=True,
+        json_body=payload, expect_audio=True, cancel=cancel,
+        privacy_guard=privacy_guard, deadline=deadline,
     )
-    if not body.startswith(b"RIFF"):
+    if len(body) < 12 or body[:4] != b"RIFF" or body[8:12] != b"WAVE":
         logger.warning("ElevenLabs audio was not a RIFF/WAV payload.")
         raise _fail(BAD_RESPONSE)
     return body

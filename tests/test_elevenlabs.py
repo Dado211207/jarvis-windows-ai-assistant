@@ -227,7 +227,8 @@ def test_there_is_no_endpoint_that_fetches_an_arbitrary_audio_url():
     source = inspect.getsource(elevenlabs)
     assert "API_BASE" in source
     # Every request goes through _call(), which only ever takes a path.
-    assert "def _call(method: str, path: str" in source
+    assert "def _call(" in source
+    assert "method: str" in source and "path: str" in source
     assert "base_url=API_BASE" in source
 
 

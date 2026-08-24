@@ -123,12 +123,13 @@ def _speak_last_reply() -> dict:
         )
     return {
         "success": True,
-        "message": message,
+        "message": f"{message} {result.message}" if result.fallback else message,
         "data": {
             "spoken": True,
-            "engine": tts_service.active_engine(),
+            "engine": result.engine or tts_service.active_engine(),
             "always_speak": tts_service.output_enabled,
             "truncated": truncated,
+            "fallback": result.fallback,
         },
     }
 

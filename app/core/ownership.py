@@ -3,7 +3,7 @@
 "Uninstall completely" is only a meaningful promise if there is a list.
 Without one it degrades into whichever paths somebody happened to
 remember, which is how an uninstalled application leaves a Startup
-shortcut pointing at a deleted executable and credentials in Windows
+shortcut pointing at a deleted executable and API keys in Windows
 Credential Manager.
 
 **The list is here, in code, and the installer is checked against it.**

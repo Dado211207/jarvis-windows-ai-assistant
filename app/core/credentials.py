@@ -34,7 +34,8 @@ that may not even exist in that context.
 
 import concurrent.futures
 from dataclasses import dataclass
-from typing import Any, Callable, Tuple
+import threading
+from typing import Any, Callable, Optional, Tuple
 
 from app.logging_config import get_logger
 
@@ -51,6 +52,15 @@ TIMEOUT_SECONDS = 5.0
 # The ownership registry below makes that rule executable at uninstall.
 ELEVENLABS_USERNAME = "elevenlabs_api_key"
 OPENAI_USERNAME = "openai_api_key"
+
+# Keyring calls that time out keep running in Python; a Future timeout does
+# not cancel a call already inside WinCred. Serialize the backend and track
+# the latest desired value so a late set is reconciled to a newer delete (or
+# removed after its own timeout) instead of becoming an orphan credential.
+_backend_lock = threading.Lock()
+_mutation_state_lock = threading.Lock()
+_mutation_generation = 0
+_desired_values = {}
 
 
 @dataclass(frozen=True)
@@ -111,7 +121,19 @@ def _read(username: str) -> Tuple[bool, str]:
         import keyring
     except ImportError:
         return False, ""
-    ok, value = _run_isolated(keyring.get_password, SERVICE_NAME, username)
+
+    def _read_locked():
+        # Serialized: a Future timeout does not cancel a call already
+        # inside WinCred, so two overlapping reads must not enter the
+        # backend together.
+        with _backend_lock:
+            return keyring.get_password(SERVICE_NAME, username)
+
+    ok, value = _run_isolated(_read_locked)
+    # The (reached, value) pair is load-bearing for uninstall: collapsing
+    # "could not reach the store" into "no such credential" would erase the
+    # data folder and report a successful purge while a secret may still
+    # exist. Ordinary callers use _get() and see only the value.
     return ok, (value or "") if ok else ""
 
 
@@ -120,30 +142,80 @@ def _get(username: str) -> str:
     return value
 
 
-def _set(username: str, value: str) -> bool:
+def _record_desired(username: str, value: Optional[str]) -> int:
+    global _mutation_generation
+    with _mutation_state_lock:
+        _mutation_generation += 1
+        _desired_values[username] = (_mutation_generation, value)
+        return _mutation_generation
+
+
+def _apply_value(keyring, username: str, value: Optional[str]) -> None:
+    if value is not None:
+        keyring.set_password(SERVICE_NAME, username, value)
+        return
     try:
-        import keyring
-    except ImportError:
-        return False
-    ok, _ = _run_isolated(keyring.set_password, SERVICE_NAME, username, value)
-    return ok
+        keyring.delete_password(SERVICE_NAME, username)
+    except keyring.errors.PasswordDeleteError:
+        pass
 
 
-def _clear(username: str) -> bool:
+def _mutation_worker(keyring, username: str, generation: int,
+                     value: Optional[str]) -> None:
+    """Apply this mutation, then reconcile anything requested behind it."""
+    with _backend_lock:
+        applied_generation = generation
+        _apply_value(keyring, username, value)
+        while True:
+            with _mutation_state_lock:
+                latest_generation, latest_value = _desired_values.get(
+                    username, (applied_generation, value),
+                )
+            if latest_generation == applied_generation:
+                return
+            _apply_value(keyring, username, latest_value)
+            applied_generation = latest_generation
+
+
+def _mutate(username: str, value: Optional[str]) -> bool:
     try:
         import keyring
         import keyring.errors
     except ImportError:
         return False
 
-    def _delete() -> None:
-        try:
-            keyring.delete_password(SERVICE_NAME, username)
-        except keyring.errors.PasswordDeleteError:
-            pass  # already absent
+    generation = _record_desired(username, value)
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="jarvis-keyring-mutation",
+    )
+    future = executor.submit(_mutation_worker, keyring, username, generation, value)
+    try:
+        future.result(timeout=TIMEOUT_SECONDS)
+        return True
+    except BaseException as exc:
+        logger.warning(
+            "OS credential mutation failed: %s", type(exc).__name__, exc_info=True,
+        )
+        if value is not None:
+            # A failed/timed-out save is not owned by JARVIS. Make absence
+            # the newest desired state and enqueue a cleanup behind the late
+            # operation. If the first worker is still alive it also observes
+            # this generation and performs the same idempotent cleanup.
+            cleanup_generation = _record_desired(username, None)
+            executor.submit(
+                _mutation_worker, keyring, username, cleanup_generation, None,
+            )
+        return False
+    finally:
+        executor.shutdown(wait=False)
 
-    ok, _ = _run_isolated(_delete)
-    return ok
+
+def _set(username: str, value: str) -> bool:
+    return _mutate(username, value)
+
+
+def _clear(username: str) -> bool:
+    return _mutate(username, None)
 
 
 def owned_credential_status(credential: OwnedCredential) -> Tuple[bool, bool]:

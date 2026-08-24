@@ -6,9 +6,11 @@ the Authorization header, and neither raw upstream bodies nor request headers
 cross this module's error boundary.
 """
 
+import concurrent.futures
 from dataclasses import dataclass
 from threading import Event
-from typing import Optional, Tuple
+import time
+from typing import Callable, Optional, Tuple
 
 from app.logging_config import get_logger
 from app.voice.samples import AB_TEST_PHRASE
@@ -40,6 +42,7 @@ MAX_API_KEY_CHARS = 512
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
 CONNECT_TIMEOUT_SECONDS = 10.0
 READ_TIMEOUT_SECONDS = 30.0
+TOTAL_TIMEOUT_SECONDS = 40.0
 
 INVALID_KEY = "invalid_key"
 QUOTA = "quota"
@@ -48,6 +51,7 @@ TIMEOUT = "timeout"
 OFFLINE = "offline"
 BAD_RESPONSE = "bad_response"
 CANCELLED = "cancelled"
+PRIVACY = "privacy"
 NOT_CONFIGURED = "not_configured"
 PROVIDER_ERROR = "provider_error"
 
@@ -65,6 +69,7 @@ _MESSAGES = {
     ),
     BAD_RESPONSE: "OpenAI Speech returned invalid or oversized audio. Nothing was played.",
     CANCELLED: "OpenAI speech was stopped before playback.",
+    PRIVACY: "Privacy mode is on, so no text was sent to OpenAI Speech.",
     NOT_CONFIGURED: "No OpenAI voice API key is saved. Add one on the Voice page.",
     PROVIDER_ERROR: "OpenAI Speech could not produce audio. Nothing was played.",
 }
@@ -123,7 +128,10 @@ def _client(read_timeout: float):
     return httpx.Client(
         base_url=API_BASE,
         follow_redirects=False,
-        timeout=httpx.Timeout(read_timeout, connect=CONNECT_TIMEOUT_SECONDS),
+        trust_env=False,
+        timeout=httpx.Timeout(
+            read_timeout, connect=min(CONNECT_TIMEOUT_SECONDS, read_timeout),
+        ),
     )
 
 
@@ -152,12 +160,28 @@ def _classify_status(response) -> str:
     return PROVIDER_ERROR
 
 
-def _read_bounded(response, cancel: Optional[Event]) -> bytes:
+def new_deadline() -> float:
+    return time.monotonic() + TOTAL_TIMEOUT_SECONDS
+
+
+def _check_request_allowed(
+    cancel: Optional[Event],
+    deadline: float,
+    privacy_guard: Optional[Callable[[], bool]],
+) -> None:
+    if cancel is not None and cancel.is_set():
+        raise _fail(CANCELLED)
+    if time.monotonic() >= deadline:
+        raise _fail(TIMEOUT)
+    if privacy_guard is not None and not privacy_guard():
+        raise _fail(PRIVACY)
+
+
+def _read_bounded(response, cancel: Optional[Event], deadline: float) -> bytes:
     chunks = []
     total = 0
     for chunk in response.iter_bytes():
-        if cancel is not None and cancel.is_set():
-            raise _fail(CANCELLED)
+        _check_request_allowed(cancel, deadline, None)
         total += len(chunk)
         if total > MAX_AUDIO_BYTES:
             logger.warning("OpenAI Speech response exceeded the audio size limit; discarded.")
@@ -166,21 +190,32 @@ def _read_bounded(response, cancel: Optional[Event]) -> bytes:
     return b"".join(chunks)
 
 
-def _call(api_key: str, payload: dict, *, cancel: Optional[Event] = None,
-          read_timeout: float = READ_TIMEOUT_SECONDS) -> bytes:
+def _call_network(
+    api_key: str,
+    payload: dict,
+    *,
+    cancel: Optional[Event] = None,
+    privacy_guard: Optional[Callable[[], bool]] = None,
+    deadline: Optional[float] = None,
+    read_timeout: float = READ_TIMEOUT_SECONDS,
+) -> bytes:
     import httpx
 
     if not api_key or len(api_key) > MAX_API_KEY_CHARS:
         raise _fail(NOT_CONFIGURED)
-    if cancel is not None and cancel.is_set():
-        raise _fail(CANCELLED)
+    deadline = deadline if deadline is not None else new_deadline()
+    _check_request_allowed(cancel, deadline, privacy_guard)
 
     try:
-        with _client(read_timeout) as client:
+        remaining = max(0.001, deadline - time.monotonic())
+        with _client(min(read_timeout, remaining)) as client:
+            # This is the last instruction before httpx sends bytes. Privacy
+            # may have changed while Credential Manager was being read.
+            _check_request_allowed(cancel, deadline, privacy_guard)
             with client.stream(
                 "POST", SPEECH_PATH, headers=_headers(api_key), json=payload,
             ) as response:
-                body = _read_bounded(response, cancel)
+                body = _read_bounded(response, cancel, deadline)
                 response._content = body  # noqa: SLF001
                 if response.is_redirect:
                     logger.warning("OpenAI Speech returned a redirect; refusing it.")
@@ -194,11 +229,10 @@ def _call(api_key: str, payload: dict, *, cancel: Optional[Event] = None,
                 ):
                     logger.warning("OpenAI Speech returned a non-audio content type.")
                     raise _fail(BAD_RESPONSE)
-                if not body.startswith(b"RIFF"):
+                if len(body) < 12 or body[:4] != b"RIFF" or body[8:12] != b"WAVE":
                     logger.warning("OpenAI Speech returned audio that was not RIFF/WAV.")
                     raise _fail(BAD_RESPONSE)
-                if cancel is not None and cancel.is_set():
-                    raise _fail(CANCELLED)
+                _check_request_allowed(cancel, deadline, privacy_guard)
                 return body
     except OpenAITTSError:
         raise
@@ -211,6 +245,45 @@ def _call(api_key: str, payload: dict, *, cancel: Optional[Event] = None,
         raise _fail(PROVIDER_ERROR) from None
 
 
+def _call(
+    api_key: str,
+    payload: dict,
+    *,
+    cancel: Optional[Event] = None,
+    privacy_guard: Optional[Callable[[], bool]] = None,
+    deadline: Optional[float] = None,
+    read_timeout: float = READ_TIMEOUT_SECONDS,
+) -> bytes:
+    """Apply a true wall-clock deadline around the bounded HTTP call.
+
+    httpx timeouts bound individual socket operations, not the sum of a
+    response made of many slow chunks. The outer Future makes the caller's
+    deadline monotonic and total. A timed-out worker may finish later, but
+    its bytes have no playback owner and are never returned to the engine.
+    """
+    deadline = deadline if deadline is not None else new_deadline()
+    _check_request_allowed(cancel, deadline, privacy_guard)
+    remaining = max(0.001, deadline - time.monotonic())
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="jarvis-openai-tts",
+    )
+    future = executor.submit(
+        _call_network,
+        api_key,
+        payload,
+        cancel=cancel,
+        privacy_guard=privacy_guard,
+        deadline=deadline,
+        read_timeout=min(read_timeout, remaining),
+    )
+    try:
+        return future.result(timeout=remaining)
+    except concurrent.futures.TimeoutError:
+        raise _fail(TIMEOUT) from None
+    finally:
+        executor.shutdown(wait=False)
+
+
 def synthesise_wav(
     text: str,
     api_key: str,
@@ -220,6 +293,8 @@ def synthesise_wav(
     speed: float = DEFAULT_SPEED,
     instructions: str = DEFAULT_INSTRUCTIONS,
     cancel: Optional[Event] = None,
+    privacy_guard: Optional[Callable[[], bool]] = None,
+    deadline: Optional[float] = None,
 ) -> bytes:
     """Generate bounded WAV audio. Only classified errors leave this module."""
     payload = {
@@ -230,16 +305,21 @@ def synthesise_wav(
         "response_format": "wav",
         "speed": clamp_speed(speed),
     }
-    return _call(api_key, payload, cancel=cancel)
+    return _call(
+        api_key, payload, cancel=cancel, privacy_guard=privacy_guard, deadline=deadline,
+    )
 
 
-def validate_key(api_key: str) -> Tuple[bool, str]:
+def validate_key(
+    api_key: str, privacy_guard: Optional[Callable[[], bool]] = None,
+) -> Tuple[bool, str]:
     """Explicit key check through Speech; the tiny generation may incur usage."""
     try:
         synthesise_wav(
             "Voice key check.",
             api_key,
             instructions="Speak clearly and briefly. Do not imitate any person.",
+            privacy_guard=privacy_guard,
         )
     except OpenAITTSError as exc:
         return False, exc.message

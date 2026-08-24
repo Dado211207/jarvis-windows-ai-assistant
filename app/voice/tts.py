@@ -22,6 +22,7 @@ and this is still output only: nothing here opens a microphone.
 
 import threading
 from dataclasses import dataclass
+from typing import Optional
 
 from app.logging_config import get_logger
 
@@ -36,7 +37,7 @@ class TTSResult:
     success: bool
     message: str
     engine: str = ""
-    fallback_message: str = ""
+    fallback: Optional[dict] = None
 
 
 class TextToSpeechService:
@@ -144,19 +145,18 @@ class TextToSpeechService:
                 success=False,
                 message=outcome.message,
                 engine=outcome.engine,
-                fallback_message=outcome.fallback_message,
+                fallback=outcome.fallback.as_dict() if outcome.fallback else None,
             )
 
-        preview = text[:60] + ("…" if len(text) > 60 else "")
-        # Both halves of this matter and they are not the same thing.
+        preview = text[:60] + ("\u2026" if len(text) > 60 else "")
+        # Three separate facts, and folding them into one string loses two.
         #
-        # The visible message carries the engine's own words when it has
-        # something to say beyond "Speaking." — that is how a user learns
-        # the cloud voice was not the one that spoke. The structured
-        # `fallback_message` carries the same fact as a field, so a caller
-        # does not have to parse prose to detect it, and `engine` names
-        # who actually spoke. Folding all three into one string, as the
-        # voice branch did, loses the engine entirely.
+        # `message` carries the engine's own words when it has something to
+        # say beyond "Speaking." — that is how a user learns the cloud voice
+        # was not the one that spoke. `fallback` carries the same fact as a
+        # structured object, so a caller does not have to parse prose to
+        # detect it. `engine` names who actually spoke; the voice branch's
+        # final return dropped it on the non-fallback path.
         message = f"Speaking: {preview!r}"
         if outcome.message and outcome.message != "Speaking.":
             message = f"{outcome.message} {message}"
@@ -164,7 +164,7 @@ class TextToSpeechService:
             success=True,
             message=message,
             engine=outcome.engine,
-            fallback_message=outcome.fallback_message,
+            fallback=outcome.fallback.as_dict() if outcome.fallback else None,
         )
 
     def stop(self) -> TTSResult:

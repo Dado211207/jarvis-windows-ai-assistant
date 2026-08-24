@@ -141,6 +141,26 @@ def _check_classic_speech() -> str:
     return "pyttsx3 present"
 
 
+def _check_cloud_voice_transport() -> str:
+    import httpcore
+    import httpx
+
+    from app.voice import openai_tts
+
+    if openai_tts.API_BASE != "https://api.openai.com":
+        raise RuntimeError("OpenAI Speech destination is not pinned")
+    return (
+        f"httpx {getattr(httpx, '__version__', 'unknown')}; "
+        f"httpcore {getattr(httpcore, '__version__', 'unknown')}; openai_tts"
+    )
+
+
+def _check_windows_wav_playback() -> str:
+    import winsound  # noqa: F401
+
+    return "winsound present"
+
+
 def _check_windows_natural_voices() -> str:
     from app.voice import winrt_voices
 
@@ -270,6 +290,8 @@ _CHECKS = (
     ("Voice pronunciation lexicon", True, _check_voice_pronunciation),
     ("Credential store (keyring)", True, _check_credential_store),
     ("Native window (pywebview)", True, _check_native_window),
+    ("Cloud voice transport (httpx/httpcore/openai_tts)", True, _check_cloud_voice_transport),
+    ("Windows WAV playback (winsound)", True, _check_windows_wav_playback),
     ("Classic speech (pyttsx3)", False, _check_classic_speech),
     ("Windows natural voices (WinRT)", False, _check_windows_natural_voices),
 )

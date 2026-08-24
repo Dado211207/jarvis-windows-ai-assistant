@@ -239,7 +239,10 @@ class SetVoiceOutputRequest(BaseModel):
     enabled: bool
 
 
-@router.get("/voice/status", response_model=VoiceStatusResponse)
+@router.get(
+    "/voice/status", response_model=VoiceStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def voice_status() -> VoiceStatusResponse:
     """`tts_engine` is the engine actually speaking, not the configured
     one. It used to report `settings.jarvis_tts_engine`, a fixed string
@@ -295,7 +298,7 @@ def voice_speak(req: SpeakRequest) -> dict:
         "success": result.success,
         "message": result.message,
         "engine": result.engine,
-        "fallback_message": result.fallback_message,
+        "fallback": result.fallback,
     }
 
 
@@ -332,11 +335,11 @@ def voice_speak_once(req: SpeakRequest) -> dict:
         "success": result.success,
         "message": result.message,
         "engine": result.engine,
-        "fallback_message": result.fallback_message,
+        "fallback": result.fallback,
     }
 
 
-@router.get("/voice/speaking")
+@router.get("/voice/speaking", dependencies=[Depends(require_session_token)])
 def voice_speaking() -> dict:
     """Whether audio is playing right now.
 
@@ -416,7 +419,10 @@ class SetSTTEnabledRequest(BaseModel):
     enabled: bool
 
 
-@router.get("/voice/stt-status", response_model=STTStatusResponse)
+@router.get(
+    "/voice/stt-status", response_model=STTStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def voice_stt_status() -> STTStatusResponse:
     from app.voice.stt import stt_service
     available, reason = stt_service.is_available()

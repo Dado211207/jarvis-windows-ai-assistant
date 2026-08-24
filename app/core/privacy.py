@@ -65,6 +65,14 @@ class PrivacyModeState:
         with self._lock:
             self._active = bool(active)
             self._changed_at = datetime.now(timezone.utc)
+            if self._active:
+                # Cloud speech reserves the shared cancellation token before
+                # it reads a credential. Setting Privacy ON therefore cancels
+                # requests paused in Credential Manager as well as playback.
+                # Providers re-check this state on the final line before send.
+                from app.voice import audio
+
+                audio.player.stop()
             return self._active
 
 
