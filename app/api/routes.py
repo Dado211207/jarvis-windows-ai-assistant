@@ -75,14 +75,23 @@ def health() -> HealthResponse:
         db_ok = True
     except Exception:
         pass
-    brain_ok = brain.is_configured()
+    from app.core.providers import (
+        PROVIDER_ANTHROPIC,
+        anthropic_status,
+        ollama_status,
+        selected_provider,
+    )
+
+    selected = selected_provider()
+    provider = anthropic_status() if selected == PROVIDER_ANTHROPIC else ollama_status()
+    provider_ready = provider.available
     return HealthResponse(
-        status="ok",
-        healthy=True,
+        status="ok" if db_ok else "degraded",
+        healthy=db_ok,
         db="ok" if db_ok else "error",
         db_accessible=db_ok,
-        brain="claude" if brain_ok else "local",
-        brain_configured=brain_ok,
+        brain=provider.name if provider_ready else "local",
+        brain_configured=provider_ready,
         version=__version__,
         phase=__phase__,
     )

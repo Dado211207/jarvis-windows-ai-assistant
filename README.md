@@ -184,9 +184,11 @@ programs and can lose unsaved work in other applications; locking cannot.
 See `app/desktop/session.py`.
 
 **Permanently excluded:**
-- Always-listening / wake word (no microphone open in the background, ever).
-  Push-to-talk voice input **is** included: one recording per button press,
-  started and stopped by the user.
+- Wake-word speech recognition. Push-to-talk voice input **is** included:
+  one recording per button press, started and stopped by the user. Optional
+  double-clap activation is separate: when explicitly enabled, it keeps the
+  microphone open to measure sound levels only. It never recognises words,
+  records audio, or sends microphone data anywhere, and Privacy Mode stops it.
 - Email sending without an approval flow
 - AnyDesk / remote control
 - Any network exposure (API binds to `127.0.0.1` only, never `0.0.0.0`)

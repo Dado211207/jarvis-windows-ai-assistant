@@ -259,3 +259,18 @@ def test_ui_chat_post_command_roundtrip(api_client):
     assert r.status_code == 200
     body = r.json()
     assert body["success"] is True
+
+
+# ── Product-integrity copy ───────────────────────────────────────────────────
+
+def test_global_locality_copy_names_the_cloud_exception(api_client):
+    body = api_client.get("/ui/").text
+    assert "Local by default" in body
+    assert "Cloud features send only the content described" in body
+    assert "All data stays on your machine" not in body
+
+
+def test_help_explains_that_opt_in_clap_monitoring_keeps_the_microphone_open(api_client):
+    body = api_client.get("/ui/help").text
+    assert "keeps" in body and "microphone open to measure sound levels" in body
+    assert "never recognises words" in body

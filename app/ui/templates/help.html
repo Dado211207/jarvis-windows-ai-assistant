@@ -153,14 +153,16 @@
     <div class="card text-sm" style="color: var(--text-muted); line-height: 1.8;">
       The following features are planned for future phases and are <em>not present in this build</em>:
       <ul style="margin: 0.5rem 0 0 1.25rem; line-height: 2.2;">
-        <li>Wake word / always-listening voice activation (planned)</li>
+        <li>Wake-word speech recognition (not included)</li>
         <li>OCR / screen reading (planned Phase 8)</li>
         <li>Browser automation (approval-gated, planned Phase 9)</li>
         <li>Smart home and health integrations (Phase 9)</li>
       </ul>
       <p class="mt-3">
-        Push-to-talk microphone input and speech-to-text are implemented (v0.2) &mdash;
-        see the <a href="/ui/chat">Chat</a> page's mic button and the Voice (TTS) section above.
+        Push-to-talk microphone input and speech-to-text are implemented (v0.2).
+        Optional double-clap activation is separate: while you enable it, JARVIS keeps
+        the microphone open to measure sound levels, but never recognises words,
+        records audio, or sends microphone data anywhere. See the <a href="/ui/voice">Voice</a> page.
       </p>
     </div>
   </div>

@@ -73,16 +73,31 @@ function setTopbarHealth(healthy) {
   }
 }
 
-function setTopbarBrain(configured) {
+function setTopbarBrain(health) {
   const dot   = $("topbar-brain-dot");
   const label = $("topbar-brain-label");
   if (!dot || !label) return;
-  if (configured) {
-    dot.className   = "status-dot status-dot-ok";
+
+  const provider = health && health.brain;
+  if (provider === "anthropic") {
+    dot.className = "status-dot status-dot-ok";
     label.textContent = "Claude AI";
+  } else if (provider === "ollama") {
+    dot.className = "status-dot status-dot-ok";
+    label.textContent = "Ollama";
   } else {
-    dot.className   = "status-dot status-dot-warn";
+    dot.className = "status-dot status-dot-warn";
     label.textContent = "local mode";
+  }
+}
+
+async function refreshTopbarHealth() {
+  try {
+    const health = await API.get("/health");
+    setTopbarHealth(!!health.healthy);
+    setTopbarBrain(health);
+  } catch (e) {
+    setTopbarHealth(false);
   }
 }
 
@@ -126,12 +141,15 @@ async function loadDashboard() {
     if (health.status === "fulfilled") {
       const h = health.value;
       setTopbarHealth(h.healthy);
-      setTopbarBrain(h.brain_configured);
+      setTopbarBrain(h);
       setStatus("dash-health", h.healthy ? "OK" : "Degraded",
                 h.healthy ? "text-ok" : "text-err");
       setStatus("dash-db", h.db_accessible ? "Connected" : "Error",
                 h.db_accessible ? "text-ok" : "text-err");
-      setStatus("dash-brain", h.brain_configured ? "Claude AI" : "Local fallback",
+      const brainLabel = h.brain === "anthropic"
+        ? "Claude AI"
+        : (h.brain === "ollama" ? "Ollama" : "Local fallback");
+      setStatus("dash-brain", brainLabel,
                 h.brain_configured ? "text-ok" : "text-warn");
       setText("dash-version", h.version || "—");
     } else {
@@ -446,6 +464,16 @@ function setChatStatus(text) {
   if (el) el.textContent = text || "";
 }
 
+function supportsStreamingChat() {
+  // Decide before sending anything. Once /chat/stream accepts a command,
+  // retrying it through /command could execute a deterministic action
+  // twice if the response body is interrupted after the first execution.
+  return typeof ReadableStream !== "undefined"
+    && typeof TextDecoder !== "undefined"
+    && typeof Response !== "undefined"
+    && "body" in Response.prototype;
+}
+
 async function sendChat() {
   const input = $("chat-input");
   if (!input) return;
@@ -458,13 +486,19 @@ async function sendChat() {
   setChatStatus("");
 
   try {
-    await streamChat(text);
+    if (supportsStreamingChat()) {
+      await streamChat(text);
+    } else {
+      // This fallback is safe because the streaming request has not been
+      // sent. It supports old browsers without replaying accepted work.
+      await sendChatFallback(text);
+    }
   } catch (e) {
-    // Streaming was unavailable (an old browser, or a proxy that buffers
-    // the body away). Fall back to the plain one-shot endpoint rather
-    // than showing the user an error for something they can't act on.
-    console.warn("streaming unavailable, falling back to /command", e);
-    await sendChatFallback(text);
+    console.warn("chat response interrupted; command was not resent", e);
+    setChatStatus(
+      "The response connection was interrupted. JARVIS did not resend your command, " +
+      "because doing so could run an action twice."
+    );
   } finally {
     currentGenerationId = null;
     setChatBusy(false);
@@ -697,11 +731,37 @@ function addApprovalCard(actionId, data) {
   list.scrollTop = list.scrollHeight;
 }
 
+async function loadChatHistory() {
+  try {
+    const entries = await API.get("/conversation?limit=50");
+    if (!Array.isArray(entries)) return;
+
+    entries.forEach(entry => {
+      const role = entry && (entry.role === "user" || entry.role === "assistant")
+        ? entry.role
+        : null;
+      if (role && typeof entry.content === "string" && entry.content.trim()) {
+        // Historical replies get the same on-demand Listen control as new
+        // replies, but are never spoken merely because the page opened.
+        addMessage(role, entry.content, null);
+      }
+    });
+  } catch (e) {
+    setChatStatus("Stored chat history could not be loaded. New messages still work.");
+  }
+}
+
 function initChat() {
   const btn   = $("chat-send");
   const input = $("chat-input");
   const stop  = $("chat-stop");
   const reset = $("chat-reset");
+
+  // Do not let a new message race ahead of older context and then appear
+  // above it. The local read is short, and failure still unlocks chat.
+  if (btn) btn.disabled = true;
+  if (input) input.disabled = true;
+
   if (btn)   btn.addEventListener("click", sendChat);
   if (stop)  stop.addEventListener("click", stopChat);
   if (reset) reset.addEventListener("click", resetConversation);
@@ -720,6 +780,13 @@ function initChat() {
     });
   });
 
+  loadChatHistory().finally(() => {
+    if (btn) btn.disabled = false;
+    if (input) {
+      input.disabled = false;
+      input.focus();
+    }
+  });
   refreshChatProvider();
   initSpeakRepliesToggle();
   initPushToTalk();
@@ -4197,6 +4264,7 @@ function connectEventStream() {
 document.addEventListener("DOMContentLoaded", () => {
   connectEventStream();
   refreshPrivacyIndicator();
+  refreshTopbarHealth();
 
   // Every page, not just Voice: the point of clap activation is that it
   // works while JARVIS is minimised, whatever page happens to be open.

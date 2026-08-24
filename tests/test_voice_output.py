@@ -196,10 +196,12 @@ def test_the_voice_page_states_nothing_is_sent_until_you_press_send(client):
     assert "nothing is sent until you press Send" in client.get("/ui/voice").text
 
 
-def test_the_voice_page_still_denies_wake_word_and_always_listening(client):
+def test_the_voice_page_distinguishes_wake_words_from_opt_in_clap_monitoring(client):
     body = client.get("/ui/voice").text
-    assert "No wake word or always-listening, ever" in body
-    assert "not part of this build" in body
+    assert "No wake-word speech recognition" in body
+    assert "microphone remains open to measure sound levels" in body
+    assert "Privacy Mode" in body
+    assert "No wake word or always-listening, ever" not in body
 
 
 def test_the_voice_page_states_speech_is_local(client):
