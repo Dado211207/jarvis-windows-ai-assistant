@@ -359,3 +359,54 @@ def test_an_environment_variable_cannot_widen_the_bind(monkeypatch):
     configured = Settings().jarvis_host
     assert configured == "0.0.0.0", "the setting really does take the env value"
     assert loopback_host(configured) == "127.0.0.1", "…and the bind refuses it anyway"
+
+def test_database_log_action_is_the_central_redaction_boundary(isolated_db):
+    from db.database import get_db
+
+    get_db().log_action(
+        command=f"memory add my key is {SECRET}",
+        tool_name="add_memory",
+        status="failure",
+        message=f"Could not store {GITHUB}",
+    )
+
+    conn = sqlite3.connect(isolated_db)
+    try:
+        command, message = conn.execute(
+            "SELECT command, message FROM action_logs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert SECRET not in command
+    assert GITHUB not in message
+    assert "redacted" in command.lower()
+    assert "redacted" in message.lower()
+
+    raw = isolated_db.read_bytes()
+    assert SECRET.encode() not in raw
+    assert GITHUB.encode() not in raw
+
+
+def test_logs_api_returns_only_centrally_redacted_values(isolated_db):
+    from fastapi.testclient import TestClient
+
+    from app.api.server import app as jarvis_app
+    from db.database import get_db
+    from tests.conftest import prime_session
+
+    get_db().log_action(
+        command=f"memory add my key is {SECRET}",
+        tool_name="add_memory",
+        status="failure",
+        message=f"Could not store {GITHUB}",
+    )
+
+    with TestClient(jarvis_app, raise_server_exceptions=True) as client:
+        prime_session(client)
+        response = client.get("/logs")
+
+    assert response.status_code == 200
+    assert SECRET not in response.text
+    assert GITHUB not in response.text
+    assert "redacted" in response.text.lower()
