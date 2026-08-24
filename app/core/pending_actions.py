@@ -116,12 +116,19 @@ class PendingActionStore:
             action.status = "cancelled"
             return action
 
-    def mark_executed(self, action_id: str, result: Any) -> None:
+    def mark_executed(self, action_id: str, result: Any = None) -> None:
+        """Mark complete without retaining the handler payload.
+
+        The result is accepted for compatibility with older internal
+        callers but deliberately discarded: approval results can contain
+        clipboard text or other sensitive one-shot data. The confirming
+        HTTP response is the only place that payload is returned.
+        """
         with self._lock:
             action = self._actions.get(action_id)
             if action:
                 action.status = "executed"
-                action.result = result
+                action.result = None
 
     def mark_failed(self, action_id: str, error: str) -> None:
         with self._lock:
