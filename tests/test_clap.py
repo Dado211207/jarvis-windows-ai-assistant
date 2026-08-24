@@ -490,8 +490,13 @@ def test_the_worklet_never_reads_frequency_content():
 
 
 def test_the_worklet_keeps_no_audio_buffer():
-    """Six scalars of state, all overwritten every block. A test that
-    fails when somebody adds an array is the point."""
+    """Scalars of state, all overwritten every block — never an array.
+
+    The exact count is not the invariant and was never the point: one
+    more scalar (`loudBlocks`, a count of consecutive above-gate blocks)
+    was added to stop a straddled attack being missed. What must not
+    appear is somewhere to *put audio*, so this greps for the ways a
+    buffer gets built."""
     source = code_only(WORKLET.read_text(encoding="utf-8"))
 
     for forbidden in ("new Float32Array", "new Array", "push(", "slice(", "concat(", ".set("):

@@ -63,6 +63,23 @@ SECOND_CLAP_AT = 8.26
 # Instrumentation: the same resource tracking the suite uses, plus a clock
 # ---------------------------------------------------------------------------
 
+SLOW_MIC = """
+(() => {
+  // Beneath the timeline instrumentation, so the recorded resolution is
+  // the delayed one - the same layering tests/test_clap_controller.py uses.
+  const md = navigator.mediaDevices;
+  const real = md.getUserMedia.bind(md);
+  md.getUserMedia = function () {
+    const mine = /clap/i.test(String(new Error().stack));
+    const p = real.apply(md, arguments);
+    if (!mine || !window.__slowMicMs) return p;
+    return p.then(function (s) {
+      return new Promise(function (r) { setTimeout(function () { r(s); }, window.__slowMicMs); });
+    });
+  };
+})();
+"""
+
 TIMELINE = r"""
 (() => {
   "use strict";
@@ -273,7 +290,7 @@ def start_server():
 # One iteration
 # ---------------------------------------------------------------------------
 
-def run_once(playwright, clip: Path, scenario: str, chromium_path):
+def run_once(playwright, clip: Path, scenario: str, chromium_path, slow_mic_ms: int = 0):
     """Drive the real page once. Returns a dict of everything measured."""
     result = {"scenario": scenario, "ok": False, "failure": "", "events": [], "onsets": []}
 
@@ -289,6 +306,8 @@ def run_once(playwright, clip: Path, scenario: str, chromium_path):
     try:
         context = browser.new_context(permissions=["microphone"])
         page = context.new_page()
+        page.add_init_script("window.__slowMicMs = %d;" % int(slow_mic_ms))
+        page.add_init_script(SLOW_MIC)
         page.add_init_script(TIMELINE)
         errors = []
         page.on("pageerror", lambda exc: errors.append(str(exc)))
@@ -329,6 +348,8 @@ def run_once(playwright, clip: Path, scenario: str, chromium_path):
     except Exception as exc:
         result["failure"] = f"{type(exc).__name__}: {str(exc).splitlines()[0][:200]}"
         try:
+            result["message"] = page.evaluate(
+                "document.getElementById('clap-cal-message').textContent")
             result["events"] = page.evaluate("__events")
             result["onsets"] = page.evaluate("__onsets")
             result["final_state"] = page.evaluate("clapState()")
@@ -448,6 +469,8 @@ def print_iteration(n: int, clip: Path, result: dict, thresholds: dict) -> None:
               f"(fixture {SECOND_CLAP_AT - FIRST_CLAP_AT:.2f}s, "
               f"window {thresholds['minGap']}..{thresholds['maxGap']})")
     print(f"  pairs emitted        : {result.get('pairs')}")
+    if result.get("message"):
+        print(f"  calibration message  : {result['message'][:170]!r}")
 
     if result.get("test_picks_stream_index") is not None:
         print(f"  test picks stream    : index {result['test_picks_stream_index']} "
@@ -474,6 +497,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=6)
     parser.add_argument("--scenario", choices=("calibrate", "cancel", "both"), default="both")
+    parser.add_argument("--slow-mic-ms", type=int, default=0,
+                        help="delay the controller getUserMedia resolution by this many ms")
     parser.add_argument("--quiet-timeline", action="store_true",
                         help="omit the per-event timeline (keeps the summary)")
     args = parser.parse_args()
@@ -512,7 +537,8 @@ def main() -> int:
                 for scenario in scenarios:
                     clip = late if scenario == "calibrate" else quiet
                     result = run_once(
-                        playwright, clip, scenario, chromium_executable_path())
+                        playwright, clip, scenario, chromium_executable_path(),
+                        slow_mic_ms=args.slow_mic_ms)
                     if args.quiet_timeline:
                         result = dict(result, events=[])
                     print_iteration(n, clip, result, thresholds)

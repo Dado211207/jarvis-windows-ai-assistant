@@ -10,9 +10,12 @@
 // this is a transient counter and not a listener: there is nothing in
 // two amplitude numbers that could distinguish a word from a door.
 //
-// What this keeps: six numbers of state, each overwritten every block.
-// No ring buffer, no history, no samples retained past the call that
-// produced them.
+// What this keeps: a handful of numbers of state, each overwritten every
+// block — a level, a couple of flags, three timestamps, and one count of
+// consecutive above-gate blocks. No ring buffer, no array, no samples
+// retained past the call that produced them. The count was added because
+// a clap whose attack straddles a block boundary was being missed; it is
+// a number of blocks, not audio, and nothing can be reconstructed from it.
 //
 // What this sends: `{type: "clap-pair"}`, with nothing in it. Not a
 // level, not a timestamp, not a sample. The message has no payload
@@ -45,6 +48,14 @@ const DEFAULTS = {
   refractory: 1.5,
 };
 
+// How many consecutive above-gate blocks still count as "the signal
+// only just rose". Two blocks is 5.3 ms at 48 kHz: long enough to
+// cover an attack that straddles a 128-sample boundary plus one
+// block of settling, and far shorter than any speech ramp. It is
+// deliberately not calibratable — SAFE_BOUNDS covers absMin, minGap
+// and maxGap only, and the attack test is not a user's to loosen.
+const ATTACK_STRADDLE_BLOCKS = 2;
+
 class ClapProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -74,6 +85,12 @@ class ClapProcessor extends AudioWorkletProcessor {
     this.lastClapAt = -999;
     this.mutedUntil = -999;
     this.sustainedUntil = -999;
+
+    // How many consecutive blocks have been above the quiet gate. A
+    // count, not a history: one number, overwritten every block, from
+    // which no audio can be reconstructed. See the attack test below for
+    // why it is needed.
+    this.loudBlocks = 0;
   }
 
   process(inputs) {
@@ -107,7 +124,30 @@ class ClapProcessor extends AudioWorkletProcessor {
         this.lastClapAt = -999;
       }
     } else {
-      const sharp = this.prevRms < threshold * this.attackFall;
+      // Was it quiet just before this? Two ways of asking, because one
+      // was not enough.
+      //
+      // The first — "the previous block was well below threshold" — is
+      // the discriminator that rejects speech, and it must stay. But a
+      // clap's attack does not respect 128-sample boundaries. When it
+      // lands near the end of a block, that block carries a sliver of
+      // the attack and its RMS rises just above the gate: measured at
+      // 0.01268 against a gate of 0.01225, over by 0.00043. `sharp` is
+      // then false for the loud block that follows, every later block
+      // has an even higher `prevRms`, and the entire clap is swallowed.
+      // A first clap lost that way is a double clap that never happens.
+      //
+      // So a block is also treated as an attack when the signal has only
+      // just risen — `loudBlocks` counts consecutive above-gate blocks,
+      // and a straddled attack shows up as one or two of them. Speech
+      // ramps over tens of milliseconds, so by the time it crosses the
+      // threshold it has been above the gate for far longer than this
+      // and is still rejected; a swept simulation of every block phase
+      // over the suite's own speech, hum, silence, single-clap and
+      // mistimed-pair fixtures produces no onset at all.
+      const wasQuiet = this.prevRms < threshold * this.attackFall;
+      const justRose = this.loudBlocks <= ATTACK_STRADDLE_BLOCKS;
+      const sharp = wasQuiet || justRose;
       if (rms >= threshold && peak >= this.absMin && sharp && now >= this.sustainedUntil) {
         this.inTransient = true;
         this.transientStart = now;
@@ -119,6 +159,9 @@ class ClapProcessor extends AudioWorkletProcessor {
       }
     }
 
+    // Maintained here, after the decision, so `loudBlocks` describes the
+    // blocks *before* this one — exactly like `prevRms`.
+    this.loudBlocks = (rms < threshold * this.attackFall) ? 0 : this.loudBlocks + 1;
     this.prevRms = rms;
     return true;
   }

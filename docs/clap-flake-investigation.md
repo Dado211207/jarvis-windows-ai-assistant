@@ -165,3 +165,111 @@ instrument's doing. It now uses `addEventListener`, which starts
 nothing. **A diagnostic that changes the behaviour it measures is worse
 than no diagnostic**, and the 5/5 result it produced is reported in
 PR #15 as an invalid run rather than quietly dropped.
+
+
+---
+
+# Round two: the fix was incomplete, and CI was red the whole time
+
+The wait fix above is correct and stays. It was **not** the whole cause.
+
+## What the first round got wrong
+
+A 30-iteration stress run on `a0e8f9a` — the commit whose message said
+the flake was fixed — came back **6 failures in 30 (20%)**, and GitHub's
+Playwright job failed the same test on the same commit. The earlier "6
+consecutive runs, all clean" was six samples of a one-in-five event: an
+82% chance of seeing exactly that if nothing had changed. It should not
+have been reported as a result.
+
+## The second cause: a clap whose attack straddles a block boundary
+
+Failing runs report **one** onset with `peak=1.2372`; passing runs report
+two, `1.2250` then `1.2372`. `1.2372` is the *second* clap's waveform, so
+the detector was missing the **first** clap entirely and reporting the
+second as "First clap detected."
+
+Simulating `clap-processor.js` block by block over the exact fixture PCM
+and sweeping the 128 possible block phases shows why, on one line:
+
+```
+block at 8.0000s: rms=0.51758  prevRms=0.01268  gate=0.01225
+```
+
+The block *immediately before* the clap caught a sliver of its attack.
+That lifted its RMS from the noise floor (~0.0023) to `0.01268` — over
+`threshold * attackFall` by **0.00043**. `sharp` is therefore false for
+the loud block that follows; every later block has an even higher
+`prevRms`; the whole clap is swallowed. A first clap lost this way is a
+double clap that never happens.
+
+The 500 ms `getUserMedia` delay in the new test did not *cause* this. It
+decorrelated the stream start from the file start, which is what exposes
+it — and which is the normal condition on a real machine.
+
+| | missed onset | false pairs on speech / hum / silence / single / mistimed |
+|---|---|---|
+| before | 2–3 of 128 block phases | 0 |
+| after (`loudBlocks <= 2`) | **0 of 128** | **0**, all 128 phases each |
+
+The fix adds one integer — a count of consecutive above-gate blocks — and
+treats "the signal only just rose" as an attack alongside "the previous
+block was quiet". It is a count of blocks, not audio; no array, no
+history, nothing reconstructable. Speech ramps over tens of
+milliseconds and is still rejected, verified at every block phase against
+the suite's own speech, hum, silence, single-clap and mistimed-pair
+fixtures.
+
+**Browser confirmation:** 12/12 at the 500 ms delay that previously
+failed 2 in 10, with both claps detected every time.
+
+## The regression test, and how its first version was worthless
+
+`test_a_clap_is_detected_whatever_block_phase_its_attack_lands_on` renders
+the **real worklet** in an `OfflineAudioContext`, which starts at sample 0
+in aligned 128-sample quanta — so a clap placed at sample `48000 + phase`
+lands at exactly that phase, every run, on every machine.
+
+Its first version synthesised the audio in JavaScript with its own
+pseudo-random generator. It **passed against the broken detector**,
+because the defect is a block landing 0.00043 above a gate and a different
+random sequence never reaches that edge. The audio is now the exact
+16-bit PCM the WAV fixtures contain, transferred as base64. Reverted, the
+detector now fails phases 62, 126 and 127 and passes phase 0 — the
+control.
+
+## The other thing round one missed entirely: `ci.yml` was never checked
+
+`ci.yml` has failed on **every commit of this corrective pass** — runs
+#148 through #155, `5f4cdd4` to `a0e8f9a`. The last green was #147 on
+`9bb5439`, before the Coding Workspace work began. `fc67065`, reported as
+verified with two green acceptance runs, was carrying
+`15 failed, 2827 passed` the whole time.
+
+Only `windows-installer.yml` was ever inspected. "Gate x2 green" was true
+of *local* runs and was reported as though it meant CI.
+
+**The failures:** all fifteen in `tests/test_coding_browser_qa.py`, all
+`reason='The browser connection closed.'`, `opened=False`, with 6-9
+browser processes already gone by cleanup time.
+
+**Why:** that file drives a real browser and is deliberately not behind
+the `browser` marker — on Windows it runs against the Edge every target
+machine has, which is the point of the suite. But `ci.yml`'s default job
+installed no browser at all, so `browser_engine` fell through PATH to
+whatever `google-chrome` the runner image ships, and that did not start.
+
+**Why nobody could tell:** `_OwnedBrowser.start()` sent the browser's
+stderr to `DEVNULL`. The one artefact that would have named the cause was
+discarded, leaving a sentence that says only that something ended.
+
+Two fixes:
+
+* the browser's stderr is captured to a temporary file, and its last few
+  lines — path-stripped, bounded, noise-filtered — are reported. A
+  browser that dies at startup is now `ENGINE_UNAVAILABLE` with its own
+  words, not `FAILED` with a shrug;
+* `ci.yml`'s default job installs the same Chromium the Playwright job
+  does. `browser_engine` consults `~/.cache/ms-playwright` ahead of PATH,
+  so Ubuntu and Windows exercise the same code against a browser that
+  works. No test was skipped, re-marked, or had an assertion relaxed.

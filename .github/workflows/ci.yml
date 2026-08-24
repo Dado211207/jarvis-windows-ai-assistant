@@ -22,7 +22,24 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-test.txt
+
+      # tests/test_coding_browser_qa.py drives a real browser over the
+      # DevTools protocol and is deliberately NOT behind the `browser`
+      # marker: on Windows it runs against the Edge that every target
+      # machine has, and that coverage is the point of the suite.
+      #
+      # This job had no browser installed at all, so browser_engine fell
+      # through to whatever `google-chrome` the runner image happens to
+      # ship, which did not start — fifteen failures reported only as
+      # "The browser connection closed." Installing the same Chromium the
+      # Playwright job uses puts it in ~/.cache/ms-playwright, which
+      # browser_engine consults ahead of PATH, so Ubuntu and Windows now
+      # exercise the same code against a browser that works.
+      - name: Install Chromium (with OS deps) for the Coding Workspace checks
+        run: playwright install --with-deps chromium
 
       - name: Compile check (app + db)
         run: python -m compileall app db

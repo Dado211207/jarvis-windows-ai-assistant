@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -107,6 +108,23 @@ def availability() -> BrowserAvailability:
 # The browser process, owned and provably stopped
 # --------------------------------------------------------------------------
 
+# The browser's own stderr, kept only to explain a failure to start.
+# Four lines is enough to name a missing shared library or a refused
+# sandbox; more would be a log of somebody's machine.
+MAX_STDERR_BYTES = 16384
+
+#: Anything path-shaped is replaced before the text is shown or logged.
+#: A profile directory and an executable path both carry the account name.
+_PATHISH = re.compile(r"(?:[A-Za-z]:\\|/)[^\s\"\']{2,}")
+
+#: Chromium says these on every healthy Linux CI start.
+_STDERR_NOISE = (
+    "Fontconfig", "dbus", "DBus", "GPU process", "gpu_memory",
+    "Failed to connect to the bus", "XDG_RUNTIME_DIR",
+    "vaapi", "MESA", "libva", "Floating point",
+)
+
+
 class _OwnedBrowser:
     """A browser JARVIS started, and the means to prove it stopped.
 
@@ -124,6 +142,7 @@ class _OwnedBrowser:
         self._process: Optional[subprocess.Popen] = None
         self._own: Optional[process_tree.ProcessIdentity] = None
         self._captured: List[process_tree.ProcessIdentity] = []
+        self._stderr = tempfile.TemporaryFile()   # closed in stop()
 
     def start(self) -> None:
         from app.coding.runner import _identity_for_pid, build_environment
@@ -138,13 +157,44 @@ class _OwnedBrowser:
             self.argv,
             env=build_environment(),   # allowlisted: no ANTHROPIC_API_KEY, ever
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            # Kept, not discarded. A browser that will not start says why
+            # on stderr, and throwing that away left "The browser
+            # connection closed." as the whole of the evidence — fifteen
+            # CI failures whose actual cause was unreadable from the log.
+            # It goes to a temporary file rather than a pipe because
+            # nothing drains a pipe while the browser runs, and a full
+            # pipe buffer would block the process we are inspecting.
+            stderr=self._stderr,
             stdin=subprocess.DEVNULL,
             shell=False,
             creationflags=creationflags,
         )
         self._own = _identity_for_pid(self._process.pid)
         self.recapture()
+
+    def startup_error(self) -> str:
+        """The tail of the browser's own stderr, redacted and bounded.
+
+        Only the last few lines, only when the browser failed: enough to
+        name a missing library or a refused sandbox, short enough for a
+        UI. Paths are stripped — a profile directory and an executable
+        path both carry the account name, and this reaches a log file.
+        """
+        try:
+            self._stderr.seek(0)
+            raw = self._stderr.read(MAX_STDERR_BYTES)
+        except (OSError, ValueError):
+            return ""
+        text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+        lines = []
+        for line in text.splitlines():
+            line = _PATHISH.sub("<path>", line).strip()
+            # Chromium is chatty about fonts, dbus and GPU probing on any
+            # Linux CI machine; those lines are noise on a healthy run.
+            if not line or any(noise in line for noise in _STDERR_NOISE):
+                continue
+            lines.append(line[:200])
+        return " | ".join(lines[-4:])
 
     def recapture(self) -> None:
         """Chromium starts its renderer and GPU children lazily. One born
@@ -155,6 +205,9 @@ class _OwnedBrowser:
         for identity in process_tree.capture_descendants(self._process.pid):
             if (identity.pid, identity.create_time) not in known:
                 self._captured.append(identity)
+
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.poll() is None
 
     def stop(self) -> dict:
         """Terminate the browser and everything it started. Never raises."""
@@ -183,6 +236,10 @@ class _OwnedBrowser:
             report_dict["error"] = "cleanup_failed"
         finally:
             self._remove_profile()
+            try:
+                self._stderr.close()
+            except Exception:  # noqa: BLE001 — cleanup must never raise
+                pass
         return report_dict
 
     def _remove_profile(self) -> None:
@@ -535,8 +592,19 @@ async def _run_async(engine, port: int, url: str, route: str, task_id: str,
             findings.fix = browser_engine.unavailable_fix()
             return findings
 
-        socket_url = await _devtools_endpoint(browser, profile_dir,
-                                              BROWSER_START_TIMEOUT_SECONDS)
+        try:
+            socket_url = await _devtools_endpoint(browser, profile_dir,
+                                                  BROWSER_START_TIMEOUT_SECONDS)
+        except Exception as exc:            # noqa: BLE001 - re-raised or reported
+            detail = browser.startup_error()
+            if detail:
+                findings.state = QaState.ENGINE_UNAVAILABLE
+                findings.reason = (
+                    f"The browser did not open a debugging endpoint. "
+                    f"It reported: {detail}")
+                findings.fix = browser_engine.unavailable_fix()
+                return findings
+            raise
         browser.recapture()
 
         async with cdp.CdpSession(socket_url, on_event=collector.handle) as page:
@@ -553,8 +621,18 @@ async def _run_async(engine, port: int, url: str, route: str, task_id: str,
         findings.reason = str(exc)
         findings.fix = "A page that never finishes loading is the usual cause."
     except cdp.CdpError as exc:
-        findings.state = QaState.FAILED
-        findings.reason = str(exc)
+        # A browser that exited during the check is an engine problem, not
+        # a verdict on the page, and its own stderr is the only thing that
+        # says which. Discarding it left fifteen CI failures reading only
+        # "The browser connection closed."
+        detail = browser.startup_error()
+        if detail and not browser.is_running():
+            findings.state = QaState.ENGINE_UNAVAILABLE
+            findings.reason = f"{exc} The browser reported: {detail}"
+            findings.fix = browser_engine.unavailable_fix()
+        else:
+            findings.state = QaState.FAILED
+            findings.reason = f"{exc} {detail}".strip() if detail else str(exc)
     except _Blocked as exc:
         findings.state = QaState.BLOCKED
         findings.reason = str(exc)

@@ -537,3 +537,82 @@ def test_ownership_is_checked_before_anything_navigates(monkeypatch):
     findings = browser_qa.run_checks(Session(), "/")
     assert calls == ["asked"]
     assert findings.state is QaState.PREVIEW_UNAVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# When the browser will not start, say what it said
+# ---------------------------------------------------------------------------
+
+def test_a_browser_that_will_not_start_reports_its_own_error(tmp_path):
+    """"The browser connection closed." is not a diagnosis.
+
+    That was the entire evidence behind fifteen CI failures, because the
+    browser's stderr went to DEVNULL. A browser that exits at startup
+    says why — a missing shared library, a refused sandbox — and that
+    sentence is the difference between a fixable report and a dead end.
+    """
+    import os
+    import stat
+
+    from app.coding import browser_engine, browser_qa
+
+    stub = tmp_path / "not-really-a-browser.sh"
+    stub.write_text(
+        "#!/bin/sh\n"
+        "echo 'error while loading shared libraries: libnss3.so: "
+        "cannot open shared object file' >&2\n"
+        "exit 127\n"
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    if os.name == "nt":                       # pragma: no cover - POSIX shim
+        pytest.skip("the stub is a shell script; the assertion is platform-neutral")
+
+    engine = browser_engine.Engine("chromium", "Chromium", str(stub))
+    owned = browser_qa._OwnedBrowser(engine, [str(stub)], str(tmp_path / "profile"))
+    owned.start()
+    owned._process.wait(timeout=15)
+    try:
+        detail = owned.startup_error()
+    finally:
+        owned.stop()
+
+    assert owned.is_running() is False
+    assert "libnss3.so" in detail, (
+        f"the browser's own reason was lost; got {detail!r}"
+    )
+
+
+def test_the_reported_browser_error_carries_no_path(tmp_path):
+    """These reasons reach a log file and the Coding Workspace page. A
+    Windows profile directory and an executable path both contain the
+    account name."""
+    import os
+    import stat
+
+    from app.coding import browser_engine, browser_qa
+
+    stub = tmp_path / "pathy.sh"
+    stub.write_text(
+        "#!/bin/sh\n"
+        "echo 'cannot create /home/somebody/.cache/profile-1234: denied' >&2\n"
+        "echo 'C:\\\\Users\\\\Somebody\\\\AppData\\\\Local\\\\Temp\\\\p refused' >&2\n"
+        "exit 1\n"
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+    if os.name == "nt":                       # pragma: no cover - POSIX shim
+        pytest.skip("the stub is a shell script; the assertion is platform-neutral")
+
+    engine = browser_engine.Engine("chromium", "Chromium", str(stub))
+    owned = browser_qa._OwnedBrowser(engine, [str(stub)], str(tmp_path / "profile"))
+    owned.start()
+    owned._process.wait(timeout=15)
+    try:
+        detail = owned.startup_error()
+    finally:
+        owned.stop()
+
+    assert "somebody" not in detail.lower(), f"an account name reached the report: {detail!r}"
+    assert "/home/" not in detail and "C:\\" not in detail, (
+        f"a path reached the report: {detail!r}"
+    )
+    assert "<path>" in detail, "the path should be replaced, not merely dropped"

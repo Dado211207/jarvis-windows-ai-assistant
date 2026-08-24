@@ -424,3 +424,160 @@ def test_switching_it_off_stops_the_microphone(live_server, clap_browser, armed,
     assert page.evaluate("ClapController.state()") == "disabled"
     assert page.evaluate("ClapController.activeDeviceId()") == ""
     context.close()
+
+
+# ---------------------------------------------------------------------------
+# The attack test, at sample-exact block phases
+#
+# A clap's attack does not respect 128-sample boundaries. When it lands
+# near the end of a block, that block carries a sliver of the attack and
+# its RMS rises just above the quiet gate — measured at 0.01268 against a
+# gate of 0.01225 — so `prevRms < threshold * attackFall` is false for the
+# loud block that follows and the whole clap is swallowed. A first clap
+# lost that way is a double clap that never happens.
+#
+# Live capture cannot test this: the phase depends on where the audio
+# device happens to start, which is exactly what nothing controls. An
+# OfflineAudioContext renders from sample 0 in aligned 128-sample quanta,
+# so a clap placed at sample N lands at phase N % 128, every time.
+#
+# This drives the real app/ui/static/clap-processor.js. Nothing is mocked
+# and no algorithm is reimplemented — a detector asserted against a Python
+# copy of itself would prove nothing about the file that ships.
+# ---------------------------------------------------------------------------
+
+OFFLINE_DETECTOR = """
+async (spec) => {
+  const RATE = 48000;
+  // The audio arrives as base64 16-bit PCM — byte-for-byte the samples
+  // _write_wav() would have put in a WAV. Synthesising it in JavaScript
+  // instead looked equivalent and was not: the defect this guards
+  // against is a block whose RMS lands 0.00043 above a gate, and a
+  // different pseudo-random sequence simply does not reach that edge.
+  // The first version of this test did exactly that and passed against
+  // the broken detector.
+  const raw = atob(spec.pcm);
+  const total = raw.length / 2;
+  const ctx = new OfflineAudioContext(1, total, RATE);
+  await ctx.audioWorklet.addModule('/ui/static/clap-processor.js');
+
+  const buffer = ctx.createBuffer(1, total, RATE);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < total; i++) {
+    let v = (raw.charCodeAt(i * 2) | (raw.charCodeAt(i * 2 + 1) << 8));
+    if (v >= 0x8000) v -= 0x10000;
+    data[i] = v / 32767;
+  }
+
+  const node = new AudioWorkletNode(ctx, 'clap-processor',
+    { processorOptions: { calibrate: true } });
+  const onsets = [];
+  let pairs = 0;
+  node.port.onmessage = (e) => {
+    const d = e.data;
+    if (!d) return;
+    if (d.type === 'clap-onset') onsets.push({ at: d.at, peak: d.peak, gap: d.gap });
+    else if (d.type === 'clap-pair') pairs += 1;
+  };
+
+  // A worklet is only pulled when it reaches the destination. Silenced,
+  // and offline anyway, so nothing is ever audible.
+  const silence = ctx.createGain();
+  silence.gain.value = 0;
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(node);
+  node.connect(silence);
+  silence.connect(ctx.destination);
+  source.start();
+
+  await ctx.startRendering();
+  await new Promise((r) => setTimeout(r, 150));   // let queued messages drain
+  return { onsets: onsets, pairs: pairs };
+}
+"""
+
+
+def _pcm16_base64(audio) -> str:
+    """Exactly what _write_wav() would write, as base64."""
+    import base64
+
+    raw = b"".join(
+        struct.pack("<h", max(-32767, min(32767, int(s * 32767)))) for s in audio
+    )
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _offline_clip(clap_samples, total_seconds=1.6):
+    """Noise floor plus claps at exact sample positions."""
+    audio = _noise_floor(_samples(total_seconds))
+    for position, seed in clap_samples:
+        audio = _mix(audio, _clap(seed=seed), position / RATE)
+    return audio
+
+
+def _render_offline(clap_browser, tmp_path, audio):
+    browser = clap_browser(build_clip("near_silence", tmp_path))
+    context = browser.new_context(permissions=["microphone"])
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    page.goto(f"{BASE_URL}/ui/voice", wait_until="networkidle")
+    result = page.evaluate(OFFLINE_DETECTOR, {"pcm": _pcm16_base64(audio)})
+    assert errors == [], f"page errors: {errors}"
+    context.close()
+    return result
+
+
+@pytest.mark.parametrize("phase", [0, 62, 126, 127])
+def test_a_clap_is_detected_whatever_block_phase_its_attack_lands_on(
+    live_server, clap_browser, armed, tmp_path, phase,
+):
+    """Phases 62, 126 and 127 were missed entirely before this was fixed.
+
+    48000 is a multiple of 128, so a clap at sample `48000 + phase`
+    begins exactly `phase` samples into a render quantum. The second
+    clap follows 0.26 s later, inside the 0.12-0.7 s pairing window.
+    Phase 0 is the control: it always worked and must keep working.
+    """
+    first = _samples(1.0) + phase
+    audio = _offline_clip([(first, 11), (first + _samples(0.26), 12)])
+    result = _render_offline(clap_browser, tmp_path, audio)
+
+    assert len(result["onsets"]) == 2, (
+        f"block phase {phase}: the detector reported {len(result['onsets'])} onset(s), "
+        f"not 2 — an attack straddling a block boundary was swallowed. "
+        f"Got {result['onsets']}"
+    )
+    assert result["pairs"] == 1, f"block phase {phase}: {result['pairs']} pairs, expected 1"
+
+
+def test_the_offline_harness_still_rejects_what_it_should(
+    live_server, clap_browser, armed, tmp_path,
+):
+    """The phase fix must not have bought detection with false positives.
+
+    One clap alone, and two claps too far apart, at the same awkward
+    phase that exposed the defect.
+    """
+    single = _render_offline(
+        clap_browser, tmp_path, _offline_clip([(_samples(1.0) + 62, 11)]))
+    assert single["pairs"] == 0, "a single clap activated"
+    assert len(single["onsets"]) == 1, "a single clap did not produce exactly one onset"
+
+    mistimed = _render_offline(clap_browser, tmp_path, _offline_clip(
+        [(_samples(0.3) + 62, 11), (_samples(1.2) + 62, 12)]))
+    assert mistimed["pairs"] == 0, "two claps 0.9 s apart activated"
+
+
+def test_speech_and_a_hum_produce_no_onset_at_an_awkward_phase(
+    live_server, clap_browser, armed, tmp_path,
+):
+    """The attack test was loosened to catch straddled claps. This is the
+    other half of that trade: the sounds it must still refuse."""
+    for name, overlay in (("speech", _speech_like(1.0)), ("hum", _hum(1.0))):
+        audio = _noise_floor(_samples(1.6))
+        audio = _mix(audio, overlay, (_samples(0.3) + 62) / RATE)
+        result = _render_offline(clap_browser, tmp_path, audio)
+        assert result["pairs"] == 0, f"{name} activated"
+        assert result["onsets"] == [], f"{name} produced onsets: {result['onsets']}"

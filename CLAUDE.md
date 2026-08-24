@@ -400,6 +400,28 @@ carry the full reasoning; these are the lines that may not move.
   holding it.** The timer is armed before `start()` is awaited, because
   `getUserMedia` can hang and an unbounded acquisition phase is not
   bounded.
+- **An attack that straddles a 128-sample block is still an attack.**
+  A clap landing near the end of a block lifts that block's RMS just over
+  the quiet gate — 0.01268 against 0.01225 — so `prevRms < threshold *
+  attackFall` rejected the loud block that followed and the whole clap
+  was swallowed, on 2-3 of 128 block phases and about one live run in
+  five. `loudBlocks` (one integer, a count of consecutive above-gate
+  blocks, never an array) makes "the signal only just rose" an attack
+  too. Verified at every one of the 128 phases against the suite's own
+  speech, hum, silence, single-clap and mistimed-pair fixtures: no false
+  pair, no false onset. The regression test renders the real worklet in
+  an `OfflineAudioContext` from the exact 16-bit PCM — its first version
+  synthesised the audio in JavaScript, never reached the 0.00043 edge,
+  and passed against the broken detector.
+- **A browser that will not start must say why.** `_OwnedBrowser` sent
+  the browser's stderr to `DEVNULL`, so fifteen CI failures read only
+  "The browser connection closed." The last few lines are now captured,
+  path-stripped and reported, and a browser that died at startup is
+  `ENGINE_UNAVAILABLE` rather than `FAILED`.
+- **Check the CI that actually runs.** `ci.yml` was red on every commit
+  of the Coding Workspace corrective pass — #148 to #155 — while only
+  `windows-installer.yml` was being inspected and local runs were being
+  reported as "the gate". A local pass is not a CI pass.
 - **A diagnostic may not perturb what it measures.** The first version of
   `scripts/diagnose_clap_flake.py` observed the detector by replacing
   `port.onmessage` with a JS accessor, which removed the implicit
