@@ -84,13 +84,19 @@ def health() -> HealthResponse:
 
     selected = selected_provider()
     provider = anthropic_status() if selected == PROVIDER_ANTHROPIC else ollama_status()
-    provider_ready = provider.available
+    provider_ready = bool(provider.available)
     return HealthResponse(
+        # The app remains operational for deterministic local commands
+        # without an AI provider; database failure is the service-health
+        # boundary, while the separate brain fields report provider truth.
         status="ok" if db_ok else "degraded",
         healthy=db_ok,
         db="ok" if db_ok else "error",
         db_accessible=db_ok,
-        brain=provider.name if provider_ready else "local",
+        # Keep the selected provider visible even when it is unavailable.
+        # Calling that state "local" hid a broken Ollama process or missing
+        # Anthropic key and made the top bar disagree with Settings.
+        brain=selected,
         brain_configured=provider_ready,
         version=__version__,
         phase=__phase__,
@@ -281,9 +287,16 @@ def voice_speak(req: SpeakRequest) -> dict:
         return {
             "success": False,
             "message": "Voice output is turned off. Turn it on from the Voice page.",
+            "engine": "",
+            "fallback_message": "",
         }
     result = tts_service.speak(req.text)
-    return {"success": result.success, "message": result.message}
+    return {
+        "success": result.success,
+        "message": result.message,
+        "engine": result.engine,
+        "fallback_message": result.fallback_message,
+    }
 
 
 @router.post("/voice/speak-once", dependencies=[Depends(require_session_token)])
@@ -311,9 +324,16 @@ def voice_speak_once(req: SpeakRequest) -> dict:
         return {
             "success": False,
             "message": engines.unavailable_message(tts_service.voice_key),
+            "engine": "",
+            "fallback_message": "",
         }
     result = tts_service.speak(req.text)
-    return {"success": result.success, "message": result.message}
+    return {
+        "success": result.success,
+        "message": result.message,
+        "engine": result.engine,
+        "fallback_message": result.fallback_message,
+    }
 
 
 @router.get("/voice/speaking")

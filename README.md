@@ -55,10 +55,11 @@ approval system below — it is built on top of it.
   now also proven under real multi-threaded contention, not only
   sequential double-calls (`tests/test_concurrency.py`).
 
-**Deferred (named honestly, not silently skipped):** voice input
-(speech-to-text, wake word), a full visual redesign, an automated
-Playwright/axe browser-test suite, a Windows CI smoke job, and an Ollama
-provider adapter. See `docs/audit-v0.2.md` for the baseline audit and
+**Deferred (named honestly, not silently skipped):** wake-word speech
+recognition, a full visual redesign, an automated Playwright/axe browser-test
+suite, and a Windows CI smoke job. Push-to-talk speech recognition and the
+Ollama provider are implemented; optional double-clap activation measures
+sound levels only while explicitly enabled. See `docs/audit-v0.2.md` for the baseline audit and
 `docs/THREAT_MODEL.md` for exactly what is and is not protected.
 
 ---
@@ -141,7 +142,7 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 | Local fallback when no API key | ✅ |
 | Windows installer scripts | ✅ |
 | Pytest test suite | ✅ |
-| TTS voice output (pyttsx3, local/offline) | ✅ |
+| TTS voice output (local voices by default; optional ElevenLabs cloud voice) | ✅ |
 | Voice CLI commands (speak on/off/test/status) | ✅ |
 | Voice API endpoints (`/voice/status`, `/voice/speak`, `/voice/stop`) | ✅ |
 | Local browser dashboard (7 pages, dark UI) | ✅ |
@@ -417,7 +418,7 @@ JARVIS_AI_MODEL=            # Leave blank for default (claude-haiku-4-5-20251001
 JARVIS_AI_MAX_TOKENS=250
 JARVIS_AI_TIMEOUT_SECONDS=20
 
-# Phase 3 TTS / voice output (local/offline — no cloud API required)
+# Phase 3 TTS / voice output (local by default; cloud API not required)
 JARVIS_TTS_ENABLED=false    # Set to true to enable voice output
 JARVIS_TTS_ENGINE=pyttsx3
 JARVIS_TTS_RATE=175         # Words per minute
@@ -573,7 +574,7 @@ app/
     maintenance.py  — Log clearing (approval-required)
     clipboard.py     (v0.2) — read_clipboard (SENSITIVE, approval-required)
   voice/
-    tts.py          — Offline speech output (pyttsx3)
+    tts.py          — Spoken-reply service and local/cloud output gate
     stt.py          — Push-to-talk speech recognition (local, opt-in)
   launcher/         — Desktop shell: tray, server child, native window child
   ui/
@@ -643,7 +644,7 @@ SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 |---|---|---|
 | 1 | Foundation: CLI, router, tools, API, SQLite | ✅ Done |
 | 2 | Claude AI integration (natural-language fallback, conversation memory) | ✅ Done |
-| 3 | TTS voice output (pyttsx3, local/offline, output-only — no microphone) | ✅ Done |
+| 3 | TTS voice output (local by default, optional ElevenLabs; output-only) | ✅ Done |
 | 4 | Local browser dashboard (7 pages, dark UI, Jinja2 + vanilla JS) | ✅ Done |
 | 5 | Action approval system (pending / confirm / cancel, Actions UI) | ✅ Done |
 | 6 | Safe Windows actions expansion (URL opener, folders, notes, disk, network, battery) | ✅ Done |

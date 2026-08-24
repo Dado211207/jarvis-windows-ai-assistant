@@ -148,7 +148,9 @@ class Database:
         conn = self._get_conn()
         rows = conn.execute(
             "SELECT id, role, content, created_at FROM conversations "
-            "ORDER BY created_at DESC LIMIT ?",
+            # IDs are monotonic and break same-timestamp ties deterministically.
+            # User and assistant turns are commonly inserted within one second.
+            "ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [

@@ -148,13 +148,16 @@ def test_the_chat_page_speaks_a_completed_answer():
 
 
 def test_an_approval_prompt_is_never_read_aloud():
-    """Something to read and decide on, not to hear read out. The real
-    behaviour is verified in a browser — see
-    tests/test_playwright_e2e.py::test_an_approval_prompt_is_not_spoken;
-    this only pins the intent next to the code."""
+    """Both streaming and one-shot chat pass through one approval gate."""
     js = _js()
-    routed = js[js.index('evt.type === "routed"'):js.index('evt.type === "delta"')]
-    assert "not spoken" in routed
+    render = js[js.index("function renderCommandResponse"):js.index("async function streamChat")]
+    approval = render[:render.index("const reply")]
+    assert "requires_approval" in approval
+    assert "addApprovalCard" in approval
+    assert "return null" in approval
+    assert "speakReply" not in approval
+    assert 'renderCommandResponse(evt.response || {})' in js
+    assert 'renderCommandResponse(await API.post("/command"' in js
 
 
 def test_a_failed_answer_is_never_spoken():
@@ -204,6 +207,44 @@ def test_the_voice_page_distinguishes_wake_words_from_opt_in_clap_monitoring(cli
     assert "No wake word or always-listening, ever" not in body
 
 
-def test_the_voice_page_states_speech_is_local(client):
+def test_the_voice_page_distinguishes_local_speech_from_elevenlabs(client):
     body = client.get("/ui/voice").text
-    assert "nothing is sent to a speech service" in body
+    assert "Speech is produced on this computer unless you explicitly select ElevenLabs" in body
+    assert "AI-generated voice" in body
+    assert "requires internet access" in body
+    assert "may incur cost" in body
+    assert "Privacy Mode blocks every ElevenLabs request" in body
+    assert "nothing is sent to a speech service" not in body
+
+
+def test_cloud_fallback_notice_survives_engine_service_and_api(client):
+    from app.api.routes import tts_service
+    from app.voice import engines
+
+    notice = (
+        "ElevenLabs could not be reached. "
+        "Using the Windows natural voice instead."
+    )
+    outcome = engines.SpeakOutcome(
+        started=True,
+        engine=engines.WINDOWS,
+        message=notice,
+        fallback_message=notice,
+    )
+    with patch("app.voice.engines.speak", return_value=outcome), \
+         patch.object(tts_service, "is_available", return_value=True):
+        body = client.post("/voice/speak-once", json={"text": "hello"}).json()
+
+    assert body["success"] is True
+    assert body["engine"] == engines.WINDOWS
+    assert body["fallback_message"] == notice
+
+
+def test_chat_keeps_a_successful_fallback_notice_visible():
+    js = _js()
+    seam = js[js.index("function handleSpeechResponse"):js.index("// The speaker button")]
+    assert "fallback_message" in seam
+    assert "setChatStatus(fallback)" in seam
+    assert "Never erase this" in seam
+    assert "handleSpeechResponse(r, btn, true)" in js
+    assert "handleSpeechResponse(r, btn, false)" in js

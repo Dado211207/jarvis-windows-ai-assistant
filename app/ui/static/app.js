@@ -81,15 +81,14 @@ function setTopbarBrain(health) {
   if (!dot || !label) return;
 
   const provider = health && health.brain;
+  const ready = !!(health && health.brain_configured);
+  dot.className = "status-dot " + (ready ? "status-dot-ok" : "status-dot-warn");
   if (provider === "anthropic") {
-    dot.className = "status-dot status-dot-ok";
-    label.textContent = "Claude AI";
+    label.textContent = ready ? "Claude AI" : "Claude unavailable";
   } else if (provider === "ollama") {
-    dot.className = "status-dot status-dot-ok";
-    label.textContent = "Ollama";
+    label.textContent = ready ? "Ollama" : "Ollama unavailable";
   } else {
-    dot.className = "status-dot status-dot-warn";
-    label.textContent = "local mode";
+    label.textContent = "AI unavailable";
   }
 }
 
@@ -149,8 +148,10 @@ async function loadDashboard() {
       setStatus("dash-db", h.db_accessible ? "Connected" : "Error",
                 h.db_accessible ? "text-ok" : "text-err");
       const brainLabel = h.brain === "anthropic"
-        ? "Claude AI"
-        : (h.brain === "ollama" ? "Ollama" : "Local fallback");
+        ? (h.brain_configured ? "Claude AI" : "Claude unavailable — local commands only")
+        : (h.brain === "ollama"
+          ? (h.brain_configured ? "Ollama" : "Ollama unavailable — local commands only")
+          : "AI unavailable — local commands only");
       setStatus("dash-brain", brainLabel,
                 h.brain_configured ? "text-ok" : "text-warn");
       setText("dash-version", h.version || "—");
@@ -409,6 +410,22 @@ async function stopSpeech() {
   }
 }
 
+function handleSpeechResponse(result, btn, clearOrdinaryStatus) {
+  if (!result || !result.success) return false;
+  watchSpeech(btn);
+  const fallback = typeof result.fallback_message === "string"
+    ? result.fallback_message.trim()
+    : "";
+  if (fallback) {
+    // A successful local fallback is still a provider failure the user
+    // needs to see. Never erase this just because playback started.
+    setChatStatus(fallback);
+  } else if (clearOrdinaryStatus) {
+    setChatStatus("");
+  }
+  return true;
+}
+
 // The speaker button on one message.
 async function speakOnDemand(text, btn) {
   if (speakingButton === btn) { await stopSpeech(); return; }
@@ -419,10 +436,7 @@ async function speakOnDemand(text, btn) {
   suspendForSpeech();
   try {
     const r = await API.post("/voice/speak-once", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
-    if (r && r.success) {
-      watchSpeech(btn);
-      setChatStatus("");
-    } else {
+    if (!handleSpeechResponse(r, btn, true)) {
       releaseSpeechSuspension();
       // The engine's own reason and the step that fixes it — never a
       // suggestion to go and find another program.
@@ -442,8 +456,7 @@ async function speakReply(text, btn) {
   suspendForSpeech();
   try {
     const r = await API.post("/voice/speak", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
-    if (r && r.success) watchSpeech(btn);
-    else releaseSpeechSuspension();
+    if (!handleSpeechResponse(r, btn, false)) releaseSpeechSuspension();
   } catch (e) {
     releaseSpeechSuspension();
     // Speech is an enhancement; a failure here must never disturb the
@@ -508,6 +521,26 @@ async function sendChat() {
   }
 }
 
+function renderCommandResponse(data) {
+  const response = data || {};
+  if (response.requires_approval) {
+    // One gate shared by streaming and one-shot chat: approval prompts
+    // are decisions to read, never assistant replies to narrate.
+    if (response.pending_action_id) {
+      addApprovalCard(response.pending_action_id, response);
+    } else {
+      setChatStatus("Approval was required, but no approval request was created.");
+    }
+    return null;
+  }
+  const reply = typeof response.message === "string"
+    ? response.message
+    : JSON.stringify(response.message || "");
+  const btn = addMessage("assistant", reply, response.tool_used || null);
+  speakReply(reply, btn);
+  return btn;
+}
+
 async function streamChat(text) {
   const token = getSessionCookie();
   const res = await fetch("/chat/stream", {
@@ -526,26 +559,21 @@ async function streamChat(text) {
   let buffer = "";
   let stream = null;
   let sawError = false;
+  let sawTerminalEvent = false;
 
   const handle = evt => {
     if (evt.type === "start") {
       currentGenerationId = evt.generation_id || null;
       if (evt.model) setChatStatus(`Answering with ${evt.model}.`);
     } else if (evt.type === "routed") {
-      const data = evt.response || {};
-      if (data.requires_approval && data.pending_action_id) {
-        // Deliberately not spoken: an approval prompt is something to
-        // read and decide on, not something to hear read out.
-        addApprovalCard(data.pending_action_id, data);
-      } else {
-        const btn = addMessage("assistant", data.message || "", data.tool_used || null);
-        speakReply(data.message || "", btn);
-      }
+      sawTerminalEvent = true;
+      renderCommandResponse(evt.response || {});
     } else if (evt.type === "delta") {
       if (!stream) stream = addStreamingMessage();
       stream.append(evt.text || "");
     } else if (evt.type === "error") {
       sawError = true;
+      sawTerminalEvent = true;
       if (!stream) stream = addStreamingMessage();
       // A partial answer plus the reason it stopped is more useful than
       // either alone, so the error is appended rather than replacing it.
@@ -553,6 +581,7 @@ async function streamChat(text) {
       const id = evt.error && evt.error.correlation_id;
       setChatStatus(id ? `Reference: ${id}` : "");
     } else if (evt.type === "done") {
+      sawTerminalEvent = true;
       if (evt.stopped) {
         setChatStatus("Stopped.");
         if (stream && stream.isEmpty()) stream.set("Stopped before any response arrived.");
@@ -580,18 +609,16 @@ async function streamChat(text) {
       }
     }
   }
+  if (!sawTerminalEvent) {
+    // EOF alone is not success. The server may have accepted or executed
+    // the command, so surface the ambiguity and let sendChat avoid replay.
+    throw new Error("chat stream ended before a terminal event");
+  }
 }
 
 async function sendChatFallback(text) {
   try {
-    const data = await API.post("/command", { command: text });
-    if (data.requires_approval && data.pending_action_id) {
-      addApprovalCard(data.pending_action_id, data);
-    } else {
-      const reply = typeof data.message === "string" ? data.message : JSON.stringify(data.message);
-      const btn = addMessage("assistant", reply, data.tool_used || null);
-      speakReply(reply, btn);
-    }
+    renderCommandResponse(await API.post("/command", { command: text }));
   } catch (e) {
     addMessage("assistant", "Error: " + e.message, null);
   }
@@ -736,9 +763,12 @@ function addApprovalCard(actionId, data) {
 async function loadChatHistory() {
   try {
     const entries = await API.get("/conversation?limit=50");
-    if (!Array.isArray(entries)) return;
+    if (!Array.isArray(entries)) {
+      throw new Error("conversation history response was not a list");
+    }
 
-    entries.forEach(entry => {
+    // The database/API returns newest-first; chat must read oldest-first.
+    entries.slice().reverse().forEach(entry => {
       const role = entry && (entry.role === "user" || entry.role === "assistant")
         ? entry.role
         : null;
@@ -758,11 +788,14 @@ function initChat() {
   const input = $("chat-input");
   const stop  = $("chat-stop");
   const reset = $("chat-reset");
+  const list = $("chat-messages");
 
-  // Do not let a new message race ahead of older context and then appear
-  // above it. The local read is short, and failure still unlocks chat.
+  // Do not let a new message or reset race the history read. Failure still
+  // unlocks every control and leaves a visible, actionable status.
   if (btn) btn.disabled = true;
   if (input) input.disabled = true;
+  if (reset) reset.disabled = true;
+  if (list) list.setAttribute("aria-busy", "true");
 
   if (btn)   btn.addEventListener("click", sendChat);
   if (stop)  stop.addEventListener("click", stopChat);
@@ -784,6 +817,8 @@ function initChat() {
 
   loadChatHistory().finally(() => {
     if (btn) btn.disabled = false;
+    if (reset) reset.disabled = false;
+    if (list) list.setAttribute("aria-busy", "false");
     if (input) {
       input.disabled = false;
       input.focus();

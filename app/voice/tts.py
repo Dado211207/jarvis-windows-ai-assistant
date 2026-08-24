@@ -35,6 +35,8 @@ MAX_SPEAK_LENGTH = 1000
 class TTSResult:
     success: bool
     message: str
+    engine: str = ""
+    fallback_message: str = ""
 
 
 class TextToSpeechService:
@@ -118,10 +120,23 @@ class TextToSpeechService:
 
         outcome = engines.speak(text, voice_key=self.voice_key, speed=self.speed)
         if not outcome.started:
-            return TTSResult(success=False, message=outcome.message)
+            return TTSResult(
+                success=False,
+                message=outcome.message,
+                engine=outcome.engine,
+                fallback_message=outcome.fallback_message,
+            )
 
         preview = text[:60] + ("…" if len(text) > 60 else "")
-        return TTSResult(success=True, message=f"Speaking: {preview!r}")
+        return TTSResult(
+            success=True,
+            message=f"Speaking: {preview!r}",
+            engine=outcome.engine,
+            # A cloud provider may have failed while a local engine still
+            # started successfully. Keep that distinct notice all the way
+            # to the browser instead of replacing it with the preview.
+            fallback_message=outcome.fallback_message,
+        )
 
     def stop(self) -> TTSResult:
         """Interrupt any speech in progress, whichever engine is making
