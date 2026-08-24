@@ -729,3 +729,54 @@ def test_the_settings_endpoint_saves_a_device_and_a_tuning(client):
     assert body["tuning"] == {"absMin": 0.05}
     assert body["calibrated"] is True
     assert body["detector"]["absMin"] == 0.05
+
+
+# ---------------------------------------------------------------------------
+# The packaged build detects exactly as the source checkout does
+# ---------------------------------------------------------------------------
+
+def test_the_worklet_defaults_match_the_servers_normal_profile():
+    """A page that cannot reach `GET /voice/clap` must still detect the
+    same way.
+
+    `detector_settings()` is served to the page precisely so these numbers
+    live in one place, but the worklet carries its own DEFAULTS for the
+    case where the fetch fails — `startClapCalibration` swallows that
+    error and falls back to them by design. If the two drift, a machine
+    with a slow or failing settings request gets a *different detector*
+    from every other machine, and nothing would report it.
+    """
+    from app.voice import clap
+
+    source = WORKLET.read_text(encoding="utf-8")
+    block = re.search(r"const DEFAULTS = \{(.*?)\n\};", source, re.DOTALL)
+    assert block, "clap-processor.js no longer declares a DEFAULTS block"
+
+    worklet_defaults = {
+        name: float(value)
+        for name, value in re.findall(r"^\s*(\w+):\s*([0-9.]+),", block.group(1), re.M)
+    }
+    expected = clap.SENSITIVITY_PROFILES[clap.DEFAULT_SENSITIVITY]
+
+    assert worklet_defaults == pytest.approx(expected), (
+        "the worklet's fallback detector and the server's default profile "
+        f"disagree: worklet={worklet_defaults} server={expected}"
+    )
+
+
+def test_the_packaged_build_ships_the_same_detector_files():
+    """The installed application must run this exact detector.
+
+    The packaged build has no source tree: `app/ui/static` is bundled by
+    the PyInstaller spec, and if either clap file stopped being included
+    the packaged listener would be a different program from the one every
+    test in this repository exercises.
+    """
+    spec = (REPO_ROOT / "packaging" / "jarvis.spec").read_text(encoding="utf-8")
+    assert '"app" / "ui" / "static"' in spec.replace("'", '"'), (
+        "the PyInstaller spec no longer bundles app/ui/static"
+    )
+    for required in ("clap-processor.js", "clap-controller.js"):
+        assert (REPO_ROOT / "app" / "ui" / "static" / required).is_file(), (
+            f"{required} is missing from the directory the spec bundles"
+        )

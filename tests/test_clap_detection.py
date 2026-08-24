@@ -268,6 +268,95 @@ def test_nothing_else_activates_jarvis(live_server, clap_browser, armed, tmp_pat
     assert armed == [], "the window was asked to show by something that was not a double clap"
 
 
+# ---------------------------------------------------------------------------
+# One input, one activation — and the refractory period that guarantees it
+# ---------------------------------------------------------------------------
+
+def _count_over_whole_clip(clap_browser, clip: Path) -> int:
+    """Total activations across the *entire* recording.
+
+    `_run_clip` stops counting the instant the first activation lands,
+    which answers "did it fire?" and cannot answer "did it fire once?".
+    A detector that fired twice for one pair would satisfy `== 1` there
+    and be caught here.
+    """
+    browser = clap_browser(clip)
+    context = browser.new_context(permissions=["microphone"])
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+
+    before = _activation_count()
+    page.goto(f"{BASE_URL}/ui/voice", wait_until="networkidle")
+    page.wait_for_function("clapListening() === true", timeout=10000)
+
+    deadline = time.monotonic() + WAIT_SECONDS
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(250)
+
+    assert errors == [], f"page errors: {errors}"
+    fired = _activation_count() - before
+    context.close()
+    return fired
+
+
+def test_one_pair_produces_exactly_one_activation(live_server, clap_browser, armed, tmp_path):
+    """Observed for the whole clip, not until the first hit."""
+    clip = build_clip("two_claps", tmp_path)
+
+    assert _count_over_whole_clip(clap_browser, clip) == 1
+    assert armed == [1], f"the window was asked to show {len(armed)} times for one pair"
+
+
+def test_the_refractory_period_suppresses_a_second_pair_and_then_releases(
+    live_server, clap_browser, armed, tmp_path,
+):
+    """Three pairs, two activations — and which two is the whole point.
+
+    Pairs land at 2.00/2.26, 3.00/3.26 and 5.00/5.26 seconds. The first
+    fires and mutes the detector for `refractory` (1.5 s) from 2.26, so
+    the 3.00 pair falls inside the mute and must produce nothing. The
+    5.00 pair is past 3.76 and must fire again — a cooldown that never
+    released would be just as broken as one that never engaged, and a
+    test that only counted "not twice" would pass against it.
+    """
+    total = _samples(CLIP_SECONDS)
+    audio = _noise_floor(total)
+    audio = _mix(audio, _clap(seed=1), 2.00)
+    audio = _mix(audio, _clap(seed=2), 2.26)
+    audio = _mix(audio, _clap(seed=3), 3.00)    # inside the refractory period
+    audio = _mix(audio, _clap(seed=4), 3.26)
+    audio = _mix(audio, _clap(seed=5), 5.00)    # after it
+    audio = _mix(audio, _clap(seed=6), 5.26)
+    clip = _write_wav(tmp_path / "three_pairs.wav", audio)
+
+    assert _count_over_whole_clip(clap_browser, clip) == 2, (
+        "expected the first and third pairs to activate and the second — "
+        "inside the refractory period — to be suppressed"
+    )
+    assert len(armed) == 2
+
+
+def test_the_audio_fixtures_are_deterministic(tmp_path):
+    """Every clip is seeded, so two builds are byte-identical.
+
+    Not a browser test and deliberately not marked as one: if the audio
+    could drift between runs, every detection result in this file would
+    be measuring a different recording, and "flaky" would be unfalsifiable.
+    """
+    import hashlib
+
+    first = tmp_path / "a"
+    second = tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+
+    for name in ("two_claps", "one_clap", "mistimed_claps", "speech", "hum", "near_silence"):
+        a = hashlib.sha256(build_clip(name, first).read_bytes()).hexdigest()
+        b = hashlib.sha256(build_clip(name, second).read_bytes()).hexdigest()
+        assert a == b, f"{name}.wav differs between two builds of the same fixture"
+
+
 def test_the_listener_does_not_start_while_the_feature_is_off(live_server, clap_browser, tmp_path):
     """The same two claps, with the setting off. Nothing opens the
     microphone and nothing reaches the server."""

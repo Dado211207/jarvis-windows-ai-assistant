@@ -289,24 +289,65 @@ const ClapController = (function () {
     if (quitting || settings.privacyBlocked || !supported()) {
       return { ok: false, reason: settings.privacyBlocked ? "privacy" : "unsupported" };
     }
-    calibration = {
+    // Held by identity, not read back off `calibration`.
+    //
+    // Everything below runs after an await, by which time a *second*
+    // startCalibration may have replaced `calibration` with its own
+    // session. Acting on the module-level variable then damages the
+    // successor rather than this call: pressing Calibrate twice in quick
+    // succession made the first call clear the second call's session, and
+    // the second call's own `calibration.timer = ...` then threw on null.
+    // `session` is this call's own, and the only one it may touch.
+    const session = {
       onsets: [],
       done: false,
       handlers: handlers || {},
       timer: null,
     };
+    calibration = session;
     setState(STATE.CALIBRATING);
+
+    // Armed BEFORE the microphone is acquired, not after.
+    //
+    // `start()` awaits getUserMedia and addModule, and getUserMedia can
+    // hang — a device already in use, a permission prompt, a driver
+    // stall. Arming the bound afterwards left calibration sitting in
+    // CALIBRATING indefinitely with no timer to end it, which is not
+    // what "bounded" means. Covering acquisition costs nothing: the
+    // session still ends at CALIBRATION_MAX_MS either way, and
+    // finishCalibration() tears down whatever exists by then.
+    session.timer = setTimeout(function () { finishCalibration("timeout"); }, CALIBRATION_MAX_MS);
+
     try {
       const opts = Object.assign({}, settings.detector || {}, { calibrate: true });
       const ok = await start(opts, onCalibrationMessage);
-      if (!ok) { calibration = null; return { ok: false, reason: "superseded" }; }
+      if (!ok) {
+        // Superseded: something tore down while we were acquiring.
+        //
+        // The state must not be left saying "calibrating" with no
+        // calibration — reconcile()'s own rule is
+        // `calibration -> CALIBRATING`, so that pair is an invariant
+        // violation, and nothing was scheduled to recover from it.
+        //
+        // Abandoned rather than *finished*: finishCalibration() calls the
+        // caller's onFinish, and a session that never captured anything
+        // has no result to report. Routing this through it made the page
+        // say "No clap was detected. … Double clap accepted." — two
+        // contradictory sentences about a measurement that never
+        // happened. The caller is told `ok: false` and writes its own
+        // message.
+        abandonCalibration(session);
+        return { ok: false, reason: "superseded" };
+      }
     } catch (e) {
-      calibration = null;
+      // The microphone could not be opened at all. Distinct from
+      // superseded, and the page says so rather than silently returning
+      // to listening.
+      abandonCalibration(session, { reconcile: false });
       teardown();
       setState(STATE.MIC_UNAVAILABLE);
       return { ok: false, reason: "microphone" };
     }
-    calibration.timer = setTimeout(function () { finishCalibration("timeout"); }, CALIBRATION_MAX_MS);
     notify();
     return { ok: true, usingFallback: usingFallback, deviceId: activeDeviceId };
   }
@@ -335,6 +376,22 @@ const ClapController = (function () {
       try { handlers.onFinish(outcome, onsets); } catch (e) { /* ignore */ }
     }
     reconcile();
+  }
+
+  // End a calibration that never produced a result, without pretending
+  // it did. finishCalibration() is for a session that ran: it reports an
+  // outcome and a set of onsets to the caller. This one exists for the
+  // two paths where the session never started capturing — superseded, or
+  // the microphone would not open — where the only thing that has to
+  // happen is that the machine stops claiming to be calibrating.
+  function abandonCalibration(session, options) {
+    if (session.timer) clearTimeout(session.timer);
+    // Only if this session is still the current one. A later
+    // startCalibration may already have replaced it, and clearing that
+    // one's session here is how a double press of Calibrate broke.
+    if (calibration !== session) return;
+    calibration = null;
+    if (!options || options.reconcile !== false) reconcile();
   }
 
   function stopCalibration() {

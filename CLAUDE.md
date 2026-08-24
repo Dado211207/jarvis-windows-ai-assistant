@@ -381,6 +381,31 @@ carry the full reasoning; these are the lines that may not move.
   `MediaStreamTrack`s, `AudioContext`s, worklet nodes, listeners and
   timers in a real browser. A test that reads a boolean would have passed
   against the broken build.
+- **A state is a phase; it is not a receipt for a resource.**
+  `state === "calibrating"` means calibration was *requested* —
+  `startCalibration()` publishes it, then awaits `getUserMedia`. For a
+  measured 7–22 ms there is no microphone open, and two tests that waited
+  for that state and then counted tracks were flaky for months at one run
+  in four. Anything asserting on a track, a stream, an `AudioContext` or a
+  worklet node waits for `clapState() === "calibrating" &&
+  clapListening() === true` — `wait_for_calibration_capturing()`. The
+  state stays honest because `notify()` publishes `listening: false`
+  alongside it; the *test* was reading the wrong field. See
+  `docs/clap-flake-investigation.md` and `scripts/diagnose_clap_flake.py`.
+- **A calibration session is held by identity, never read back off the
+  module variable after an await.** A second `startCalibration()` may
+  already have replaced it, and the first call's cleanup then destroys
+  the second call's session — which is what pressing Calibrate twice did.
+- **The calibration bound covers acquiring the microphone, not only
+  holding it.** The timer is armed before `start()` is awaited, because
+  `getUserMedia` can hang and an unbounded acquisition phase is not
+  bounded.
+- **A diagnostic may not perturb what it measures.** The first version of
+  `scripts/diagnose_clap_flake.py` observed the detector by replacing
+  `port.onmessage` with a JS accessor, which removed the implicit
+  `port.start()` that assigning to that attribute performs; the port
+  never started and a passing run was reported as a failure. Observe with
+  `addEventListener`.
 
 ## Memory secret rules (non-negotiable)
 

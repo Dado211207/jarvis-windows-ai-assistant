@@ -389,7 +389,8 @@ def voice_page(playwright_instance, tmp_path, live_server):
 
     browsers = []
 
-    def _open(wav=None, wait_for_listening=True, deny_microphone=False):
+    def _open(wav=None, wait_for_listening=True, deny_microphone=False,
+              slow_microphone_ms=0):
         clip = wav or quiet_clip(tmp_path)
         try:
             browser = playwright_instance.chromium.launch(
@@ -406,6 +407,14 @@ def voice_page(playwright_instance, tmp_path, live_server):
         browsers.append(browser)
         context = browser.new_context(permissions=["microphone"])
         page = context.new_page()
+        # Order matters: these two go in BEFORE the instrumentation, so
+        # the instrumentation's own `realGum` is already the delayed or
+        # hanging one and __mic.streams is populated only when the
+        # controller would really have received the stream. Above it, a
+        # delay would be invisible to every count the tests make.
+        page.add_init_script(f"window.__slowMicMs = {int(slow_microphone_ms)};")
+        page.add_init_script(SLOW_MICROPHONE)
+        page.add_init_script(HANGING_MICROPHONE)
         page.add_init_script(INSTRUMENT)
         if deny_microphone:
             page.add_init_script("window.__denyMicrophone();")
@@ -450,6 +459,36 @@ def server_clap_status() -> dict:
 
 def wait_for(session: Session, expression: str, timeout: float = 10.0) -> None:
     session.page.wait_for_function(expression, timeout=int(timeout * 1000))
+
+
+def wait_for_calibration_capturing(session: Session, timeout: float = 20.0) -> None:
+    """Wait until calibration is actually holding the microphone.
+
+    **`clapState() === 'calibrating'` is not that**, and anything that
+    waits for it and then asserts on a track, a stream, an AudioContext
+    or a worklet node is reading an intermediate state.
+    `startCalibration()` stops the ordinary listener, publishes
+    CALIBRATING, and *then* awaits `getUserMedia` — so for a measured
+    7-22 ms (median 11 ms, n=12) the state says "calibrating" while the
+    only stream in existence is the one it just stopped. Sampled in the
+    page at the instant of the transition, every iteration reported
+    `liveClapTracks: 0, openContexts: 0, connectedNodes: 0`.
+
+    `wait_for_function` polls on requestAnimationFrame — roughly every
+    16 ms idle, less often under load — so that window is one to two
+    ticks wide, and under load it widens at both ends. That is the whole
+    of the flake those two tests showed for months; see
+    docs/clap-flake-investigation.md and
+    scripts/diagnose_clap_flake.py.
+
+    The controller already publishes the honest signal: `isListening()`
+    is a live track AND an active worklet, and it is exactly what the
+    tray is allowed to believe. Waiting for the conjunction is a bounded
+    wait for an observable state, not a sleep and not a retry — the
+    assertions that follow are unchanged.
+    """
+    wait_for(session, "clapState() === 'calibrating' && clapListening() === true",
+             timeout=timeout)
 
 
 def wait_for_server_state(session: Session, state: str, timeout: float = 12.0) -> None:
@@ -873,7 +912,7 @@ def test_calibration_measures_a_real_pair_and_proposes_settings(voice_page, tmp_
     session = voice_page(wav=late_pair_clip(tmp_path))
 
     session.page.click("#clap-cal-start")
-    wait_for(session, "clapState() === 'calibrating'", timeout=15.0)
+    wait_for_calibration_capturing(session)
     assert session.live() == 1, "calibration did not open exactly one microphone"
 
     session.page.wait_for_function(
@@ -971,7 +1010,7 @@ def test_cancelling_calibration_releases_the_microphone(voice_page):
     """
     session = voice_page()
     session.page.click("#clap-cal-start")
-    wait_for(session, "clapState() === 'calibrating'", timeout=15.0)
+    wait_for_calibration_capturing(session)
     calibration_stream = len(session.streams()) - 1
     assert "live" in session.streams()[calibration_stream]
 
@@ -995,7 +1034,7 @@ def test_cancelling_calibration_releases_the_microphone(voice_page):
 def test_privacy_mode_during_calibration_stops_it_immediately(voice_page):
     session = voice_page()
     session.page.click("#clap-cal-start")
-    wait_for(session, "clapState() === 'calibrating'", timeout=15.0)
+    wait_for_calibration_capturing(session)
 
     run_command("privacy mode on")
 
@@ -1012,7 +1051,7 @@ def test_calibration_is_bounded_and_stops_itself(voice_page):
     assert bound_ms <= 30000, "the calibration bound is too long to be called bounded"
 
     session.page.click("#clap-cal-start")
-    wait_for(session, "clapState() === 'calibrating'", timeout=15.0)
+    wait_for_calibration_capturing(session)
 
     started = time.monotonic()
     session.page.wait_for_function(
@@ -1028,6 +1067,202 @@ def test_calibration_is_bounded_and_stops_itself(voice_page):
     wait_for(session, "clapListening() === true", timeout=20.0)
     assert session.live() == 1
     assert session.timers() == 0, "the calibration timer was left pending"
+
+
+# ---------------------------------------------------------------------------
+# §3a The intermediate state, made deterministic
+#
+# The two tests above were flaky for months at roughly one run in four.
+# The cause was not the detector, the audio, a cooldown or a leak: it was
+# that they waited for `clapState() === 'calibrating'` — which
+# `startCalibration()` publishes *before* it awaits `getUserMedia` — and
+# then asserted on a microphone that had not opened yet. The window
+# measured 7-22 ms (median 11, n=12), and `wait_for_function` polls every
+# ~16 ms, so most runs stepped over it.
+#
+# A probabilistic bug proves nothing on any single run, so these two
+# widen the window to half a second and make it a certainty. They fail
+# against the wait these tests used to do, and they are the guard against
+# anyone quietly putting it back.
+# ---------------------------------------------------------------------------
+
+SLOW_MICROPHONE = """
+(() => {
+  // Installed BEFORE the instrumentation, deliberately.
+  //
+  // The instrumentation records a stream into __mic.streams the moment
+  // the getUserMedia it wraps resolves. A delay layered *above* it
+  // therefore delays only what the controller receives, while
+  // __liveClapTracks() already counts the stream as live — which is the
+  // opposite of the real race and made the first version of this test
+  // assert 1 == 0 against itself. Sitting underneath, the delay pushes
+  // back the resolution the instrumentation itself observes, so the
+  // window this widens is the same window the flake exploited.
+  const md = navigator.mediaDevices;
+  const real = md.getUserMedia.bind(md);
+  md.getUserMedia = function () {
+    const mine = /clap/i.test(String(new Error().stack));
+    const p = real.apply(md, arguments);
+    if (!mine) return p;
+    return p.then(function (s) {
+      return new Promise(function (r) {
+        setTimeout(function () { r(s); }, window.__slowMicMs || 0);
+      });
+    });
+  };
+})();
+"""
+
+HANGING_MICROPHONE = """
+(() => {
+  // A getUserMedia for the controller that never settles at all.
+  const md = navigator.mediaDevices;
+  const real = md.getUserMedia.bind(md);
+  md.getUserMedia = function () {
+    if (window.__hangMic && /clap/i.test(String(new Error().stack))) {
+      return new Promise(function () {});
+    }
+    return real.apply(md, arguments);
+  };
+})();
+"""
+
+
+def test_calibrating_is_published_before_the_microphone_opens(voice_page):
+    """The mechanism, stated as an assertion rather than a probability.
+
+    With acquisition slowed to half a second, the controller is provably
+    in `calibrating` while holding no microphone at all. That is not a
+    defect — `notify()` publishes `listening: false` alongside it, so no
+    surface claims otherwise — but it is exactly why waiting for the
+    state and then counting tracks is unsound.
+    """
+    session = voice_page(slow_microphone_ms=500)
+
+    session.page.click("#clap-cal-start")
+    wait_for(session, "clapState() === 'calibrating'", timeout=15.0)
+
+    # The old assertion, at the moment the old wait returned.
+    assert session.live() == 0, (
+        "the widened window did not reproduce — this test can no longer "
+        "prove what the honest wait is protecting against"
+    )
+    assert session.page.evaluate("clapListening()") is False
+    assert session.contexts() == 0
+    assert session.nodes() == 0
+
+    # And the honest wait resolves it, without a sleep and without a retry.
+    wait_for_calibration_capturing(session)
+    assert session.live() == 1
+    assert session.contexts() == 1
+    assert session.nodes() == 1
+
+
+def test_a_slow_microphone_does_not_make_calibration_flaky(voice_page, tmp_path):
+    """The end-to-end shape of the fix: acquisition takes 500 ms, and the
+    calibration still measures its pair and hands the microphone back."""
+    session = voice_page(wav=late_pair_clip(tmp_path), slow_microphone_ms=500)
+
+    session.page.click("#clap-cal-start")
+    wait_for_calibration_capturing(session)
+    assert session.live() == 1, "calibration did not open exactly one microphone"
+
+    session.page.wait_for_function(
+        "document.getElementById('clap-cal-proposal').textContent.indexOf('Proposed:') === 0",
+        timeout=25000,
+    )
+    wait_for(session, "clapListening() === true", timeout=20.0)
+    assert session.settled() == (1, 1, 1), "more than one listener survived calibration"
+
+
+def test_calibration_is_bounded_even_if_the_microphone_never_opens(voice_page):
+    """The bound covers *acquiring* the microphone, not only holding it.
+
+    `getUserMedia` can hang — a device already in use, a permission
+    prompt, a driver stall. The timer used to be armed only after
+    acquisition succeeded, so a hang left the page saying "calibrating"
+    for ever with nothing scheduled to end it. CLAUDE.md requires
+    calibration to release the microphone "on success, timeout, cancel,
+    navigation, privacy and quit"; an unbounded acquisition is none of
+    those.
+    """
+    session = voice_page()
+    bound_ms = session.page.evaluate("ClapController.CALIBRATION_MAX_MS")
+    session.page.evaluate("window.__hangMic = true")
+
+    session.page.click("#clap-cal-start")
+    wait_for(session, "clapState() === 'calibrating'", timeout=15.0)
+
+    started = time.monotonic()
+    session.page.wait_for_function(
+        "clapState() !== 'calibrating'", timeout=int(bound_ms) + 15000,
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed <= (bound_ms / 1000.0) + 8.0, (
+        "calibration with a hung microphone was never bounded"
+    )
+    assert session.live() == 0, "a hung acquisition left a track open"
+
+
+def test_pressing_calibrate_twice_does_not_damage_the_second_session(voice_page, tmp_path):
+    """A second Calibrate while the first is still acquiring.
+
+    Both calls run past their `await start()`, and the first one's
+    supersession handling used to reach for the module-level
+    `calibration` — which by then held the *second* call's session. It
+    cleared it, and the second call's own `calibration.timer = …` threw
+    on null, leaving an unhandled rejection and a controller stuck in
+    `calibrating` with no session. Each call now touches only its own.
+    """
+    session = voice_page(wav=late_pair_clip(tmp_path), slow_microphone_ms=500)
+
+    session.page.click("#clap-cal-start")
+    wait_for(session, "clapState() === 'calibrating'", timeout=15.0)
+    # Inside the first call's acquisition window, so both are in flight.
+    session.page.evaluate("ClapController.startCalibration({})")
+
+    wait_for_calibration_capturing(session)
+    assert session.live() == 1, "two calibrations left two microphones open"
+    assert session.contexts() == 1
+    assert session.nodes() == 1
+    assert session.errors == [], f"an unhandled error escaped: {session.errors}"
+
+    # And the surviving session is still a working one: it can be
+    # cancelled, and the ordinary listener comes back.
+    session.page.evaluate("ClapController.stopCalibration()")
+    wait_for(session, "clapListening() === true", timeout=20.0)
+    assert session.settled() == (1, 1, 1)
+    assert session.state() == "listening", (
+        f"the controller was left in {session.state()!r} with no calibration"
+    )
+
+
+def test_repeated_calibration_cycles_leave_exactly_one_listener(voice_page):
+    """Start, cancel, start, cancel — three times. Nothing accumulates.
+
+    Each cycle opens a stream, a context and a node; if any cycle failed
+    to release its own, the counts would climb rather than stay at one.
+    """
+    session = voice_page()
+
+    for cycle in range(3):
+        session.page.click("#clap-cal-start")
+        wait_for_calibration_capturing(session)
+        assert session.live() == 1, f"cycle {cycle}: more than one microphone was open"
+
+        session.page.click("#clap-cal-cancel")
+        session.page.wait_for_function(
+            "document.getElementById('clap-cal-message').textContent"
+            ".indexOf('Calibration cancelled') === 0",
+            timeout=15000,
+        )
+        wait_for(session, "clapListening() === true", timeout=20.0)
+        assert session.settled() == (1, 1, 1), (
+            f"cycle {cycle} left resources behind: {session.settled()}"
+        )
+
+    assert session.timers() == 0, "a calibration timer was left pending"
+    assert session.errors == []
 
 
 # ---------------------------------------------------------------------------
