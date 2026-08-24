@@ -51,6 +51,7 @@ TIMEOUT_SECONDS = 5.0
 # that makes chat work. It also means app/core/ownership.py can name both
 # individually when an uninstall removes them.
 ELEVENLABS_USERNAME = "elevenlabs_api_key"
+OPENAI_USERNAME = "openai_api_key"
 
 
 def _run_isolated(func: Callable, *args: Any) -> Tuple[bool, Any]:
@@ -150,3 +151,17 @@ def has_elevenlabs_key() -> bool:
     """Whether a key is configured — the only thing about it that is ever
     reported outside this module. The value itself never leaves."""
     return bool(get_elevenlabs_key())
+
+
+# OpenAI Speech has its own credential entry. It is intentionally not the
+# Anthropic/general chat credential and has no environment-variable fallback.
+def get_openai_key() -> str:
+    return _get(OPENAI_USERNAME)
+
+
+def set_openai_key(value: str) -> bool:
+    return _set(OPENAI_USERNAME, value)
+
+
+def clear_openai_key() -> bool:
+    return _clear(OPENAI_USERNAME)

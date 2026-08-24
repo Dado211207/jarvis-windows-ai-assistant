@@ -200,6 +200,22 @@ def test_clear_stored_api_key_false_when_package_not_installed(monkeypatch):
     assert credentials.clear_stored_api_key() is False
 
 
+def test_openai_voice_key_is_a_distinct_write_only_credential(monkeypatch):
+    from app.core import credentials
+
+    _install_fake_keyring(monkeypatch)
+    assert credentials.set_stored_api_key("anthropic-secret")
+    assert credentials.set_elevenlabs_key("eleven-secret")
+    assert credentials.set_openai_key("openai-voice-secret")
+
+    assert credentials.OPENAI_USERNAME == "openai_api_key"
+    assert credentials.get_openai_key() == "openai-voice-secret"
+    assert credentials.clear_openai_key()
+    assert credentials.get_openai_key() == ""
+    assert credentials.get_stored_api_key() == "anthropic-secret"
+    assert credentials.get_elevenlabs_key() == "eleven-secret"
+
+
 # ---------------------------------------------------------------------------
 # _run_isolated
 # ---------------------------------------------------------------------------

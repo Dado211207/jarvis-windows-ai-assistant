@@ -211,6 +211,8 @@ def _remove_credential(report: RemovalReport) -> None:
          credentials.get_stored_api_key, credentials.clear_stored_api_key),
         ("Your ElevenLabs API key in Windows Credential Manager",
          credentials.get_elevenlabs_key, credentials.clear_elevenlabs_key),
+        ("Your OpenAI voice API key in Windows Credential Manager",
+         credentials.get_openai_key, credentials.clear_openai_key),
     ):
         try:
             if not read():

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from app.api.session import require_session_token
 from app.logging_config import get_logger
 from app.voice import engines, status as voice_status
+from app.voice.samples import AB_TEST_PHRASE
 from app.voice.kokoro import assets, install
 
 logger = get_logger("api.voice")
@@ -217,7 +218,7 @@ class TestVoiceResponse(BaseModel):
 # What a test says. Long enough to hear the voice's rhythm rather than a
 # single word, and it names the product rather than reading a stock
 # sentence about the weather.
-TEST_PHRASE = "Good evening. This is the voice JARVIS will use when it speaks to you."
+TEST_PHRASE = AB_TEST_PHRASE
 
 
 @router.post(
@@ -547,8 +548,10 @@ def select_cloud_voice(req: SelectCloudVoiceRequest) -> CloudActionResponse:
     dependencies=[Depends(require_session_token)],
 )
 def select_engine(req: SelectEngineRequest) -> CloudActionResponse:
-    """Choose the cloud voice, or go back to the local chain."""
+    """Choose either cloud provider, or go back to the local chain."""
     chosen = engines.set_selected_engine(req.engine)
+    if chosen == engines.OPENAI:
+        return _cloud_response(True, "JARVIS will use OpenAI Speech for opted-in voice output.")
     if chosen == engines.ELEVENLABS:
         return _cloud_response(True, "JARVIS will speak with the ElevenLabs cloud voice.")
     return _cloud_response(True, "JARVIS will speak with the best local voice.")
@@ -629,6 +632,195 @@ def test_cloud_voice() -> CloudActionResponse:
     engines.stop()  # one utterance at a time, like every other speech path
     audio.player.play_wav_bytes(wav)
     return _cloud_response(True, f"Speaking: “{elevenlabs.TEST_PHRASE}”")
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Speech — a separate, explicitly selected cloud provider.
+# ---------------------------------------------------------------------------
+
+class OpenAIVoiceStatusResponse(BaseModel):
+    selected: bool
+    key_configured: bool
+    model: str
+    models: List[str]
+    voice: str
+    voices: List[str]
+    speed: float
+    speed_range: List[float]
+    instructions: str
+    default_instructions: str
+    max_instruction_chars: int
+    fallback_allowed: bool
+    blocked_by_privacy: bool
+    detail: str
+    last_fallback: str
+    test_phrase: str
+    ai_generated: bool
+    internet_required: bool
+    usage_may_incur_cost: bool
+
+
+class OpenAIActionResponse(BaseModel):
+    success: bool
+    message: str
+    status: OpenAIVoiceStatusResponse
+
+
+class OpenAISettingsRequest(BaseModel):
+    model: str = Field(..., min_length=1, max_length=64)
+    voice: str = Field(..., min_length=1, max_length=32)
+    speed: float
+    instructions: str = Field(default="", max_length=4096)
+
+
+def _openai_response(success: bool, message: str) -> OpenAIActionResponse:
+    return OpenAIActionResponse(
+        success=success,
+        message=message,
+        status=OpenAIVoiceStatusResponse(**engines.openai_status()),
+    )
+
+
+@router.get("/voice/openai", response_model=OpenAIVoiceStatusResponse)
+def openai_voice_status() -> OpenAIVoiceStatusResponse:
+    # Deliberately does not load the credential or contact OpenAI.
+    return OpenAIVoiceStatusResponse(**engines.openai_status())
+
+
+@router.post(
+    "/voice/openai/key",
+    response_model=OpenAIActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def save_openai_key(req: SaveCloudKeyRequest) -> OpenAIActionResponse:
+    from app.core.credentials import set_openai_key
+    from app.voice import openai_tts
+
+    key = req.api_key.strip()
+    if not key or len(key) > openai_tts.MAX_API_KEY_CHARS:
+        return _openai_response(False, "That does not look like a valid API key length.")
+    if not set_openai_key(key):
+        return _openai_response(
+            False,
+            "The Windows Credential Manager could not be written to. The key was not stored elsewhere.",
+        )
+    engines.set_openai_key_configured(True)
+    return _openai_response(True, "OpenAI voice key saved to the Windows Credential Manager.")
+
+
+@router.post(
+    "/voice/openai/key/delete",
+    response_model=OpenAIActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def delete_openai_key() -> OpenAIActionResponse:
+    from app.core.credentials import clear_openai_key
+
+    if not clear_openai_key():
+        return _openai_response(False, "The Windows Credential Manager could not be reached.")
+    engines.set_openai_key_configured(False)
+    return _openai_response(True, "OpenAI voice key removed.")
+
+
+@router.post(
+    "/voice/openai/validate",
+    response_model=OpenAIActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def validate_openai_key() -> OpenAIActionResponse:
+    from app.core.credentials import get_openai_key
+    from app.core.privacy import privacy_mode
+    from app.voice import openai_tts
+
+    if privacy_mode.active:
+        return _openai_response(False, "Privacy mode is on, so JARVIS made no OpenAI request.")
+    key = get_openai_key()
+    if not key:
+        return _openai_response(False, openai_tts._MESSAGES[openai_tts.NOT_CONFIGURED])
+    ok, message = openai_tts.validate_key(key)
+    return _openai_response(ok, message)
+
+
+@router.post(
+    "/voice/openai/settings",
+    response_model=OpenAIActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def save_openai_settings(req: OpenAISettingsRequest) -> OpenAIActionResponse:
+    try:
+        engines.set_openai_settings(req.model, req.voice, req.speed, req.instructions)
+    except ValueError as exc:
+        return _openai_response(False, str(exc))
+    return _openai_response(True, "OpenAI voice settings saved.")
+
+
+@router.post(
+    "/voice/openai/settings/reset",
+    response_model=OpenAIActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def reset_openai_settings() -> OpenAIActionResponse:
+    from app.voice import openai_tts
+
+    engines.set_openai_settings(
+        openai_tts.DEFAULT_MODEL,
+        openai_tts.DEFAULT_VOICE,
+        openai_tts.DEFAULT_SPEED,
+        openai_tts.DEFAULT_INSTRUCTIONS,
+    )
+    return _openai_response(True, "OpenAI voice settings reset to the original profile.")
+
+
+@router.post(
+    "/voice/openai/fallback",
+    response_model=OpenAIActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def set_openai_fallback(req: CloudFallbackRequest) -> OpenAIActionResponse:
+    allowed = engines.set_openai_fallback_allowed(req.allowed)
+    return _openai_response(
+        True,
+        (
+            "The best available local voice will be used and disclosed if OpenAI Speech cannot speak."
+            if allowed
+            else "JARVIS will stay silent and report why if OpenAI Speech cannot speak."
+        ),
+    )
+
+
+@router.post(
+    "/voice/openai/test",
+    response_model=OpenAIActionResponse,
+    dependencies=[Depends(require_session_token)],
+)
+def test_openai_voice() -> OpenAIActionResponse:
+    """Generate the shared A/B phrase through OpenAI only; never fall back."""
+    from app.core.credentials import get_openai_key
+    from app.core.privacy import privacy_mode
+    from app.voice import audio, openai_tts
+
+    if privacy_mode.active:
+        return _openai_response(False, "Privacy mode is on, so no text was sent to OpenAI.")
+    key = get_openai_key()
+    if not key:
+        return _openai_response(False, openai_tts._MESSAGES[openai_tts.NOT_CONFIGURED])
+
+    cancel = audio.player.begin_utterance()
+    try:
+        wav = openai_tts.synthesise_wav(
+            openai_tts.TEST_PHRASE,
+            key,
+            model=engines.selected_openai_model(),
+            voice=engines.selected_openai_voice(),
+            speed=engines.selected_openai_speed(),
+            instructions=engines.selected_openai_instructions(),
+            cancel=cancel,
+        )
+    except openai_tts.OpenAITTSError as exc:
+        return _openai_response(False, exc.message)
+    if not audio.player.play_wav_bytes_if_current(wav, cancel):
+        return _openai_response(False, openai_tts._MESSAGES[openai_tts.CANCELLED])
+    return _openai_response(True, f"Speaking: “{openai_tts.TEST_PHRASE}”")
 
 
 # ---------------------------------------------------------------------------

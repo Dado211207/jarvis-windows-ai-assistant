@@ -47,13 +47,33 @@ class TextToSpeechService:
 
     def is_available(self) -> bool:
         """True when *something* on this machine can speak."""
-        from app.voice import engines
-
-        return engines.active_engine(self.voice_key) != engines.NONE
+        return self.active_engine() != "none"
 
     def active_engine(self) -> str:
         from app.voice import engines
+        from app.core.privacy import privacy_mode
 
+        selected = engines.selected_engine()
+        if selected == engines.OPENAI:
+            if engines.openai_key_configured() and not privacy_mode.active:
+                return engines.OPENAI
+            return (
+                engines.active_engine(self.voice_key)
+                if engines.openai_fallback_allowed() else engines.NONE
+            )
+        if selected == engines.ELEVENLABS:
+            from app.core.credentials import has_elevenlabs_key
+
+            if (
+                has_elevenlabs_key()
+                and engines.selected_cloud_voice_id()
+                and not privacy_mode.active
+            ):
+                return engines.ELEVENLABS
+            return (
+                engines.active_engine(self.voice_key)
+                if engines.fallback_allowed() else engines.NONE
+            )
         return engines.active_engine(self.voice_key)
 
     # --- output state: the single flag every surface reads ---
@@ -121,6 +141,8 @@ class TextToSpeechService:
             return TTSResult(success=False, message=outcome.message)
 
         preview = text[:60] + ("…" if len(text) > 60 else "")
+        if outcome.message != "Speaking.":
+            return TTSResult(success=True, message=f"{outcome.message} Speaking: {preview!r}")
         return TTSResult(success=True, message=f"Speaking: {preview!r}")
 
     def stop(self) -> TTSResult:
