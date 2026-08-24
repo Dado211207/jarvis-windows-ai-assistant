@@ -95,3 +95,38 @@ def test_read_clipboard_tool_is_registered_approval_required_sensitive():
     assert tool is not None
     assert tool.definition.permission_level == PermissionLevel.APPROVAL_REQUIRED
     assert tool.definition.risk == RiskLevel.SENSITIVE
+
+def test_approved_clipboard_content_is_returned_once_but_never_retained():
+    from fastapi.testclient import TestClient
+
+    from app.api.server import app as jarvis_app
+    from app.core.pending_actions import pending_store
+    from tests.conftest import prime_session
+
+    secret = "one-shot-private-clipboard-marker-7391"
+    fake_tkinter, _ = _install_fake_tkinter(secret)
+
+    with pending_store._lock:
+        pending_store._actions.clear()
+
+    try:
+        with patch.dict(sys.modules, {"tkinter": fake_tkinter}):
+            with TestClient(jarvis_app, raise_server_exceptions=True) as client:
+                prime_session(client)
+                proposed = client.post("/command", json={"command": "read clipboard"})
+                assert proposed.status_code == 200
+                action_id = proposed.json()["pending_action_id"]
+
+                confirmed = client.post(f"/actions/{action_id}/confirm")
+                assert confirmed.status_code == 200
+                assert confirmed.json()["data"]["content"] == secret
+
+                detail = client.get(f"/actions/{action_id}")
+                assert detail.status_code == 200
+                assert detail.json()["result"] is None
+                assert secret not in detail.text
+
+        assert secret not in repr(pending_store.get(action_id))
+    finally:
+        with pending_store._lock:
+            pending_store._actions.clear()
