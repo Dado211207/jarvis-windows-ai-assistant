@@ -110,7 +110,7 @@ def system_status() -> SystemStatusResponse:
     )
 
 
-@router.get("/conversation", response_model=List[ConversationEntry])
+@router.get("/conversation", response_model=List[ConversationEntry], dependencies=[Depends(require_session_token)])
 def get_conversation(limit: int = Query(default=50, ge=1, le=200)) -> List[ConversationEntry]:
     from db.database import get_db
     return get_db().get_recent_conversations(limit=limit)
@@ -127,7 +127,7 @@ def list_tools() -> List[ToolDefinition]:
     return registry.list_definitions()
 
 
-@router.get("/memory/search", response_model=List[MemoryEntry])
+@router.get("/memory/search", response_model=List[MemoryEntry], dependencies=[Depends(require_session_token)])
 def search_memory(q: str = Query(..., min_length=1, description="Search query")) -> List[MemoryEntry]:
     from db.database import get_db
     results = get_db().search_memory(q)
@@ -184,13 +184,13 @@ def remove_memory(memory_id: int) -> MemoryActionResponse:
     return MemoryActionResponse(success=result["success"], message=result["message"])
 
 
-@router.get("/memory", response_model=List[MemoryEntry])
+@router.get("/memory", response_model=List[MemoryEntry], dependencies=[Depends(require_session_token)])
 def list_memory(limit: int = Query(default=20, ge=1, le=100)) -> List[MemoryEntry]:
     from db.database import get_db
     return get_db().get_all_memories(limit=limit)
 
 
-@router.get("/logs")
+@router.get("/logs", dependencies=[Depends(require_session_token)])
 def recent_logs(limit: int = Query(default=20, ge=1, le=100)):
     from db.database import get_db
     logs = get_db().get_recent_logs(limit=limit)
@@ -394,7 +394,7 @@ def voice_stt_status() -> STTStatusResponse:
     return STTStatusResponse(available=available, reason=reason)
 
 
-@router.get("/voice/diagnostics", response_model=STTDiagnosticsResponse)
+@router.get("/voice/diagnostics", response_model=STTDiagnosticsResponse, dependencies=[Depends(require_session_token)])
 def voice_diagnostics() -> STTDiagnosticsResponse:
     from app.voice import input_state
     from app.voice.stt import input_enabled, stt_service
@@ -529,7 +529,7 @@ def privacy_status() -> PrivacyStatusResponse:
     )
 
 
-@router.get("/privacy/data", response_model=StoredDataResponse)
+@router.get("/privacy/data", response_model=StoredDataResponse, dependencies=[Depends(require_session_token)])
 def stored_data() -> StoredDataResponse:
     """What JARVIS is holding about you, counted.
 
@@ -1206,7 +1206,7 @@ def about_notices() -> NoticesResponse:
         return NoticesResponse(available=False, text="")
 
 
-@router.get("/diagnostics", response_model=DiagnosticsResponse)
+@router.get("/diagnostics", response_model=DiagnosticsResponse, dependencies=[Depends(require_session_token)])
 def diagnostics() -> DiagnosticsResponse:
     from app.core.diagnostics import build_report, render_report_text
 
