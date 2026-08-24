@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from app.logging_config import get_logger
+from app.voice.samples import AB_TEST_PHRASE
 
 logger = get_logger("voice.elevenlabs")
 
@@ -104,7 +105,7 @@ SETTING_RANGES = {
 # What the Voice page's "test this voice" button says. Chosen to exercise
 # the qualities the voice is being judged on — a greeting, a status
 # report, and the pacing between them.
-TEST_PHRASE = "Good evening, sir. All systems are online and ready."
+TEST_PHRASE = AB_TEST_PHRASE
 
 
 # ---------------------------------------------------------------------------

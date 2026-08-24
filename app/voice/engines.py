@@ -36,6 +36,7 @@ KOKORO = "kokoro"
 WINDOWS = "windows"
 SAPI5 = "sapi5"
 ELEVENLABS = "elevenlabs"
+OPENAI = "openai"
 NONE = "none"
 
 # The automatic local chain. ElevenLabs is deliberately **not** in it.
@@ -56,6 +57,7 @@ DISPLAY_NAMES = {
     WINDOWS: "Windows natural voice",
     SAPI5: "Windows classic voice",
     ELEVENLABS: "ElevenLabs cloud voice",
+    OPENAI: "OpenAI cloud voice",
     NONE: "No speech engine",
 }
 
@@ -170,7 +172,11 @@ def speak(
     request that has timed out.
     """
     selected = selected_engine()
-    if selected == ELEVENLABS:
+    if selected == OPENAI:
+        outcome = _speak_openai(text)
+        if outcome is not None:
+            return outcome
+    elif selected == ELEVENLABS:
         outcome = _speak_elevenlabs(text)
         if outcome is not None:
             return outcome
@@ -181,6 +187,8 @@ def speak(
         # cloud failure to a later, deliberately local utterance.
         _note_fallback("")
 
+    if selected == AUTO:
+        _note_fallback("")
     chosen = active_engine(voice_key)
 
     if chosen == KOKORO:
@@ -192,6 +200,13 @@ def speak(
     else:
         outcome = SpeakOutcome(started=False, engine=NONE, message=unavailable_message(voice_key))
 
+    # `fallback_message` is its own field, not only folded into `message`:
+    # the chat pass renders the fallback as a distinct fact, and a caller
+    # should not have to parse prose to learn that the cloud voice was not
+    # the one that spoke. It applies to the OpenAI path above for the same
+    # reason it applies to ElevenLabs — a silent substitution makes an
+    # expired key and a successful request look identical.
+
     reason = last_fallback_reason()
     if reason and outcome.started:
         fallback_message = f"{reason} Using {DISPLAY_NAMES[outcome.engine]} instead."
@@ -202,6 +217,54 @@ def speak(
             fallback_message=fallback_message,
         )
     return outcome
+
+
+def _speak_openai(text: str) -> Optional["SpeakOutcome"]:
+    """Use OpenAI Speech, or visibly fall through to the local chain."""
+    from app.core.credentials import get_openai_key
+    from app.core.privacy import privacy_mode
+    from app.voice import openai_tts
+
+    def _refuse_or_fall_through(message: str) -> Optional[SpeakOutcome]:
+        if openai_fallback_allowed():
+            logger.info("OpenAI voice unavailable; falling back to the local voice.")
+            _note_fallback(message)
+            return None
+        return SpeakOutcome(started=False, engine=OPENAI, message=message)
+
+    # This gate precedes both credential loading and creation of the HTTP client.
+    if privacy_mode.active:
+        return _refuse_or_fall_through(
+            "Privacy mode is on, so nothing was sent to OpenAI Speech."
+        )
+
+    key = get_openai_key()
+    if not key:
+        return _refuse_or_fall_through(openai_tts._MESSAGES[openai_tts.NOT_CONFIGURED])
+
+    cancel = audio.player.begin_utterance()
+    try:
+        wav = openai_tts.synthesise_wav(
+            text,
+            key,
+            model=selected_openai_model(),
+            voice=selected_openai_voice(),
+            speed=selected_openai_speed(),
+            instructions=selected_openai_instructions(),
+            cancel=cancel,
+        )
+    except openai_tts.OpenAITTSError as exc:
+        if exc.category == openai_tts.CANCELLED:
+            return SpeakOutcome(False, OPENAI, exc.message)
+        return _refuse_or_fall_through(exc.message)
+    except Exception:  # noqa: BLE001
+        logger.warning("OpenAI speech failed unexpectedly.", exc_info=False)
+        return _refuse_or_fall_through(openai_tts._MESSAGES[openai_tts.PROVIDER_ERROR])
+
+    if not audio.player.play_wav_bytes_if_current(wav, cancel):
+        return SpeakOutcome(False, OPENAI, openai_tts._MESSAGES[openai_tts.CANCELLED])
+    _note_fallback("")
+    return SpeakOutcome(True, OPENAI, "Speaking with the OpenAI cloud voice.")
 
 
 def _speak_elevenlabs(text: str) -> Optional["SpeakOutcome"]:
@@ -401,13 +464,14 @@ def selected_engine() -> str:
     from app.core.preferences import get
 
     value = (get("tts_engine") or "").strip().lower()
-    return ELEVENLABS if value == ELEVENLABS else AUTO
+    return value if value in (ELEVENLABS, OPENAI) else AUTO
 
 
 def set_selected_engine(key: str) -> str:
     from app.core.preferences import store
 
-    value = ELEVENLABS if (key or "").strip().lower() == ELEVENLABS else AUTO
+    requested = (key or "").strip().lower()
+    value = requested if requested in (ELEVENLABS, OPENAI) else AUTO
     store("tts_engine", value)
     return selected_engine()
 
@@ -484,6 +548,128 @@ def set_fallback_allowed(allowed: bool) -> bool:
 
     store("elevenlabs_fallback", "true" if allowed else "false")
     return fallback_allowed()
+
+
+def openai_key_configured() -> bool:
+    """Status flag only; reading status never loads the credential itself."""
+    from app.core.preferences import get
+
+    return (get("openai_voice_key_configured") or "").strip().lower() == "true"
+
+
+def set_openai_key_configured(configured: bool) -> bool:
+    from app.core.preferences import store
+
+    store("openai_voice_key_configured", "true" if configured else "false")
+    return openai_key_configured()
+
+
+def selected_openai_model() -> str:
+    from app.core.preferences import get
+    from app.voice import openai_tts
+
+    value = (get("openai_tts_model") or openai_tts.DEFAULT_MODEL).strip()
+    return value if value in openai_tts.ALLOWED_MODELS else openai_tts.DEFAULT_MODEL
+
+
+def selected_openai_voice() -> str:
+    from app.core.preferences import get
+    from app.voice import openai_tts
+
+    value = (get("openai_tts_voice") or openai_tts.DEFAULT_VOICE).strip().lower()
+    return value if value in openai_tts.VOICES else openai_tts.DEFAULT_VOICE
+
+
+def selected_openai_speed() -> float:
+    from app.core.preferences import get
+    from app.voice import openai_tts
+
+    return openai_tts.clamp_speed(get("openai_tts_speed") or openai_tts.DEFAULT_SPEED)
+
+
+def selected_openai_instructions() -> str:
+    from app.core.preferences import get
+    from app.voice import openai_tts
+
+    saved = get("openai_tts_instructions")
+    if saved is None or saved == "":
+        return openai_tts.DEFAULT_INSTRUCTIONS
+    return openai_tts.normalise_instructions(saved)
+
+
+def set_openai_settings(model: str, voice: str, speed: float, instructions: str) -> dict:
+    from app.core.preferences import store
+    from app.voice import openai_tts
+
+    model = openai_tts.validate_model(model)
+    voice = openai_tts.validate_voice(voice)
+    speed = openai_tts.clamp_speed(speed)
+    instructions = openai_tts.normalise_instructions(instructions)
+    store("openai_tts_model", model)
+    store("openai_tts_voice", voice)
+    store("openai_tts_speed", f"{speed:.2f}")
+    store("openai_tts_instructions", instructions)
+    return openai_settings()
+
+
+def openai_settings() -> dict:
+    return {
+        "model": selected_openai_model(),
+        "voice": selected_openai_voice(),
+        "speed": selected_openai_speed(),
+        "instructions": selected_openai_instructions(),
+    }
+
+
+def openai_fallback_allowed() -> bool:
+    from app.core.preferences import get
+
+    return (get("openai_tts_fallback") or "").strip().lower() != "false"
+
+
+def set_openai_fallback_allowed(allowed: bool) -> bool:
+    from app.core.preferences import store
+
+    store("openai_tts_fallback", "true" if allowed else "false")
+    return openai_fallback_allowed()
+
+
+def openai_status() -> dict:
+    """UI/diagnostic state, without loading or returning the key."""
+    from app.core.privacy import privacy_mode
+    from app.voice import openai_tts
+
+    configured = openai_key_configured()
+    if privacy_mode.active:
+        detail = "Privacy mode is on — no OpenAI Speech request will be made."
+    elif not configured:
+        detail = "No OpenAI voice API key saved. Local voices need no key."
+    else:
+        detail = (
+            f"Ready — {selected_openai_voice()} via {selected_openai_model()}. "
+            "Audio is AI-generated."
+        )
+    return {
+        "selected": selected_engine() == OPENAI,
+        "key_configured": configured,
+        "model": selected_openai_model(),
+        "models": list(openai_tts.ALLOWED_MODELS),
+        "voice": selected_openai_voice(),
+        "voices": list(openai_tts.VOICES),
+        "speed": selected_openai_speed(),
+        "speed_range": list(openai_tts.SPEED_RANGE),
+        "instructions": selected_openai_instructions(),
+        "default_instructions": openai_tts.DEFAULT_INSTRUCTIONS,
+        "max_instruction_chars": openai_tts.MAX_INSTRUCTION_CHARS,
+        "fallback_allowed": openai_fallback_allowed(),
+        "blocked_by_privacy": privacy_mode.active,
+        "detail": detail,
+        "last_fallback": last_fallback_reason(),
+        "test_phrase": openai_tts.TEST_PHRASE,
+        "ai_generated": True,
+        "internet_required": True,
+        "usage_may_incur_cost": True,
+    }
 
 
 def cloud_status() -> dict:

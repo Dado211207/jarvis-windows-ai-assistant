@@ -107,6 +107,7 @@
       <select id="el-engine" class="input" aria-label="Which voice engine JARVIS speaks with">
         <option value="">The best local voice</option>
         <option value="elevenlabs">ElevenLabs cloud voice</option>
+        <option value="openai">OpenAI cloud voice</option>
       </select>
     </div>
 
@@ -179,6 +180,87 @@
     <p id="el-test-phrase" class="text-xs text-muted mt-2"></p>
     <p id="el-message" class="text-xs mt-2" aria-live="polite"></p>
     <p id="el-fallback-note" class="text-xs text-muted mt-2"></p>
+  </div>
+
+  <div class="card mb-4" id="openai-voice-card">
+    <h2 class="card-title">OpenAI cloud voice (optional)</h2>
+    <p class="text-xs text-muted mt-2">
+      This produces an <strong>AI-generated voice</strong> through OpenAI&rsquo;s Speech API.
+      The text being spoken is sent to OpenAI; microphone audio, files and the rest of the
+      conversation are not. Cloud audio requires internet access and API usage may incur cost.
+      Privacy mode prevents every OpenAI Speech request.
+    </p>
+    <p class="text-xs text-muted mt-2">
+      The default is an original calm, polished British male style using the built-in
+      <strong>cedar</strong> voice. It is a style brief, not an imitation of any actor,
+      person or fictional character, and it does not promise the exact ChatGPT app voice.
+    </p>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label">Status</span>
+      <span id="oa-detail" class="status-row-value loading">&#8230;</span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">API key</span>
+      <span id="oa-key-state" class="status-row-value">&mdash;</span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">Selected provider</span>
+      <span id="oa-selected-state" class="status-row-value">&mdash;</span>
+    </div>
+    <div class="btn-row mt-3">
+      <button id="oa-select-provider" class="btn btn-primary" type="button">Use OpenAI for speech</button>
+      <button id="oa-select-local" class="btn btn-ghost" type="button">Use the best local voice</button>
+    </div>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="oa-key">Voice API key</label>
+      <input id="oa-key" class="input" type="password" autocomplete="off" spellcheck="false"
+             placeholder="Paste the API key selected for voice" aria-label="OpenAI voice API key"
+             maxlength="512">
+      <button id="oa-key-save" class="btn btn-primary" type="button">Save key</button>
+      <button id="oa-key-check" class="btn btn-ghost" type="button">Check key</button>
+      <button id="oa-key-delete" class="btn btn-ghost" type="button">Remove key</button>
+    </div>
+    <p class="text-xs text-muted mt-2">
+      The key is a distinct <span class="font-mono">openai_api_key</span> entry in Windows
+      Credential Manager. It is write-only here and never appears in logs or diagnostics.
+      Check key performs a brief Speech generation and may incur API usage.
+    </p>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="oa-model">Model</label>
+      <select id="oa-model" class="input" aria-label="OpenAI speech model"></select>
+      <label class="text-xs text-muted" for="oa-voice">Built-in voice</label>
+      <select id="oa-voice" class="input" aria-label="OpenAI built-in voice"></select>
+      <label class="text-xs text-muted" for="oa-speed">Speed</label>
+      <input id="oa-speed" class="input" type="number" min="0.25" max="4" step="0.05"
+             aria-label="OpenAI voice speed">
+    </div>
+    <div class="mt-3">
+      <label class="text-xs text-muted" for="oa-instructions">Style instructions</label>
+      <textarea id="oa-instructions" class="input mt-2" rows="5" maxlength="4096"
+                aria-label="OpenAI voice style instructions"></textarea>
+      <p id="oa-instruction-count" class="text-xs text-muted mt-2"></p>
+    </div>
+    <div class="status-row mt-3">
+      <label class="status-row-label" for="oa-fallback">Use and disclose the local fallback</label>
+      <span class="status-row-value"><input type="checkbox" id="oa-fallback" class="toggle-input"></span>
+    </div>
+    <p class="text-xs text-muted mt-2">
+      If enabled, a local voice covers an OpenAI privacy, connection or service failure and
+      the response states that fallback was used. If disabled, JARVIS stays silent and reports why.
+    </p>
+
+    <div class="btn-row mt-3">
+      <button id="oa-settings-save" class="btn btn-primary" type="button">Save OpenAI settings</button>
+      <button id="oa-settings-reset" class="btn btn-ghost" type="button">Reset original profile</button>
+      <button id="oa-test" class="btn btn-ghost" type="button">Test OpenAI voice</button>
+      <button id="oa-stop" class="btn btn-ghost" type="button">Stop</button>
+    </div>
+    <p id="oa-test-phrase" class="text-xs text-muted mt-2"></p>
+    <p id="oa-message" class="text-xs mt-2" aria-live="polite"></p>
+    <p id="oa-fallback-note" class="text-xs text-muted mt-2"></p>
   </div>
 
   {#
@@ -492,7 +574,7 @@
         <li><span class="check-ok">&#10003;</span> This engine is output only — it never captures audio</li>
         <li><span class="check-ok">&#10003;</span> Push-to-talk voice input (mic button on the <a href="/ui/chat">Chat</a> page)</li>
         <li><span class="check-ok">&#10003;</span> No wake-word speech recognition; opt-in clap activation monitors sound levels only</li>
-        <li><span class="check-ok">&#10003;</span> Speech recognition stays local; optional ElevenLabs TTS sends only spoken reply text</li>
+        <li><span class="check-ok">&#10003;</span> Optional OpenAI and ElevenLabs cloud TTS, selected explicitly; speech recognition stays local</li>
         <li><span class="check-plan">&#9675;</span> <span style="color:var(--text-muted);">Wake word / continuous listening &mdash; planned for a later phase</span></li>
       </ul>
     </div>
@@ -511,11 +593,12 @@
   </div>
 
   <div class="info-box">
-    Speech is produced on this computer unless you explicitly select ElevenLabs above.
-    That cloud option sends only the text being spoken, requires internet access, may incur
-    API cost, and is blocked by Privacy Mode. Local speech components are not downloaded
-    without their size, source and licence being shown first. Audio errors never interrupt
-    JARVIS; they are recorded and the app carries on silently.
+    Speech is produced on this computer unless you explicitly select ElevenLabs or the
+    OpenAI cloud voice above. A cloud voice sends only the text being spoken to the provider
+    you selected, requires internet access, may incur API cost, and is blocked by Privacy
+    Mode. Local speech components are not downloaded without their size, source and licence
+    being shown first. Audio errors never interrupt JARVIS; they are recorded and the app
+    carries on silently.
     Push-to-talk needs a local speech model &mdash; install one above, with its license, size and
     checksum shown first.
     Wake-word speech recognition is not part of this build. If you enable double-clap

@@ -3301,7 +3301,10 @@ function renderCloudStatus(s) {
   _setDiag("el-voice-state", s.voice_name || s.voice_id || "None chosen", s.voice_id ? "text-ok" : "");
 
   const engine = $("el-engine");
-  if (engine) engine.value = s.selected ? "elevenlabs" : "";
+  if (engine) {
+    if (s.selected) engine.value = "elevenlabs";
+    else if (engine.value === "elevenlabs") engine.value = "";
+  }
 
   const idLine = $("el-voice-id");
   if (idLine) idLine.textContent = s.voice_id ? `Voice ID ${s.voice_id}` : "";
@@ -3447,7 +3450,10 @@ function initCloudVoice() {
     return _cloudAction("/voice/cloud/test", {}, "Speaking the test phrase…");
   });
   on("el-stop", "click", voiceStop);
-  on("el-engine", "change", () => _cloudAction("/voice/engine", { engine: $("el-engine").value }, "Switching…"));
+  on("el-engine", "change", async () => {
+    await _cloudAction("/voice/engine", { engine: $("el-engine").value }, "Switching…");
+    await Promise.all([refreshCloudVoice(), refreshOpenAIVoice()]);
+  });
   on("el-fallback", "change", () =>
     _cloudAction("/voice/cloud/fallback", { allowed: $("el-fallback").checked }, "Saving…"));
 
@@ -3460,6 +3466,141 @@ function initCloudVoice() {
   }
 
   refreshCloudVoice();
+}
+
+// ── OpenAI Speech (optional, explicitly selected) ───────────────────────────
+
+function _openaiMessage(text, tone) {
+  const el = $("oa-message");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `text-xs mt-2 ${tone || "text-muted"}`;
+}
+
+function _fillOptions(select, values, selected) {
+  if (!select) return;
+  _clearEl(select);
+  for (const value of values || []) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    option.selected = value === selected;
+    select.appendChild(option);
+  }
+}
+
+function _openaiInstructionCount() {
+  const field = $("oa-instructions");
+  const count = $("oa-instruction-count");
+  if (field && count) count.textContent = `${field.value.length} / 4096 characters`;
+}
+
+function renderOpenAIStatus(s) {
+  if (!s || !$("openai-voice-card")) return;
+  _setDiag("oa-detail", s.detail, s.blocked_by_privacy ? "text-err" : (s.key_configured ? "text-ok" : ""));
+  _setDiag(
+    "oa-key-state",
+    s.key_configured ? "Saved in the Windows Credential Manager" : "Not set",
+    s.key_configured ? "text-ok" : "",
+  );
+  _setDiag("oa-selected-state", s.selected ? "OpenAI Speech" : "Not selected",
+           s.selected ? "text-ok" : "");
+
+  const engine = $("el-engine");
+  if (engine && s.selected) engine.value = "openai";
+  _fillOptions($("oa-model"), s.models, s.model);
+  _fillOptions($("oa-voice"), s.voices, s.voice);
+  const model = $("oa-model");
+  if (model) model.disabled = (s.models || []).length <= 1;
+  const speed = $("oa-speed");
+  if (speed) speed.value = String(s.speed);
+  const instructions = $("oa-instructions");
+  if (instructions) instructions.value = s.instructions || "";
+  const fallback = $("oa-fallback");
+  if (fallback) fallback.checked = !!s.fallback_allowed;
+  setText("oa-test-phrase", `Shared A/B test phrase: “${s.test_phrase}”`);
+  setText(
+    "oa-fallback-note",
+    s.last_fallback ? `Last cloud fallback: ${s.last_fallback}` : "",
+  );
+  const test = $("oa-test");
+  if (test) test.disabled = !s.key_configured || s.blocked_by_privacy;
+  _openaiInstructionCount();
+}
+
+async function refreshOpenAIVoice() {
+  if (!$("openai-voice-card")) return;
+  try {
+    renderOpenAIStatus(await API.get("/voice/openai"));
+  } catch (e) {
+    _openaiMessage("Could not read the OpenAI voice settings.", "text-err");
+  }
+}
+
+async function _openaiAction(path, body, whenBusy) {
+  _openaiMessage(whenBusy || "Working…", "text-muted");
+  try {
+    const r = await API.post(path, body || {});
+    renderOpenAIStatus(r.status);
+    _openaiMessage(r.message, r.success ? "text-ok" : "text-err");
+    return r;
+  } catch (e) {
+    _openaiMessage("That did not work. " + (e.message || ""), "text-err");
+    return null;
+  }
+}
+
+async function saveOpenAIKey() {
+  const field = $("oa-key");
+  const key = field ? field.value.trim() : "";
+  if (!key) {
+    _openaiMessage("Paste the API key you want to use for voice first.", "text-err");
+    return;
+  }
+  await _openaiAction("/voice/openai/key", { api_key: key }, "Saving the key…");
+  if (field) field.value = "";
+}
+
+function saveOpenAISettings() {
+  return _openaiAction("/voice/openai/settings", {
+    model: $("oa-model").value,
+    voice: $("oa-voice").value,
+    speed: Number($("oa-speed").value),
+    instructions: $("oa-instructions").value,
+  }, "Saving OpenAI voice settings…");
+}
+
+function initOpenAIVoice() {
+  if (!$("openai-voice-card")) return;
+  const on = (id, event, handler) => {
+    const el = $(id);
+    if (el) el.addEventListener(event, handler);
+  };
+  on("oa-key-save", "click", saveOpenAIKey);
+  on("oa-select-provider", "click", async () => {
+    await _cloudAction("/voice/engine", { engine: "openai" }, "Switching…");
+    await Promise.all([refreshCloudVoice(), refreshOpenAIVoice()]);
+  });
+  on("oa-select-local", "click", async () => {
+    await _cloudAction("/voice/engine", { engine: "" }, "Switching…");
+    await Promise.all([refreshCloudVoice(), refreshOpenAIVoice()]);
+  });
+  on("oa-key-check", "click", () =>
+    _openaiAction("/voice/openai/validate", {}, "Checking via a brief Speech generation…"));
+  on("oa-key-delete", "click", () =>
+    _openaiAction("/voice/openai/key/delete", {}, "Removing the key…"));
+  on("oa-settings-save", "click", saveOpenAISettings);
+  on("oa-settings-reset", "click", () =>
+    _openaiAction("/voice/openai/settings/reset", {}, "Resetting…"));
+  on("oa-fallback", "change", () =>
+    _openaiAction("/voice/openai/fallback", { allowed: $("oa-fallback").checked }, "Saving…"));
+  on("oa-test", "click", () => {
+    suspendForSpeech();
+    return _openaiAction("/voice/openai/test", {}, "Generating the shared test phrase…");
+  });
+  on("oa-stop", "click", voiceStop);
+  on("oa-instructions", "input", _openaiInstructionCount);
+  refreshOpenAIVoice();
 }
 
 // ── Double-clap activation ──────────────────────────────────────────────────
@@ -3947,6 +4088,7 @@ function initVoice() {
   if (pronSave) pronSave.addEventListener("click", savePronunciation);
 
   initCloudVoice();
+  initOpenAIVoice();
   initClapControls();
 
   refreshVoiceStatus();

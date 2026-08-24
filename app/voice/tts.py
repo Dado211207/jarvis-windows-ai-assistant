@@ -49,13 +49,33 @@ class TextToSpeechService:
 
     def is_available(self) -> bool:
         """True when *something* on this machine can speak."""
-        from app.voice import engines
-
-        return engines.active_engine(self.voice_key) != engines.NONE
+        return self.active_engine() != "none"
 
     def active_engine(self) -> str:
         from app.voice import engines
+        from app.core.privacy import privacy_mode
 
+        selected = engines.selected_engine()
+        if selected == engines.OPENAI:
+            if engines.openai_key_configured() and not privacy_mode.active:
+                return engines.OPENAI
+            return (
+                engines.active_engine(self.voice_key)
+                if engines.openai_fallback_allowed() else engines.NONE
+            )
+        if selected == engines.ELEVENLABS:
+            from app.core.credentials import has_elevenlabs_key
+
+            if (
+                has_elevenlabs_key()
+                and engines.selected_cloud_voice_id()
+                and not privacy_mode.active
+            ):
+                return engines.ELEVENLABS
+            return (
+                engines.active_engine(self.voice_key)
+                if engines.fallback_allowed() else engines.NONE
+            )
         return engines.active_engine(self.voice_key)
 
     # --- output state: the single flag every surface reads ---
@@ -128,13 +148,22 @@ class TextToSpeechService:
             )
 
         preview = text[:60] + ("…" if len(text) > 60 else "")
+        # Both halves of this matter and they are not the same thing.
+        #
+        # The visible message carries the engine's own words when it has
+        # something to say beyond "Speaking." — that is how a user learns
+        # the cloud voice was not the one that spoke. The structured
+        # `fallback_message` carries the same fact as a field, so a caller
+        # does not have to parse prose to detect it, and `engine` names
+        # who actually spoke. Folding all three into one string, as the
+        # voice branch did, loses the engine entirely.
+        message = f"Speaking: {preview!r}"
+        if outcome.message and outcome.message != "Speaking.":
+            message = f"{outcome.message} {message}"
         return TTSResult(
             success=True,
-            message=f"Speaking: {preview!r}",
+            message=message,
             engine=outcome.engine,
-            # A cloud provider may have failed while a local engine still
-            # started successfully. Keep that distinct notice all the way
-            # to the browser instead of replacing it with the preview.
             fallback_message=outcome.fallback_message,
         )
 

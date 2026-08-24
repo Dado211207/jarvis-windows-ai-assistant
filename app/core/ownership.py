@@ -216,6 +216,13 @@ def _remove_credentials(report: RemovalReport) -> None:
     Credential Manager target name is how an uninstall leaves a secret
     behind while reporting success.
     """
+    # One list, not two. The voice pass added OpenAI to a hardcoded tuple
+    # here because it branched before this became registry-driven; keeping
+    # both would mean a credential cleaned by two independent
+    # implementations, which is how one of them quietly stops matching the
+    # other. OpenAI is in credentials.OWNED_CREDENTIALS instead, so the
+    # manifest the user reads and the cleanup that runs are generated from
+    # the same source.
     for credential in credentials.OWNED_CREDENTIALS:
         label = credential.what
         try:

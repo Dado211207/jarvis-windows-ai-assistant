@@ -150,6 +150,25 @@ class Player:
         nobody is going to hear."""
         return self._cancel
 
+    def begin_utterance(self) -> threading.Event:
+        """Reserve playback for a synthesis operation that may block.
+
+        Cloud synthesis can take seconds before it yields WAV bytes.  Its
+        cancellation token therefore has to exist *before* the request, not
+        only when playback begins.  Stop (or a newer utterance) sets this
+        token; delayed bytes carrying an old token are then discarded.
+        """
+        self.stop()
+        self.wait(timeout=2.0)
+        with self._lock:
+            self._cancel = threading.Event()
+            return self._cancel
+
+    def is_current(self, cancel: threading.Event) -> bool:
+        """Whether *cancel* still owns the right to start playback."""
+        with self._lock:
+            return cancel is self._cancel and not cancel.is_set()
+
     def wait(self, timeout: Optional[float] = None) -> bool:
         thread = self._thread
         if thread is None:
@@ -180,12 +199,17 @@ class Player:
         to wait for that inference to return, but it will neither start a
         second inference nor play the chunk that just finished.
         """
-        self.stop()          # one voice at a time, always
-        self.wait(timeout=2.0)
-
-        self._cancel = threading.Event()
-        cancel = self._cancel
+        cancel = self.begin_utterance()
         chunks = make_chunks(cancel)
+        self._start_stream(chunks, sample_rate, cancel)
+        return cancel
+
+    def _start_stream(
+        self, chunks: Iterable, sample_rate: int, cancel: threading.Event,
+    ) -> None:
+        """Start prepared chunks only while their reservation is current."""
+        if not self.is_current(cancel):
+            return
         self._set(playing=True, chunks_played=0, seconds_played=0.0, stopped=False)
 
         def _run() -> None:
@@ -216,12 +240,20 @@ class Player:
         with self._lock:
             self._thread = thread
         thread.start()
-        return cancel
 
     def play_wav_bytes(self, wav_bytes: bytes) -> None:
         """Play one complete WAV, for an engine that produces a whole
         utterance at once rather than a stream of sentences."""
         self.play_stream([_RawWav(wav_bytes)], sample_rate=0)
+
+    def play_wav_bytes_if_current(
+        self, wav_bytes: bytes, cancel: threading.Event,
+    ) -> bool:
+        """Play delayed WAV bytes only if Stop has not superseded them."""
+        if not self.is_current(cancel):
+            return False
+        self._start_stream([_RawWav(wav_bytes)], sample_rate=0, cancel=cancel)
+        return self.is_current(cancel)
 
     def _play_one(self, wav_bytes: bytes) -> None:
         if sys.platform != "win32":

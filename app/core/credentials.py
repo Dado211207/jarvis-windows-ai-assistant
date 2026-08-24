@@ -50,6 +50,7 @@ TIMEOUT_SECONDS = 5.0
 # Manager entries: they are granted, replaced and revoked independently.
 # The ownership registry below makes that rule executable at uninstall.
 ELEVENLABS_USERNAME = "elevenlabs_api_key"
+OPENAI_USERNAME = "openai_api_key"
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,11 @@ OWNED_CREDENTIALS = (
         "elevenlabs_credential",
         ELEVENLABS_USERNAME,
         "Your ElevenLabs API key in Windows Credential Manager",
+    ),
+    OwnedCredential(
+        "openai_credential",
+        OPENAI_USERNAME,
+        "Your OpenAI voice API key in Windows Credential Manager",
     ),
 )
 
@@ -202,3 +208,17 @@ def has_elevenlabs_key() -> bool:
     """Whether a key is configured — the only thing about it that is ever
     reported outside this module. The value itself never leaves."""
     return bool(get_elevenlabs_key())
+
+
+# OpenAI Speech has its own credential entry. It is intentionally not the
+# Anthropic/general chat credential and has no environment-variable fallback.
+def get_openai_key() -> str:
+    return _get(OPENAI_USERNAME)
+
+
+def set_openai_key(value: str) -> bool:
+    return _set(OPENAI_USERNAME, value)
+
+
+def clear_openai_key() -> bool:
+    return _clear(OPENAI_USERNAME)
