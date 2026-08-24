@@ -172,11 +172,18 @@ class Database:
     def log_action(
         self, command: str, tool_name: str, status: str, message: str
     ) -> int:
+        # This is the single write boundary for the legacy action log.
+        # Callers are numerous and historically inconsistent, so redact
+        # here rather than relying on every route to remember.
+        from app.core.redaction import redact_message
+
+        safe_command = redact_message(str(command))
+        safe_message = redact_message(str(message))
         conn = self._get_conn()
         cur = conn.execute(
             "INSERT INTO action_logs (command, tool_name, status, message) "
             "VALUES (?, ?, ?, ?)",
-            (command, tool_name, status, message),
+            (safe_command, tool_name, status, safe_message),
         )
         conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
