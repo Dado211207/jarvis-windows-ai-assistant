@@ -540,27 +540,45 @@ class ProcessLedger:
     """
 
     handles: List[CommandHandle] = field(default_factory=list)
+    owners: Dict[int, str] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def track(self, handle: CommandHandle) -> None:
+    def track(self, handle: CommandHandle, owner_id: str = "") -> None:
         with self._lock:
-            self.handles.append(handle)
+            if handle not in self.handles:
+                self.handles.append(handle)
+            self.owners[id(handle)] = str(owner_id or "")
 
     def forget(self, handle: CommandHandle) -> None:
         with self._lock:
             if handle in self.handles:
                 self.handles.remove(handle)
+            self.owners.pop(id(handle), None)
+
+    def stop_owner(self, owner_id: str, reason: str = "task stopped") -> List[dict]:
+        owner = str(owner_id or "")
+        with self._lock:
+            handles = [h for h in self.handles if self.owners.get(id(h), "") == owner]
+            for handle in handles:
+                self.handles.remove(handle)
+                self.owners.pop(id(handle), None)
+        return [handle.stop(reason) for handle in handles]
 
     def stop_all(self, reason: str = "shutdown") -> List[dict]:
         with self._lock:
             handles = list(self.handles)
             self.handles.clear()
+            self.owners.clear()
         return [handle.stop(reason) for handle in handles]
 
-    def live_count(self) -> int:
+    def live_count(self, owner_id: Optional[str] = None) -> int:
         with self._lock:
+            handles = list(self.handles)
+            if owner_id is not None:
+                owner = str(owner_id)
+                handles = [h for h in handles if self.owners.get(id(h), "") == owner]
             return sum(
-                1 for h in self.handles
+                1 for h in handles
                 if h._process is not None and h._process.poll() is None
             )
 

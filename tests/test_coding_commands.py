@@ -180,47 +180,36 @@ def test_a_declared_script_whose_body_is_dangerous_still_asks():
     assert "curl" in verdict.reason.lower() or "script" in verdict.reason.lower()
 
 
-def test_an_ordinary_declared_script_runs_only_after_exact_approval():
-    """A package.json declaration is evidence, not permission."""
+def test_approval_key_binds_argv_and_current_declared_body():
     argv = ["npm", "run", "build"]
-    assert tier(argv, declared_commands=DECLARED) is CommandTier.APPROVAL
-    assert tier(
-        argv, declared_commands=DECLARED, approved_argvs=[argv]
-    ) is CommandTier.AUTO
+    first = commands.approval_key(argv, DECLARED)
+    changed = {key: dict(value) for key, value in DECLARED.items()}
+    changed["build"]["declared"] = "node a-different-build.js"
+    second = commands.approval_key(argv, changed)
+    assert first != second
+    assert classify(argv, declared_commands=DECLARED).tier is CommandTier.APPROVAL
 
 
-
-def test_an_approved_declared_script_does_not_approve_a_neighbour():
-    approved = [["npm", "run", "test"]]
-    assert tier(
-        ["npm", "run", "test"],
-        declared_commands=DECLARED,
-        approved_argvs=approved,
-    ) is CommandTier.AUTO
-    assert tier(
-        ["npm", "run", "build"],
-        declared_commands=DECLARED,
-        approved_argvs=approved,
-    ) is CommandTier.APPROVAL
-
+def test_neighbouring_declared_scripts_have_different_approval_keys():
+    assert commands.approval_key(
+        ["npm", "run", "test"], DECLARED
+    ) != commands.approval_key(
+        ["npm", "run", "build"], DECLARED
+    )
 
 # ---------------------------------------------------------------------------
 # Approval is specific, and does not persist
 # ---------------------------------------------------------------------------
 
-def test_an_approved_argv_runs_and_a_neighbouring_one_does_not():
-    approved = [["npm", "install", "left-pad"]]
-    assert tier(["npm", "install", "left-pad"], approved_argvs=approved) is CommandTier.AUTO
-    assert tier(["npm", "install", "left-pad", "--global"],
-                approved_argvs=approved) is CommandTier.APPROVAL
-    assert tier(["npm", "install"], approved_argvs=approved) is CommandTier.APPROVAL
-
+def test_general_command_approval_keys_are_exact():
+    base = commands.approval_key(["npm", "install", "left-pad"])
+    assert base != commands.approval_key(["npm", "install", "left-pad", "--global"])
+    assert base != commands.approval_key(["npm", "install"])
 
 def test_approval_cannot_unblock_a_blocked_command():
     """Even if a user somehow approved it, `powershell` does not become
     runnable. Blocked is not a strong default; it is a refusal."""
-    approved = [["powershell", "-c", "whoami"]]
-    assert tier(["powershell", "-c", "whoami"], approved_argvs=approved) is CommandTier.BLOCKED
+    assert tier(["powershell", "-c", "whoami"]) is CommandTier.BLOCKED
 
 
 # ---------------------------------------------------------------------------

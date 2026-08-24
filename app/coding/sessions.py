@@ -76,7 +76,7 @@ def stop(task_id: str) -> dict:
             logger.warning("Preview stop raised during task stop.", exc_info=True)
 
     from app.coding.runner import ledger
-    reports.extend(ledger.stop_all(f"task {task_id} stopped"))
+    reports.extend(ledger.stop_owner(task_id, f"task {task_id} stopped"))
 
     unregister(task_id)
     logger.info("Coding task %s stopped by request.", task_id)

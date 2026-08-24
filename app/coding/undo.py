@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import shutil
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -20,6 +22,9 @@ from app.core.app_paths import data_dir
 
 _UNDO_DIRNAME = "coding_undo"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+MAX_UNDO_TASK_BYTES = 64 * 1024 * 1024
+MAX_UNDO_TOTAL_BYTES = 512 * 1024 * 1024
+_store_lock = threading.Lock()
 
 
 class UndoBackupError(Exception):
@@ -43,23 +48,55 @@ def _backup_path(task_id: str, backup_id: str) -> Path:
     return _undo_root() / task / f"{backup}.bin"
 
 
+def _directory_size(path: Path) -> int:
+    total = 0
+    try:
+        for candidate in path.rglob("*.bin"):
+            try:
+                total += candidate.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return total
+
+
 def store_bytes(task_id: str, raw: bytes) -> str:
-    """Persist exact pre-edit bytes before an edit is allowed to run."""
+    """Persist exact pre-edit bytes before an edit is allowed to run.
+
+    Normal uninstall preserves this directory with other JARVIS data;
+    full removal deletes the data directory. Task delete, clear and
+    history pruning purge backups whose undo records no longer exist.
+    """
     backup_id = secrets.token_hex(16)
     path = _backup_path(task_id, backup_id)
     temp = path.with_suffix(".tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(temp, "xb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp, path)
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
+        with _store_lock:
+            task_bytes = _directory_size(path.parent)
+            total_bytes = _directory_size(_undo_root())
+            if task_bytes + len(raw) > MAX_UNDO_TASK_BYTES:
+                raise UndoBackupError(
+                    "This task reached the undo-backup size limit, so the file was not changed."
+                )
+            if total_bytes + len(raw) > MAX_UNDO_TOTAL_BYTES:
+                raise UndoBackupError(
+                    "JARVIS reached the total undo-backup size limit. Clear old task "
+                    "history before changing more files."
+                )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temp, "xb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, path)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
         return backup_id
+    except UndoBackupError:
+        raise
     except OSError as exc:
         try:
             temp.unlink(missing_ok=True)
@@ -70,6 +107,44 @@ def store_bytes(task_id: str, raw: bytes) -> str:
             "so the file was not changed."
         ) from None
 
+
+def purge_task(task_id: str) -> bool:
+    """Remove every backup owned by one deleted or pruned task."""
+    try:
+        task = _safe_component(task_id, "task id")
+        target = _undo_root() / task
+        if not target.exists():
+            return True
+        shutil.rmtree(target)
+        return True
+    except (OSError, UndoBackupError):
+        return False
+
+
+def purge_except(task_ids: List[str]) -> int:
+    """Remove backup directories not represented in retained history."""
+    keep = {
+        str(task_id) for task_id in task_ids
+        if _SAFE_ID.fullmatch(str(task_id or ""))
+    }
+    root = _undo_root()
+    try:
+        candidates = list(root.iterdir()) if root.is_dir() else []
+    except OSError:
+        return 0
+    removed = 0
+    for candidate in candidates:
+        if (
+            candidate.is_dir()
+            and _SAFE_ID.fullmatch(candidate.name)
+            and candidate.name not in keep
+        ):
+            try:
+                shutil.rmtree(candidate)
+                removed += 1
+            except OSError:
+                continue
+    return removed
 
 def discard(task_id: str, backup_id: Optional[str]) -> None:
     if not backup_id:

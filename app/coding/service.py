@@ -83,42 +83,36 @@ def start_task(task_id: str, *, allow_in_place: bool = False) -> dict:
     isolation = plan.as_dict()
 
     worktree_created = False
-    if plan.possible:
-        created, message = gitsafe.create_worktree(project_root, plan)
-        if not created:
-            raise StartRefused(
-                f"JARVIS did not start: {message} Nothing was changed. You can "
-                "commit or stash your current work and try again, or start the "
-                "task with isolation turned off if you accept that JARVIS will "
-                "edit your working copy directly.",
-                {"isolation": isolation},
-            )
-        worktree_created = True
-        working_root = Path(plan.worktree_path or project_root)
-        isolation["active"] = True
-        isolation["message"] = message
-    elif not allow_in_place:
+
+    # Refusals that do not attempt isolation remain retryable. Once Git
+    # creation begins, every subsequent failure is recorded and cleaned.
+    if not plan.possible and not allow_in_place:
         raise StartRefused(
             plan.reason + " JARVIS has not started and has changed nothing. You can "
             "either resolve that and try again, or start the task again with "
-            "'work directly in my folder' selected — in which case JARVIS edits "
-            "your files in place, shows every change as a diff, and still never "
-            "discards anything you changed yourself.",
+            "'work directly in my folder' selected.",
             {"isolation": isolation, "can_continue_in_place": plan.strategy == "in_place"},
         )
-    else:
-        if plan.strategy != "in_place":
-            # A blocker like an unresolved merge conflict is not something
-            # the user can wave through — continuing would inherit it.
-            raise StartRefused(plan.reason, {"isolation": isolation})
-        isolation["active"] = False
-        isolation["message"] = (
-            "Working directly in your folder, at your request. Every change is "
-            "shown as a diff before and after, and nothing you changed yourself "
-            "is touched."
-        )
+    if not plan.possible and plan.strategy != "in_place":
+        raise StartRefused(plan.reason, {"isolation": isolation})
 
     try:
+        if plan.possible:
+            created, message = gitsafe.create_worktree(project_root, plan)
+            if not created:
+                raise StartRefused(message, {"isolation": isolation})
+            worktree_created = True
+            working_root = Path(plan.worktree_path or project_root)
+            isolation["active"] = True
+            isolation["message"] = message
+        else:
+            isolation["active"] = False
+            isolation["message"] = (
+                "Working directly in your folder, at your request. Every change is "
+                "shown as a diff before and after, and nothing you changed yourself "
+                "is touched."
+            )
+
         detected = stacks.detect(working_root)
         declared = stacks.project_commands(detected)
 
@@ -151,15 +145,25 @@ def start_task(task_id: str, *, allow_in_place: bool = False) -> dict:
         thread.start()
     except Exception as exc:
         sessions.unregister(task_id)
-        cleanup_ok, cleanup_message = True, "No worktree had been created."
+        from app.coding.runner import ledger
+        ledger.stop_owner(task_id, "task start failed")
+        cleanup_ok, cleanup_message = True, "No worktree remained."
         if worktree_created:
-            cleanup_ok, cleanup_message = gitsafe.cleanup_failed_isolation(project_root, plan)
+            cleanup_ok, cleanup_message = gitsafe.cleanup_failed_isolation(
+                project_root, plan, allow_partial=True
+            )
+        elif plan.creation_attempted and plan.failed_cleanup_ok is not None:
+            cleanup_ok = bool(plan.failed_cleanup_ok)
+            cleanup_message = plan.failed_cleanup_message
+        original = exc.reason if isinstance(exc, StartRefused) else (
+            f"setup failed ({type(exc).__name__})"
+        )
         message = (
-            "JARVIS could not start the coding task. "
+            f"JARVIS could not start the coding task: {original}. "
             + (
-                "The temporary worktree and branch were removed."
+                "No temporary worktree or branch remains."
                 if cleanup_ok else
-                f"The temporary isolation could not be removed safely: {cleanup_message}"
+                f"Temporary isolation was kept because safe cleanup failed: {cleanup_message}"
             )
         )
         tasks.append_step(
@@ -213,6 +217,7 @@ def _run_and_report(runner) -> None:
     except Exception:  # noqa: BLE001
         logger.warning("A coding task ended with an unexpected error.", exc_info=True)
         try:
+            runner._cleanup_owned("unexpected task failure")
             tasks.append_step(
                 runner.context.record, "error",
                 "The task stopped because of an internal error. Changes already "

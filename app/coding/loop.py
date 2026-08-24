@@ -384,13 +384,9 @@ class TaskRunner:
             self._emit("approval_declined", {"summary": request.summary})
             return self.run()
 
-        action = getattr(proposal, "action", "")
-        if action == "run_command":
-            self.context.approved_argvs.append(list(proposal.argv))
-        elif action == "delete_file":
-            self.context.approved_deletes.append(proposal.path)
-        elif action == "start_preview":
-            self.context.approved_previews.append(proposal.script)
+        approval_key = str(request.detail.get("approval_key") or "")
+        if approval_key:
+            self.context.grant_once(approval_key)
 
         tasks.append_step(self.context.record, "approval",
                           f"You approved: {request.summary}", {}, ok=True)
@@ -398,7 +394,23 @@ class TaskRunner:
 
         outcome = agent.execute_proposal(self.context, proposal,
                                          on_event=self._emit_command_line)
+        # If the declaration changed after the prompt, execution asks again.
+        # Revoke the old capability so reverting package.json later cannot
+        # resurrect an approval for a script body that is no longer current.
+        if approval_key:
+            self.context.consume_once(approval_key)
         self._record(outcome)
+        if outcome.needs_approval is not None:
+            with self._lock:
+                self._pending = (proposal, outcome.needs_approval)
+            self.state = LoopState.AWAITING_APPROVAL
+            tasks.set_state(self.context.record, tasks.TaskState.AWAITING_APPROVAL)
+            self._emit("awaiting_approval", outcome.needs_approval.as_dict())
+            return LoopResult(
+                LoopState.AWAITING_APPROVAL,
+                outcome.needs_approval.summary,
+                approval=outcome.needs_approval.as_dict(),
+            )
         if outcome.finished:
             return self._finish(outcome.summary)
         return self.run()
@@ -549,7 +561,19 @@ class TaskRunner:
                             "summary": outcome.summary})
         tasks.save(self.context.record)
 
+    def _cleanup_owned(self, reason: str) -> None:
+        preview = getattr(self.context, "preview", None)
+        if preview is not None:
+            try:
+                preview.stop(reason)
+            except Exception:  # noqa: BLE001
+                logger.warning("Preview cleanup failed for task %s.",
+                               self.context.task_id, exc_info=True)
+        from app.coding.runner import ledger
+        ledger.stop_owner(self.context.task_id, reason)
+
     def _finish(self, summary: str, collected=None, thinking: str = "") -> LoopResult:
+        self._cleanup_owned("task completed")
         self.state = LoopState.COMPLETED
         tasks.set_state(self.context.record, tasks.TaskState.COMPLETED,
                         {"summary": summary, "files_changed": len(self.context.record.files_changed)})
@@ -558,12 +582,14 @@ class TaskRunner:
         return LoopResult(LoopState.COMPLETED, summary, collected or [], thinking=thinking)
 
     def _stopped(self, message: str, collected) -> LoopResult:
+        self._cleanup_owned("task stopped")
         self.state = LoopState.STOPPED
         tasks.set_state(self.context.record, tasks.TaskState.STOPPED, {"summary": message})
         self._emit("stopped", {"message": message})
         return LoopResult(LoopState.STOPPED, message, collected)
 
     def _failed(self, message: str, collected) -> LoopResult:
+        self._cleanup_owned("task failed")
         self.state = LoopState.FAILED
         tasks.append_step(self.context.record, "error", message, {}, ok=False)
         tasks.set_state(self.context.record, tasks.TaskState.FAILED, {"summary": message})
@@ -572,6 +598,7 @@ class TaskRunner:
         return LoopResult(LoopState.FAILED, message, collected)
 
     def _limit(self, reason: str, collected) -> LoopResult:
+        self._cleanup_owned("task limit reached")
         message = (
             f"JARVIS stopped because {reason}. Changes already made are kept and "
             "shown in the diff — nothing was rolled back."

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from app.coding import gitsafe, undo
+from app.coding import gitsafe, tasks, undo
 from tests import coding_fixtures as fx
 
 
@@ -432,3 +432,84 @@ def test_a_diff_of_only_protected_files_is_a_notice_not_an_empty_string(tmp_path
     body = gitsafe.diff(root)
     assert body.strip(), "a changed .env produced an empty diff, which reads as 'no changes'"
     assert ".env" in body
+
+
+def test_partial_worktree_add_failure_removes_owned_path_and_branch(
+    tmp_path, monkeypatch,
+):
+    root = fx.static_site(tmp_path / "Project with spaces ü", with_defect=False)
+    fx.init_repo(root)
+    plan = gitsafe.plan_isolation(root, "partial123")
+    real_git = gitsafe._git
+
+    def fail_after_creating_ref(project_root, args, timeout=20.0):
+        if args[:2] == ["worktree", "add"]:
+            destination = Path(args[4])
+            destination.mkdir(parents=True)
+            (destination / ".git").write_text("partial worktree marker\n", encoding="utf-8")
+            created = real_git(project_root, ["branch", plan.branch_name, plan.start_sha])
+            assert created[0] == 0
+            return 1, "", "injected checkout failure"
+        return real_git(project_root, args, timeout)
+
+    monkeypatch.setattr(gitsafe, "_git", fail_after_creating_ref)
+    created, message = gitsafe.create_worktree(root, plan)
+    assert created is False
+    assert "cleanup succeeded" in message.lower()
+    assert not Path(plan.worktree_path).exists()
+    assert real_git(root, ["show-ref", "--verify", f"refs/heads/{plan.branch_name}"])[0] != 0
+
+
+def test_task_history_delete_purges_its_private_undo_bytes(tmp_path, monkeypatch):
+    monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
+    record = tasks.create("project", "change")
+    backup = undo.store_bytes(record.id, b"private source bytes")
+    path = undo._backup_path(record.id, backup)
+    assert path.is_file()
+    assert tasks.delete(record.id) is True
+    assert not path.exists()
+
+
+def test_undo_store_caps_are_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
+    monkeypatch.setattr(undo, "MAX_UNDO_TASK_BYTES", 8)
+    monkeypatch.setattr(undo, "MAX_UNDO_TOTAL_BYTES", 16)
+    undo.store_bytes("cap-task", b"12345678")
+    with pytest.raises(undo.UndoBackupError):
+        undo.store_bytes("cap-task", b"x")
+
+
+def test_undo_retention_matches_installer_preserve_and_full_remove_policy():
+    source = (Path(__file__).resolve().parent.parent /
+              "app" / "coding" / "undo.py").read_text(encoding="utf-8")
+    installer = (Path(__file__).resolve().parent.parent /
+                 "packaging" / "jarvis.iss").read_text(encoding="utf-8")
+    assert "Normal uninstall preserves" in source
+    assert "DelTree(DataDir, True, True, True)" in installer
+
+
+def test_task_history_clear_purges_all_private_undo_bytes(tmp_path, monkeypatch):
+    monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
+    first = tasks.create("project", "one")
+    second = tasks.create("project", "two")
+    first_path = undo._backup_path(first.id, undo.store_bytes(first.id, b"first"))
+    second_path = undo._backup_path(second.id, undo.store_bytes(second.id, b"second"))
+    assert tasks.clear() == 2
+    assert not first_path.exists()
+    assert not second_path.exists()
+
+
+def test_task_history_pruning_purges_the_pruned_tasks_undo_bytes(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
+    monkeypatch.setattr(tasks, "MAX_TASKS_KEPT", 1)
+    first = tasks.create("project", "first")
+    first_path = undo._backup_path(first.id, undo.store_bytes(first.id, b"first"))
+    second = tasks.create("project", "second")
+    assert tasks.get(first.id) is None
+    assert tasks.get(second.id) is not None
+    assert not first_path.exists()

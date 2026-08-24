@@ -32,6 +32,7 @@ returning anything.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -362,6 +363,9 @@ class IsolationPlan:
     worktree_path: Optional[str] = None
     start_sha: Optional[str] = None
     blockers: List[str] = field(default_factory=list)
+    creation_attempted: bool = False
+    failed_cleanup_ok: Optional[bool] = None
+    failed_cleanup_message: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -464,14 +468,35 @@ def create_worktree(root: Path, plan: IsolationPlan) -> Tuple[bool, str]:
     if destination.exists():
         return False, f"'{destination.name}' already exists; JARVIS will not reuse it."
 
+    ref = f"refs/heads/{plan.branch_name}"
+    code, _, _ = _git(root, ["rev-parse", "--verify", ref])
+    if code == 0:
+        return False, (
+            f"The planned branch '{plan.branch_name}' already exists; "
+            "JARVIS will not reuse or remove it."
+        )
+
     destination.parent.mkdir(parents=True, exist_ok=True)
+    plan.creation_attempted = True
     code, _, err = _git(
         root,
         ["worktree", "add", "-b", plan.branch_name, str(destination), plan.start_sha],
         timeout=60.0,
     )
     if code != 0:
-        return False, f"The worktree could not be created: {err.strip()[:200]}"
+        cleaned, cleanup_message = cleanup_failed_isolation(
+            root, plan, allow_partial=True
+        )
+        plan.failed_cleanup_ok = cleaned
+        plan.failed_cleanup_message = cleanup_message
+        cleanup_note = (
+            " Partial worktree/branch cleanup succeeded."
+            if cleaned else f" Cleanup was refused: {cleanup_message}"
+        )
+        return False, (
+            f"The worktree could not be created: {err.strip()[:200]}"
+            + cleanup_note
+        )
     logger.info("Coding worktree created for task on branch %s.", plan.branch_name)
     return True, f"Working in an isolated worktree on '{plan.branch_name}'."
 
@@ -504,7 +529,12 @@ def remove_worktree(root: Path, worktree_path: str, *, force_when_dirty: bool = 
     return True, "Task worktree removed."
 
 
-def cleanup_failed_isolation(root: Path, plan: IsolationPlan) -> Tuple[bool, str]:
+def cleanup_failed_isolation(
+    root: Path,
+    plan: IsolationPlan,
+    *,
+    allow_partial: bool = False,
+) -> Tuple[bool, str]:
     """Remove only the untouched worktree and branch this failed start made.
 
     The branch ref is deleted with its expected old SHA, so a concurrent
@@ -525,9 +555,40 @@ def cleanup_failed_isolation(root: Path, plan: IsolationPlan) -> Tuple[bool, str
         return False, "The failed task's worktree path was unexpected; it was kept."
 
     if destination.exists():
-        removed, message = remove_worktree(root, str(destination), force_when_dirty=False)
-        if not removed:
-            return False, message
+        registered = any(
+            Path(entry.get("worktree", "")).resolve(strict=False) == destination
+            for entry in worktrees(root)
+            if entry.get("worktree")
+        )
+        if registered:
+            removed, message = remove_worktree(
+                root, str(destination), force_when_dirty=allow_partial
+            )
+            if not removed:
+                return False, message
+        elif allow_partial:
+            marker = destination / ".git"
+            try:
+                is_empty = not any(destination.iterdir())
+            except OSError:
+                is_empty = False
+            if marker.exists() or is_empty:
+                try:
+                    shutil.rmtree(destination)
+                except OSError as exc:
+                    return False, (
+                        "The partial worktree directory could not be removed "
+                        f"({type(exc).__name__})."
+                    )
+            else:
+                return False, (
+                    "The failed worktree path contains data that cannot be proved "
+                    "to belong to Git, so JARVIS kept it."
+                )
+        else:
+            return False, (
+                "The worktree is not registered to this repository, so JARVIS kept it."
+            )
 
     ref = f"refs/heads/{plan.branch_name}"
     code, current, _ = _git(root, ["rev-parse", "--verify", ref])

@@ -567,3 +567,23 @@ def test_a_tool_the_toolchain_calls_available_can_actually_be_started(tmp_path):
 
     if checked == 0:  # pragma: no cover — a machine with no toolchain at all
         pytest.skip("no development tool was detected on this machine")
+
+
+def test_stopping_one_owner_does_not_stop_another_tasks_process(tmp_path):
+    first = CommandHandle(
+        [sys.executable, "-c", "import time; time.sleep(30)"], tmp_path, "first"
+    )
+    second = CommandHandle(
+        [sys.executable, "-c", "import time; time.sleep(30)"], tmp_path, "second"
+    )
+    first.start(build_environment())
+    second.start(build_environment())
+    runner.ledger.track(first, "task-a")
+    runner.ledger.track(second, "task-b")
+    try:
+        runner.ledger.stop_owner("task-a", "test")
+        assert wait_gone([first.pid]) == []
+        assert alive(second.pid), "stopping task-a stopped task-b"
+        assert runner.ledger.live_count("task-b") == 1
+    finally:
+        runner.ledger.stop_owner("task-b", "test cleanup")
