@@ -616,3 +616,35 @@ def test_the_reported_browser_error_carries_no_path(tmp_path):
         f"a path reached the report: {detail!r}"
     )
     assert "<path>" in detail, "the path should be replaced, not merely dropped"
+
+
+def test_the_on_device_model_component_is_disabled():
+    """Without this the browser crashes, so it is a test and not a taste.
+
+    Chromium's optimisation-guide component fetches an on-device ML model
+    at startup. `--host-resolver-rules` makes that fetch impossible by
+    design, and the failure path dereferenced null on the Ubuntu CI
+    runners: ten crashes in one run, each preceded one line earlier by
+    "Failed to update on-device model component with error 5", one to one.
+
+    It is also a background download of a machine-learning component,
+    which is what the two flags above it already refuse.
+    """
+    from app.coding import browser_engine
+
+    argv = browser_engine.launch_argv(
+        browser_engine.Engine("chromium", "Chromium", "/nonexistent/chrome"),
+        debug_port=0, profile_dir="/tmp/nowhere", allow_host="127.0.0.1",
+    )
+    features = [a for a in argv if a.startswith("--disable-features=")]
+    assert len(features) == 1, f"expected exactly one --disable-features, got {features}"
+    disabled = features[0].split("=", 1)[1].split(",")
+
+    for required in ("OptimizationGuideOnDeviceModel", "OptimizationGuideModelDownloading"):
+        assert required in disabled, (
+            f"{required} is no longer disabled; the browser will crash on any "
+            f"machine where that component is enabled. Disabled: {disabled}"
+        )
+    # The neighbours that make the same promise.
+    assert "--disable-component-update" in argv
+    assert "--disable-background-networking" in argv

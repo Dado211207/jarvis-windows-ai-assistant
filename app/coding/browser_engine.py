@@ -264,8 +264,31 @@ def launch_argv(engine: Engine, *, debug_port: int, profile_dir: str,
         "--no-service-autorun",
         "--password-store=basic",
         "--use-mock-keychain",
+        # The last two are not a preference — without them the browser
+        # crashes.
+        #
+        # Chromium's optimisation-guide component tries to fetch an
+        # on-device ML model on startup. `--host-resolver-rules` below
+        # makes that impossible by design, and on the Ubuntu CI runners
+        # the failure path dereferences null: ten crashes in one run, each
+        # preceded one line earlier by
+        #
+        #     Failed to update on-device model component with error 5
+        #     Received signal 11 SEGV_MAPERR 000000000000
+        #
+        # a perfect one-to-one. It reproduced with the runner image's
+        # google-chrome and with Playwright's Chromium, and not with the
+        # older Chromium in this repository's dev container, which is why
+        # every local run passed while CI had been red since 5f4cdd4.
+        #
+        # Disabling it is the opposite of a compromise: an on-device model
+        # is a background download of a machine-learning component, which
+        # is precisely what `--disable-component-update` and
+        # `--disable-background-networking` two lines up already refuse.
+        # Its absence from this list was the gap, not its presence.
         "--disable-features=Translate,OptimizationHints,MediaRouter,"
-        "InterestFeedContentSuggestions,CalculateNativeWinOcclusion",
+        "InterestFeedContentSuggestions,CalculateNativeWinOcclusion,"
+        "OptimizationGuideOnDeviceModel,OptimizationGuideModelDownloading",
 
         # Determinism and safety.
         "--disable-gpu",

@@ -273,3 +273,62 @@ Two fixes:
   does. `browser_engine` consults `~/.cache/ms-playwright` ahead of PATH,
   so Ubuntu and Windows exercise the same code against a browser that
   works. No test was skipped, re-marked, or had an assertion relaxed.
+
+
+---
+
+# The Coding Browser QA crash: named at last
+
+The stderr capture did its job. CI #156 showed a register dump — trap 14,
+error code 4, CR2 zero, and the same instruction pointer low bits across
+three crashes at different ASLR bases, so a deterministic null dereference
+at one code site. But the tail of the output is the register dump, which
+says only *that* it crashed. CI #157, keeping the signal line and the
+first frames instead, printed the cause:
+
+```
+Failed to update on-device model component with error 5
+Received signal 11 SEGV_MAPERR 000000000000
+#0 base::debug::CollectStackTrace()
+#1 base::debug::StackTrace::StackTrace()
+#2 StackDumpSignalHandler()
+```
+
+**Ten crashes in that run, ten occurrences of that message, one to one.**
+
+Chromium's optimisation-guide component fetches an on-device ML model at
+startup. `--host-resolver-rules=MAP * ~NOTFOUND` makes that fetch
+impossible — deliberately, that is the whole point of the flag — and the
+failure path dereferences null.
+
+It reproduced with the runner image's `google-chrome` *and* with
+Playwright's Chromium: two different browsers, so the cause was this
+product's command line rather than a build. It did not reproduce with the
+older Chromium in this repository's dev container, which is exactly why
+every local run passed while `ci.yml` had been red since `5f4cdd4`.
+
+`OptimizationGuideOnDeviceModel` and `OptimizationGuideModelDownloading`
+join `--disable-features`. That is not a compromise to make a test pass:
+an on-device model is a background download of a machine-learning
+component, which `--disable-component-update` and
+`--disable-background-networking` two lines above already refuse. Its
+absence from the list was the gap.
+
+`test_the_on_device_model_component_is_disabled` asserts both entries are
+present, because removing them reintroduces a crash rather than a
+preference.
+
+## What the two rounds cost, and why
+
+Three CI round trips, in this order, and each one bought a specific fact:
+
+1. **#156** — stderr capture. Proved the browser crashes rather than
+   failing to launch, and that it was our command line rather than the
+   browser build.
+2. **#157** — keep the frames rather than the tail. Named the component.
+3. **#158** — the fix.
+
+Guessing at `--proxy-server=http://127.0.0.1:0` was the tempting shortcut
+after #156 and would have been wrong: the proxy had nothing to do with
+it, and changing a security flag on a hunch is how a boundary quietly
+stops being one.
