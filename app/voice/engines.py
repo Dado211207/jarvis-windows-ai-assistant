@@ -261,12 +261,13 @@ def last_fallback_reason() -> str:
 def _speak_kokoro(text: str, voice_key: str, speed: float) -> SpeakOutcome:
     """Synthesis is lazy and playback consumes it, so the first sentence
     is heard while the rest is still being made."""
-    cancel = audio.player.cancel_event()
     try:
-        chunks = kokoro_engine.engine.synthesise(
-            text, voice_key=voice_key, speed=speed, cancel=cancel,
+        audio.player.play_cancelable_stream(
+            lambda cancel: kokoro_engine.engine.synthesise(
+                text, voice_key=voice_key, speed=speed, cancel=cancel,
+            ),
+            kokoro_engine.SAMPLE_RATE,
         )
-        audio.player.play_stream(chunks, kokoro_engine.SAMPLE_RATE)
     except kokoro_engine.EngineUnavailable as exc:
         logger.warning("Kokoro became unavailable mid-request: %s", exc)
         return _speak_windows(text) if winrt_voices.is_available() else SpeakOutcome(

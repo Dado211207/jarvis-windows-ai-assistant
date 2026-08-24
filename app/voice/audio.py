@@ -28,7 +28,7 @@ import threading
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from app.logging_config import get_logger
 
@@ -160,23 +160,42 @@ class Player:
     # --- playing ---
 
     def play_stream(self, chunks: Iterable, sample_rate: int) -> threading.Event:
-        """Play chunks in order on a worker thread, returning at once.
+        """Play already-created chunks on a worker thread, returning at once."""
+        return self.play_cancelable_stream(lambda _cancel: chunks, sample_rate)
 
-        *chunks* is consumed on that thread, so a generator that
-        synthesises lazily produces the next sentence while the current
-        one is playing. Returns the cancel event so the producer can
-        watch it.
+    def play_cancelable_stream(
+        self,
+        make_chunks: Callable[[threading.Event], Iterable],
+        sample_rate: int,
+    ) -> threading.Event:
+        """Build and play a lazy stream with the cancellation token it owns.
+
+        The token is created *after* the previous utterance is stopped.
+        A lazy synthesiser must not be handed the previous token: stop()
+        sets that token, and doing so made a newly-created Kokoro stream
+        see cancellation before its first inference and emit no audio.
+
+        The worker checks cancellation before asking the producer for its
+        next chunk. A stop during an uninterruptible inference still has
+        to wait for that inference to return, but it will neither start a
+        second inference nor play the chunk that just finished.
         """
         self.stop()          # one voice at a time, always
         self.wait(timeout=2.0)
 
         self._cancel = threading.Event()
         cancel = self._cancel
+        chunks = make_chunks(cancel)
         self._set(playing=True, chunks_played=0, seconds_played=0.0, stopped=False)
 
         def _run() -> None:
             try:
-                for chunk in chunks:
+                iterator = iter(chunks)
+                while not cancel.is_set():
+                    try:
+                        chunk = next(iterator)
+                    except StopIteration:
+                        break
                     if cancel.is_set():
                         break
                     seconds = getattr(chunk, "seconds", 0.0)

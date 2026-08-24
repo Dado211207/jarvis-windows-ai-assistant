@@ -747,6 +747,23 @@ def test_push_to_talk_available_with_fake_adapter(page, browser_instance):
     assert page.input_value("#chat-input") == "system status"
 
 
+def test_push_to_talk_pagehide_releases_the_capture(page, browser_instance):
+    """Leaving the document is a cancellation, even while recording."""
+    if browser_instance.browser_type.name != "chromium":
+        pytest.skip("a fake capture device is a Chromium-only launch flag")
+
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+    page.click("#ptt-button")
+    page.wait_for_function("pttState === PTT_STATE.LISTENING", timeout=5000)
+
+    page.evaluate("window.dispatchEvent(new PageTransitionEvent('pagehide'))")
+    page.wait_for_function("pttState === PTT_STATE.IDLE", timeout=5000)
+
+    assert page.evaluate("pttStream === null") is True
+    assert page.evaluate("pttRecorder === null") is True
+    assert page.evaluate("pttRecordingTimer === null") is True
+
+
 def test_push_to_talk_degraded_state_stays_disabled(page):
     """Regression test for a real bug found during manual verification:
     setPttState() used to unconditionally recompute `disabled` from the

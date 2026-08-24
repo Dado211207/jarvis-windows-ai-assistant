@@ -275,6 +275,33 @@ def test_the_switch_is_honest_when_no_voice_is_installed():
 # House rules
 # ---------------------------------------------------------------------------
 
+def test_push_to_talk_has_a_hard_recording_limit_and_clears_its_timer():
+    js = _read(REPO_APP_JS)
+    ptt = js.split("// ── Push-to-talk", 1)[1].split("// ──", 1)[0]
+
+    assert "PTT_MAX_RECORDING_MS = 60 * 1000" in ptt
+    assert "pttRecordingTimer = setTimeout" in ptt
+    assert "pttClearRecordingTimer()" in ptt
+
+
+def test_push_to_talk_tears_down_on_pagehide_and_ignores_a_late_microphone():
+    js = _read(REPO_APP_JS)
+
+    assert 'window.addEventListener("pagehide", () => {' in js
+    pagehide = js.split('window.addEventListener("pagehide", () => {', 1)[1].split("});", 1)[0]
+    assert "pttCancel();" in pagehide
+    assert "requestGeneration !== pttRequestGeneration" in js
+    assert "stream.getTracks().forEach(track => track.stop())" in js
+
+
+def test_push_to_talk_handles_media_recorder_errors():
+    js = _read(REPO_APP_JS)
+
+    assert 'addEventListener("error", pttOnRecorderError)' in js
+    assert "function pttOnRecorderError()" in js
+    assert "pttReleaseMicrophone();" in js
+
+
 def test_no_innerhtml_anywhere():
     """CLAUDE.md's Phase 4 rule, permanently."""
     assert "innerHTML" not in _read(REPO_APP_JS)
