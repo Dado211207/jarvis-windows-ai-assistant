@@ -124,6 +124,17 @@ _DIAGNOSTIC = re.compile(
     r"error while loading|cannot open|not found|Failed to |denied|"
     r"^#\d+\s|\bCHECK\b|DCHECK|assert)", re.IGNORECASE)
 
+#: A symbolised stack frame, e.g. "#4 0x55e3a8 content::Foo::Bar()".
+_FRAME = re.compile(r"^#\d+\s")
+
+#: The top of every Chromium crash dump is its own signal handler and the
+#: libc trampoline below it. Reporting those says a handler ran, which was
+#: never in doubt.
+_HANDLER_FRAMES = (
+    "CollectStackTrace", "StackTrace::StackTrace", "StackDumpSignalHandler",
+    "<path>", "libc", "__restore_rt",
+)
+
 #: Chromium says these on every healthy Linux CI start.
 _STDERR_NOISE = (
     "Fontconfig", "dbus", "DBus", "GPU process", "gpu_memory",
@@ -205,10 +216,17 @@ class _OwnedBrowser:
             if _DIAGNOSTIC.search(line):
                 interesting.append(line)
         # A crash dump ends with a register dump, which says only *that* it
-        # crashed. The signal line and the first symbolised frames say
-        # *where*, and they come first — so a plain tail of the output threw
-        # away the only part worth having.
-        chosen = interesting[:6] if interesting else kept[-4:]
+        # crashed, and *begins* with the signal handler's own frames, which
+        # say only that a handler ran. Both are noise. What names the fault
+        # is the message just before the signal and the frames below the
+        # handler — so messages are kept, handler frames are dropped, and
+        # the frames after them are what is reported.
+        messages = [line for line in interesting if not _FRAME.match(line)]
+        frames = [line for line in interesting if _FRAME.match(line)]
+        useful = [f for f in frames if not any(h in f for h in _HANDLER_FRAMES)]
+        chosen = messages[:2] + useful[:8]
+        if not chosen:
+            chosen = kept[-4:]
         return " | ".join(chosen)
 
     def recapture(self) -> None:
