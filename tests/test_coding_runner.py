@@ -290,6 +290,20 @@ def handle_for(tmp_path: Path, argv) -> CommandHandle:
     return CommandHandle(argv, tmp_path, "project")
 
 
+def same_file(a, b) -> bool:
+    """Path equality, not string equality.
+
+    `shutil.which` on Windows builds the name from `PATHEXT`, which is
+    upper case, so it answers `faketool.CMD` for a file created as
+    `faketool.cmd`. Both name the same file — Windows paths are
+    case-insensitive — but `str.__eq__` is not, and comparing `.name`
+    failed the installer job for that and only that reason.
+    `PurePath.__eq__` normalises case on Windows and does not on POSIX,
+    which is exactly the comparison meant here on both.
+    """
+    return Path(a).resolve() == Path(b).resolve()
+
+
 def test_a_bare_program_name_becomes_an_absolute_path(tmp_path):
     """The fix, in one assertion: what reaches Popen is a file, not a name.
 
@@ -305,7 +319,7 @@ def test_a_bare_program_name_becomes_an_absolute_path(tmp_path):
         {"PATH": str(bindir)})
 
     assert os.path.isabs(resolved[0]), "the program was still a bare name"
-    assert Path(resolved[0]) == program.resolve()
+    assert same_file(resolved[0], program)
 
 
 def test_a_windows_style_shim_is_what_gets_started(tmp_path):
@@ -330,7 +344,7 @@ def test_a_windows_style_shim_is_what_gets_started(tmp_path):
         resolved = handle_for(project, ["npm", "run", "dev"])._resolved_argv(
             {"PATH": str(bindir)})
 
-    assert Path(resolved[0]) == shim.resolve()
+    assert same_file(resolved[0], shim)
     assert resolved[0].endswith(".cmd")
     assert resolved[1:] == ["run", "dev"], "the arguments were disturbed"
 
@@ -475,7 +489,7 @@ def test_an_unresolvable_project_root_still_starts_the_program(tmp_path):
 
     handle = CommandHandle(["faketool"], Unresolvable(tmp_path / "project"), "project")
     resolved = handle._resolved_argv({"PATH": str(bindir)})
-    assert Path(resolved[0]).name == program.name
+    assert same_file(resolved[0], program)
 
 
 def test_resolving_never_produces_a_command_line(tmp_path):
