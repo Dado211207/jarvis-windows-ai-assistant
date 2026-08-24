@@ -154,10 +154,10 @@ def loopback_host(configured: str) -> str:
     — a comment describing a property nothing checked. `JARVIS_HOST` is
     an ordinary pydantic-settings field, so an environment variable or a
     `.env` file in the working directory silently widened the bind, and
-    48 unauthenticated GET endpoints sit behind it: /logs carries command
-    text, /memory carries saved memories, /conversation carries the chat,
-    /diagnostics carries paths. Loopback is the only thing protecting
-    them, which makes "loopback" a thing to verify rather than assert.
+    sensitive GET endpoints sit behind it: /logs carries command text,
+    /memory carries saved memories, /conversation carries the chat, and
+    /diagnostics carries paths. Those reads now also require the dashboard
+    session, but loopback remains a boundary to verify rather than assert.
 
     The two existing invariant tests could not catch it: one asserts the
     *default* value, and the other greps the source for the literal
