@@ -109,9 +109,17 @@ def _save_raw(entries: List[dict]) -> bool:
         return False
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        retained = entries[-MAX_TASKS_KEPT:]
+        pruned = entries[:-MAX_TASKS_KEPT] if len(entries) > MAX_TASKS_KEPT else []
         temp = path.with_suffix(".json.tmp")
-        temp.write_text(json.dumps(entries[-MAX_TASKS_KEPT:], indent=2), encoding="utf-8")
+        temp.write_text(json.dumps(retained, indent=2), encoding="utf-8")
         temp.replace(path)
+        if pruned:
+            from app.coding import delivery, undo
+            for entry in pruned:
+                task_id = str(entry.get("id") or "")
+                undo.purge_task(task_id)
+                delivery.purge_task(task_id)
         return True
     except OSError:
         logger.warning("Could not write the coding task history.", exc_info=True)
@@ -247,7 +255,11 @@ def delete(task_id: str) -> bool:
     remaining = [e for e in entries if e.get("id") != task_id]
     if len(remaining) == len(entries):
         return False
-    _save_raw(remaining)
+    if not _save_raw(remaining):
+        return False
+    from app.coding import delivery, undo
+    undo.purge_task(task_id)
+    delivery.purge_task(task_id)
     return True
 
 
@@ -257,8 +269,14 @@ def clear(project_id: str = "") -> int:
         remaining = [e for e in entries if e.get("project_id") != project_id]
     else:
         remaining = []
-    removed = len(entries) - len(remaining)
-    _save_raw(remaining)
+    removed_entries = [entry for entry in entries if entry not in remaining]
+    removed = len(removed_entries)
+    if _save_raw(remaining):
+        from app.coding import delivery, undo
+        for entry in removed_entries:
+            task_id = str(entry.get("id") or "")
+            undo.purge_task(task_id)
+            delivery.purge_task(task_id)
     return removed
 
 

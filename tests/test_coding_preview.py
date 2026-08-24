@@ -400,6 +400,7 @@ def test_the_dev_server_is_pinned_to_loopback_on_the_command_line(monkeypatch, t
     session.start(tmp_path, ["npm", "run", "dev"], "dev")
 
     assert "--host" in captured["argv"]
+    assert captured["argv"][captured["argv"].index("--host") - 1] == "--"
     assert captured["argv"][captured["argv"].index("--host") + 1] == "127.0.0.1"
     assert captured["env"]["HOST"] == "127.0.0.1"
     assert captured["env"]["BROWSER"] == "none"
@@ -566,3 +567,69 @@ def test_a_port_another_process_is_listening_on_is_never_chosen():
         stop_flag.set()
         listener.close()
         thread.join(timeout=2)
+
+
+class _AliveProcess:
+    pid = 424242
+    def poll(self):
+        return None
+
+
+class _FakePreviewHandle:
+    last = None
+    def __init__(self, argv, cwd, display_cwd):
+        self.argv = list(argv)
+        self.cwd = cwd
+        self._process = _AliveProcess()
+        self._own = None
+        self._captured = []
+        self.pid = self._process.pid
+        self.stopped = False
+        _FakePreviewHandle.last = self
+    def start(self, env):
+        return None
+    def _recapture(self):
+        return None
+    def stop(self, reason):
+        self.stopped = True
+        return {"ok": True, "reason": reason, "survivors": []}
+
+
+def test_preview_readiness_timeout_stops_and_forgets_the_process(tmp_path, monkeypatch):
+    monkeypatch.setattr(preview, "CommandHandle", _FakePreviewHandle)
+    monkeypatch.setattr(limits, "PREVIEW_READY_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(limits, "PREVIEW_POLL_INTERVAL_SECONDS", 0.0)
+    session = preview.PreviewSession("task-timeout")
+    monkeypatch.setattr(session, "_listener_status", lambda handle, port: ("waiting", ""))
+    state = session.start(tmp_path, ["npm", "run", "dev"], "dev")
+    assert state.running is False
+    assert "stopped" in state.last_error.lower()
+    assert _FakePreviewHandle.last.stopped is True
+    assert ledger.live_count("task-timeout") == 0
+
+
+def test_preview_unsafe_or_foreign_listener_is_stopped(tmp_path, monkeypatch):
+    monkeypatch.setattr(preview, "CommandHandle", _FakePreviewHandle)
+    session = preview.PreviewSession("task-unsafe")
+    monkeypatch.setattr(
+        session, "_listener_status",
+        lambda handle, port: ("unsafe", "foreign listener"),
+    )
+    state = session.start(tmp_path, ["npm", "run", "dev"], "dev")
+    assert state.running is False
+    assert "foreign listener" in state.last_error
+    assert _FakePreviewHandle.last.stopped is True
+
+
+def test_preview_lifetime_timer_stops_without_polling(tmp_path, monkeypatch):
+    monkeypatch.setattr(preview, "CommandHandle", _FakePreviewHandle)
+    monkeypatch.setattr(limits, "MAX_PREVIEW_LIFETIME_SECONDS", 0.05)
+    session = preview.PreviewSession("task-lifetime")
+    monkeypatch.setattr(session, "_listener_status", lambda handle, port: ("ready", ""))
+    state = session.start(tmp_path, ["npm", "run", "dev"], "dev")
+    assert state.running is True
+    deadline = time.monotonic() + 2.0
+    while not _FakePreviewHandle.last.stopped and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert _FakePreviewHandle.last.stopped is True
+    assert ledger.live_count("task-lifetime") == 0

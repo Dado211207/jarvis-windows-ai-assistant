@@ -19,8 +19,8 @@ it is technically inert.
 
 **Three tiers, and the third is not "ask harder".**
 
-* AUTO — read-only, or a command the user already approved exactly in
-  this task.
+* AUTO — intrinsically read-only commands only. Approvals are one-shot
+  capabilities consumed by the agent layer, never a persistent tier.
 * APPROVAL — real consequences: network, installs, commit, deletion,
   anything unrecognised.
 * BLOCKED — never, in this pass, at any approval level. A user cannot
@@ -31,6 +31,8 @@ it is technically inert.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -203,11 +205,34 @@ def _network_flag(argv: Sequence[str]) -> bool:
     return bool(re.search(r"https?://|git@|--registry|--proxy", joined))
 
 
+def approval_key(
+    argv: Sequence[str],
+    declared_commands: Optional[Dict[str, dict]] = None,
+) -> str:
+    """Bind one approval to the exact argv and current declaration body.
+
+    A package script is mutable repository content. Storing only its argv
+    would let a later package.json edit replace the reviewed body while
+    keeping the same approved command.
+    """
+    declaration = {}
+    for intent, entry in (declared_commands or {}).items():
+        if list(entry.get("argv") or []) == [str(a) for a in argv]:
+            declaration = {
+                "intent": str(intent),
+                "source": str(entry.get("source") or ""),
+                "declared": str(entry.get("declared") or ""),
+            }
+            break
+    payload = {"argv": [str(a) for a in argv], "declaration": declaration}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def classify(
     argv: Sequence[str],
     *,
     declared_commands: Optional[Dict[str, dict]] = None,
-    approved_argvs: Optional[List[List[str]]] = None,
 ) -> Verdict:
     """The verdict for one proposed command.
 
@@ -278,11 +303,8 @@ def classify(
     for intent, entry in (declared_commands or {}).items():
         if list(entry.get("argv") or []) != list(argv):
             continue
-        approved_exact = any(
-            list(approved) == list(argv) for approved in (approved_argvs or [])
-        )
         body = str(entry.get("declared") or "")
-        if not body.strip() and not approved_exact:
+        if not body.strip():
             # No body to inspect. That is not the same as an inspected
             # body that turned out to be fine, and treating it as such
             # would make an entry with a missing field the way past this
@@ -296,7 +318,7 @@ def classify(
                 disclosure={"intent": intent, "declared_script": "", "unreadable": True},
             )
         suspicious = _suspicious_script_body(body)
-        if suspicious is not None and not approved_exact:
+        if suspicious is not None:
             return Verdict(
                 CommandTier.APPROVAL,
                 f"This project's '{intent}' script runs '{suspicious}', which JARVIS "
@@ -307,12 +329,6 @@ def classify(
                     "flagged_program": suspicious,
                     "intent": intent,
                 },
-            )
-        if approved_exact:
-            return Verdict(
-                CommandTier.AUTO,
-                "You approved this exact project script earlier in this task.",
-                RiskLevel.REVERSIBLE,
             )
         return Verdict(
             CommandTier.APPROVAL,
@@ -327,14 +343,6 @@ def classify(
                 "declared_script": body[:400],
             },
         )
-
-    for approved in (approved_argvs or []):
-        if list(approved) == list(argv):
-            return Verdict(
-                CommandTier.AUTO,
-                "You approved this exact command earlier in this task.",
-                RiskLevel.REVERSIBLE,
-            )
 
     if program in ("npm", "pnpm", "yarn", "bun", "pip", "pip3", "poetry", "uv", "pipenv"):
         return _classify_package_manager(program, rest)
@@ -506,8 +514,8 @@ def _classify_package_manager(program: str, rest: Sequence[str]) -> Verdict:
         return Verdict(
             CommandTier.APPROVAL,
             "Running a package script executes whatever that script contains. If it "
-            "is one of the project's declared scripts, JARVIS proposes it directly "
-            "instead and it runs without this prompt.",
+            "is one of the project's declared scripts, JARVIS shows its exact current "
+            "body and asks for one-shot approval.",
             RiskLevel.SENSITIVE,
             disclosure={"runs_project_script": True, "script": rest[1] if len(rest) > 1 else ""},
         )

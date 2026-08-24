@@ -7,6 +7,7 @@ that removing a project deletes nothing, and that no response ever
 carries a secret or a raw exception.
 """
 
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -22,10 +23,12 @@ from tests import coding_fixtures as fx
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """A client whose project registry and task history live in tmp_path."""
-    from app.coding import projects, tasks
+    from app.coding import delivery, projects, tasks, undo
 
     monkeypatch.setattr(projects, "_registry_path", lambda: tmp_path / "projects.json")
     monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
+    monkeypatch.setattr(delivery, "data_dir", lambda: tmp_path / "data")
 
     from app.api.server import create_app
 
@@ -36,6 +39,12 @@ def client(tmp_path, monkeypatch):
 
 def token_headers(client) -> dict:
     return {"X-JARVIS-Session-Token": client.cookies.get("jarvis_session")}
+
+def auth_get(client, path: str, **kwargs):
+    headers = dict(kwargs.pop("headers", {}) or {})
+    headers.update(token_headers(client))
+    return client.request("GET", path, headers=headers, **kwargs)
+
 
 
 @pytest.fixture
@@ -66,6 +75,10 @@ MUTATING = [
     ("post", "/coding/tasks/undo", {"task_id": "x"}),
     ("post", "/coding/tasks/clear", {}),
     ("post", "/coding/processes/stop-all", {}),
+    ("post", "/coding/preview/plan", {"project_id": "x", "script": "dev"}),
+    ("post", "/coding/preview/start", {"plan_id": "x"}),
+    ("post", "/coding/tasks/export/plan", {"task_id": "x"}),
+    ("post", "/coding/tasks/export", {"task_id": "x", "plan_id": "x"}),
     ("delete", "/coding/projects/anything", None),
     ("delete", "/coding/tasks/anything", None),
 ]
@@ -82,10 +95,18 @@ def test_every_mutating_endpoint_refuses_without_the_session_token(client, metho
 
 
 @pytest.mark.parametrize("path", [
-    "/coding/status", "/coding/projects", "/coding/templates", "/coding/browser-check",
+    "/coding/status", "/coding/projects", "/coding/tasks", "/coding/toolchain",
+    "/coding/folder-dialog",
 ])
-def test_read_endpoints_work_without_a_token(client, path):
-    assert client.get(path).status_code == 200
+def test_sensitive_read_endpoints_require_the_session_token(client, path):
+    assert client.request("GET", path).status_code in (401, 403)
+
+
+@pytest.mark.parametrize("path", [
+    "/coding/templates", "/coding/browser-check",
+])
+def test_generic_capability_reads_work_without_a_token(client, path):
+    assert client.request("GET", path).status_code == 200
 
 
 def test_a_wrong_token_is_refused(client):
@@ -142,7 +163,7 @@ def test_removing_a_project_deletes_nothing_and_says_so(client, project):
 
 
 def test_the_status_endpoint_publishes_what_is_disabled_and_what_is_protected(client):
-    body = client.get("/coding/status").json()
+    body = auth_get(client, "/coding/status").json()
     disabled = " ".join(body["disabled_in_this_version"]).lower()
     for forbidden in ("push", "pull request", "merge", "deploy"):
         assert forbidden in disabled
@@ -153,10 +174,10 @@ def test_the_status_endpoint_publishes_what_is_disabled_and_what_is_protected(cl
 
 
 def test_status_is_disabled_until_a_project_exists(client, project):
-    assert client.get("/coding/status").json()["enabled"] is False
+    assert auth_get(client, "/coding/status").json()["enabled"] is False
     client.post("/coding/projects", json={"path": str(project), "name": "demo"},
                 headers=token_headers(client))
-    assert client.get("/coding/status").json()["enabled"] is True
+    assert auth_get(client, "/coding/status").json()["enabled"] is True
 
 
 
@@ -294,7 +315,7 @@ def test_privacy_mode_blocks_a_cloud_provider_and_explains_why(client, project, 
     monkeypatch.setattr(privacy_mode, "_active", True, raising=False)
     privacy_mode.set(True)
     try:
-        body = client.get("/coding/status").json()
+        body = auth_get(client, "/coding/status").json()
         assert body["privacy_mode"] is True
         assert "local" in body["privacy_note"].lower()
     finally:
@@ -315,7 +336,7 @@ def test_a_live_state_for_a_task_that_is_not_running_says_so(client, project):
                        json={"project_id": added["id"], "request": "x"},
                        headers=token_headers(client)).json()["plan"]
 
-    live = client.get(f"/coding/tasks/{plan['task_id']}/live").json()
+    live = auth_get(client, f"/coding/tasks/{plan['task_id']}/live").json()
     assert live["live"] is False
     assert live["pending_approval"] is None
     assert live["preview"] is None
@@ -331,7 +352,7 @@ def test_the_diff_distinguishes_the_users_own_changes_from_jarviss(client, proje
     (project / "index.html").write_text("<h1>the user edited this</h1>\n", encoding="utf-8")
     fx.write(project, "user-scratch.txt", "the user made this\n")
 
-    body = client.get(f"/coding/projects/{added['id']}/diff").json()
+    body = auth_get(client, f"/coding/projects/{added['id']}/diff").json()
     authors = {entry["path"]: entry["changed_by"] for entry in body["changed"]}
     assert authors["index.html"] == "you"
     assert authors["user-scratch.txt"] == "you"
@@ -350,13 +371,13 @@ def test_no_endpoint_returns_a_secret_from_the_project(client, project):
                        headers=token_headers(client)).json()
 
     responses = [
-        client.get("/coding/status").text,
-        client.get("/coding/projects").text,
-        client.get(f"/coding/projects/{added['id']}/diff").text,
-        client.get(f"/coding/projects/{added['id']}/git").text,
-        client.get("/coding/tasks").text,
+        auth_get(client, "/coding/status").text,
+        auth_get(client, "/coding/projects").text,
+        auth_get(client, f"/coding/projects/{added['id']}/diff").text,
+        auth_get(client, f"/coding/projects/{added['id']}/git").text,
+        auth_get(client, "/coding/tasks").text,
         json.dumps(plan),
-        client.get(f"/coding/tasks/{plan['plan']['task_id']}/report").text,
+        auth_get(client, f"/coding/tasks/{plan['plan']['task_id']}/report").text,
     ]
     everything = "\n".join(responses)
     for secret in fx.SECRET_VALUES:
@@ -365,7 +386,7 @@ def test_no_endpoint_returns_a_secret_from_the_project(client, project):
 
 def test_a_screenshot_name_cannot_escape_the_screenshot_directory(client):
     for name in ("../../etc/passwd", "..%2F..%2Fsecret.png", "/etc/passwd", "....//x.png"):
-        response = client.get(f"/coding/screenshots/{name}")
+        response = auth_get(client, f"/coding/screenshots/{name}")
         assert response.status_code in (404, 400), name
 
 
@@ -374,7 +395,7 @@ def test_a_screenshot_name_cannot_escape_the_screenshot_directory(client):
 # ---------------------------------------------------------------------------
 
 def test_the_template_list_describes_each_one_without_promising_a_download(client):
-    templates = client.get("/coding/templates").json()["templates"]
+    templates = auth_get(client, "/coding/templates").json()["templates"]
     assert templates
     for template in templates:
         assert template["key"] and template["title"] and template["description"]
@@ -507,7 +528,7 @@ def test_a_page_can_mint_a_folder_request_but_not_answer_it(client, monkeypatch,
                          headers=token_headers(client))
     assert forged.status_code == 403
 
-    state = client.get(f"/coding/folder-dialog/{request_id}",
+    state = auth_get(client, f"/coding/folder-dialog/{request_id}",
                        headers=token_headers(client)).json()["request"]
     assert state["state"] == "pending"
     assert state["path"] == ""
@@ -540,7 +561,7 @@ def test_a_result_with_the_desktop_secret_is_accepted_once(client, monkeypatch, 
                          json={"path": str(tmp_path)}, headers=headers)
     assert second.status_code == 409
 
-    shown = client.get(f"/coding/folder-dialog/{request_id}",
+    shown = auth_get(client, f"/coding/folder-dialog/{request_id}",
                        headers=token_headers(client)).json()["request"]
     assert shown["state"] == "selected"
     assert shown["path"] == str(chosen.resolve())
@@ -587,7 +608,7 @@ def test_a_cancelled_dialog_registers_nothing(client, monkeypatch, tmp_path):
     added = client.post("/coding/projects", json={"request_id": request_id},
                         headers=token_headers(client))
     assert added.status_code == 400
-    assert client.get("/coding/projects").json()["projects"] == []
+    assert auth_get(client, "/coding/projects").json()["projects"] == []
 
 
 def test_a_second_dialog_is_refused_while_one_is_open(client):
@@ -607,6 +628,170 @@ def test_an_unknown_purpose_is_refused(client):
 def test_availability_is_reported_from_the_proved_window_state(client):
     """The server has no window of its own and cannot see one; it reports
     what the parent proved, or says a dialog is not available."""
-    body = client.get("/coding/folder-dialog").json()
+    body = auth_get(client, "/coding/folder-dialog").json()
     assert body["available"] is False
     assert body["reason"], "an unavailable picker must say why"
+
+
+# ---------------------------------------------------------------------------
+# Readiness hardening
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("endpoint,payload", [
+    ("/coding/tasks/undo", lambda task: {"task_id": task}),
+    ("/coding/tasks/commit", lambda task: {"task_id": task, "message": "x", "approved": True}),
+])
+def test_missing_isolated_worktree_never_falls_back_to_main(
+    client, project, tmp_path, endpoint, payload,
+):
+    from app.coding import tasks
+    added = client.post(
+        "/coding/projects", json={"path": str(project), "name": "demo"},
+        headers=token_headers(client),
+    ).json()["project"]
+    original = (project / "index.html").read_bytes()
+    record = tasks.create(added["id"], "isolated task")
+    record.isolation = {
+        "strategy": "worktree", "worktree_path": str(tmp_path / "missing-worktree"),
+        "start_sha": "0" * 40,
+    }
+    record.files_changed = [{
+        "path": "index.html", "kind": "update",
+        "before_sha256": hashlib.sha256(original).hexdigest(),
+        "after_sha256": hashlib.sha256(original).hexdigest(),
+    }]
+    tasks.save(record)
+    response = client.post(endpoint, json=payload(record.id), headers=token_headers(client))
+    assert response.status_code == 409
+    assert (project / "index.html").read_bytes() == original
+
+
+def test_preview_confirmation_is_invalidated_when_package_script_changes(
+    client, tmp_path,
+):
+    root = fx.vite_react_ts(tmp_path / "vite")
+    fx.init_repo(root)
+    added = client.post(
+        "/coding/projects", json={"path": str(root), "name": "vite"},
+        headers=token_headers(client),
+    ).json()["project"]
+    planned = client.post(
+        "/coding/preview/plan",
+        json={"project_id": added["id"], "script": "dev"},
+        headers=token_headers(client),
+    )
+    assert planned.status_code == 200
+    plan = planned.json()["plan"]
+    package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    package["scripts"]["dev"] = "node changed-after-review.js"
+    (root / "package.json").write_text(json.dumps(package), encoding="utf-8")
+    started = client.post(
+        "/coding/preview/start", json={"plan_id": plan["plan_id"]},
+        headers=token_headers(client),
+    )
+    assert started.status_code == 409
+    assert "changed" in started.json()["detail"].lower()
+
+
+def test_isolated_task_diff_and_approved_export_are_downloadable(
+    client, project,
+):
+    from app.coding import gitsafe, tasks
+    added = client.post(
+        "/coding/projects", json={"path": str(project), "name": "demo"},
+        headers=token_headers(client),
+    ).json()["project"]
+    record = tasks.create(added["id"], "create export")
+    plan = gitsafe.plan_isolation(project, record.id)
+    assert gitsafe.create_worktree(project, plan)[0] is True
+    worktree = Path(plan.worktree_path)
+    payload = b"created in isolated task\n"
+    (worktree / "delivered.txt").write_bytes(payload)
+    record.isolation = plan.as_dict()
+    record.files_changed = [{
+        "path": "delivered.txt", "destination": "", "kind": "create",
+        "before_sha256": None, "after_sha256": hashlib.sha256(payload).hexdigest(),
+    }]
+    tasks.save(record)
+    review = auth_get(client, f"/coding/tasks/{record.id}/diff")
+    assert review.status_code == 200
+    assert "delivered.txt" in review.json()["diff"]
+    planned = client.post(
+        "/coding/tasks/export/plan", json={"task_id": record.id},
+        headers=token_headers(client),
+    ).json()["plan"]
+    exported = client.post(
+        "/coding/tasks/export",
+        json={"task_id": record.id, "plan_id": planned["plan_id"]},
+        headers=token_headers(client),
+    )
+    assert exported.status_code == 200
+    download = auth_get(client, exported.json()["download_url"])
+    assert download.status_code == 200
+    assert download.headers["content-type"].startswith("application/zip")
+    assert not (project / "delivered.txt").exists()
+
+
+def test_screenshot_bytes_are_not_public(client):
+    response = client.request("GET", "/coding/screenshots/anything.png")
+    assert response.status_code in (401, 403)
+
+
+@pytest.mark.parametrize("failure_point", ["register", "thread"])
+def test_every_post_creation_start_failure_cleans_isolation(
+    client, project, monkeypatch, failure_point,
+):
+    from app.coding import service, sessions
+    _use_ready_coding_provider(monkeypatch)
+    added = client.post(
+        "/coding/projects", json={"path": str(project), "name": "demo"},
+        headers=token_headers(client),
+    ).json()["project"]
+    plan = client.post(
+        "/coding/tasks/plan",
+        json={"project_id": added["id"], "request": "inject setup failure"},
+        headers=token_headers(client),
+    ).json()["plan"]
+    if failure_point == "register":
+        monkeypatch.setattr(
+            sessions, "register",
+            lambda runner: (_ for _ in ()).throw(RuntimeError("register failed")),
+        )
+    else:
+        class BrokenThread:
+            def __init__(self, *args, **kwargs):
+                pass
+            def start(self):
+                raise RuntimeError("thread start failed")
+        monkeypatch.setattr(service.threading, "Thread", BrokenThread)
+    response = client.post(
+        "/coding/tasks/start", json={"task_id": plan["task_id"]},
+        headers=token_headers(client),
+    )
+    assert response.status_code == 409
+    assert not Path(plan["isolation"]["worktree_path"]).exists()
+    ref = f"refs/heads/{plan['isolation']['branch_name']}"
+    assert fx.git(project, "show-ref", "--verify", ref).returncode != 0
+    assert sessions.get(plan["task_id"]) is None
+
+
+def test_running_task_history_cannot_be_deleted_or_cleared(
+    client, project, monkeypatch,
+):
+    from app.coding import sessions, tasks
+    added = client.post(
+        "/coding/projects", json={"path": str(project), "name": "demo"},
+        headers=token_headers(client),
+    ).json()["project"]
+    record = tasks.create(added["id"], "still running")
+    monkeypatch.setattr(sessions, "get", lambda task_id: object() if task_id == record.id else None)
+    monkeypatch.setattr(sessions, "live_ids", lambda: [record.id])
+    deleted = client.delete(
+        f"/coding/tasks/{record.id}", headers=token_headers(client)
+    )
+    cleared = client.post(
+        "/coding/tasks/clear", headers=token_headers(client)
+    )
+    assert deleted.status_code == 409
+    assert cleared.status_code == 409
+    assert tasks.get(record.id) is not None

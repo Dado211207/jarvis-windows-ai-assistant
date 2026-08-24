@@ -38,6 +38,24 @@
     focusBeforeDialog: null,
   };
 
+  async function codingGet(path) {
+    const token = getSessionCookie();
+    const response = await fetch(path, {
+      headers: token ? {"X-JARVIS-Session-Token": token} : {},
+    });
+    if (!response.ok) throw await errorFromResponse(response);
+    return response.json();
+  }
+
+  async function codingBlob(path) {
+    const token = getSessionCookie();
+    const response = await fetch(path, {
+      headers: token ? {"X-JARVIS-Session-Token": token} : {},
+    });
+    if (!response.ok) throw await errorFromResponse(response);
+    return response.blob();
+  }
+
   // ---------------------------------------------------------------- utils
 
   function clear(node) {
@@ -109,7 +127,7 @@
   async function loadStatus() {
     let status;
     try {
-      status = await API.get("/coding/status");
+      status = await codingGet("/coding/status");
     } catch (e) {
       showError("coding-add-error", e.message);
       return;
@@ -170,7 +188,7 @@
     const container = clear(el("coding-projects"));
     let data;
     try {
-      data = await API.get("/coding/projects");
+      data = await codingGet("/coding/projects");
     } catch (e) {
       container.appendChild(make("p", "form-error", e.message));
       return;
@@ -326,7 +344,7 @@
     // The bridge's answer is a convenience; the server's is the record.
     let state;
     try {
-      state = await API.get(`/coding/folder-dialog/${encodeURIComponent(requestId)}`);
+      state = await codingGet(`/coding/folder-dialog/${encodeURIComponent(requestId)}`);
     } catch (e) {
       showError(errorId, e.message);
       return;
@@ -400,7 +418,7 @@
   async function loadTemplates() {
     let data;
     try {
-      data = await API.get("/coding/templates");
+      data = await codingGet("/coding/templates");
     } catch (e) { return; }
     const select = clear(el("coding-new-template"));
     data.templates.forEach(template => {
@@ -723,8 +741,8 @@
     let live, record;
     try {
       [live, record] = await Promise.all([
-        API.get(`/coding/tasks/${encodeURIComponent(state.taskId)}/live`),
-        API.get(`/coding/tasks/${encodeURIComponent(state.taskId)}`),
+        codingGet(`/coding/tasks/${encodeURIComponent(state.taskId)}/live`),
+        codingGet(`/coding/tasks/${encodeURIComponent(state.taskId)}`),
       ]);
     } catch (e) {
       return;                                  // transient; the next tick retries
@@ -1101,10 +1119,19 @@
 
     if (qa.screenshot) {
       const image = document.createElement("img");
-      image.src = `/coding/screenshots/${encodeURIComponent(qa.screenshot)}`;
       image.alt = `Screenshot of ${qa.route || "the page"} taken during the browser check.`;
       image.className = "preview-shot";
       box.appendChild(image);
+      codingBlob(`/coding/screenshots/${encodeURIComponent(qa.screenshot)}`)
+        .then(blob => {
+          const url = URL.createObjectURL(blob);
+          image.addEventListener("load", () => URL.revokeObjectURL(url), {once: true});
+          image.src = url;
+        })
+        .catch(error => {
+          image.remove();
+          box.appendChild(make("p", "form-error", error.message));
+        });
     }
     return box;
   }
@@ -1146,7 +1173,7 @@
     try {
       const suffix = state.projectId
         ? `?project_id=${encodeURIComponent(state.projectId)}` : "";
-      data = await API.get(`/coding/toolchain${suffix}`);
+      data = await codingGet(`/coding/toolchain${suffix}`);
     } catch (e) {
       clear(container).appendChild(make("p", "form-error", e.message));
       return;
@@ -1227,7 +1254,7 @@
       return;
     }
     try {
-      const data = await API.get(
+      const data = await codingGet(
         `/coding/preview/${encodeURIComponent(state.projectId)}`);
       renderPreview(data.preview);
     } catch (e) {
@@ -1247,7 +1274,10 @@
     }
     let data;
     try {
-      data = await API.get(`/coding/projects/${encodeURIComponent(state.projectId)}/diff`);
+      const path = state.taskId
+        ? `/coding/tasks/${encodeURIComponent(state.taskId)}/diff`
+        : `/coding/projects/${encodeURIComponent(state.projectId)}/diff`;
+      data = await codingGet(path);
     } catch (e) {
       container.appendChild(make("p", "form-error", e.message));
       return;
@@ -1327,6 +1357,11 @@
       undo.addEventListener("click", () => undoChanges(task));
       row.appendChild(undo);
     }
+    const deliver = make("button", "btn btn-primary btn-sm", "Download reviewed changes");
+    deliver.type = "button";
+    deliver.addEventListener("click", () => exportChanges(task));
+    row.appendChild(deliver);
+
     const exportBtn = make("button", "btn btn-ghost btn-sm", "Export a redacted report");
     exportBtn.type = "button";
     exportBtn.addEventListener("click", () => exportReport(task));
@@ -1373,9 +1408,37 @@
     } catch (e) { announce(e.message); }
   }
 
+  async function exportChanges(task) {
+    let planned;
+    try {
+      planned = await API.post("/coding/tasks/export/plan", {task_id: task.id});
+    } catch (e) { announce(e.message); return; }
+    const plan = planned.plan || {};
+    const paths = (plan.paths || []).join("\n");
+    if (!window.confirm(
+      `Download these reviewed task-worktree changes as a ZIP?\n\n${paths}\n\n` +
+      "The ZIP contains changes.patch, final files and a manifest. " +
+      "Your main project is not modified.")) return;
+    try {
+      const done = await API.post("/coding/tasks/export", {
+        task_id: task.id, plan_id: plan.plan_id,
+      });
+      const blob = await codingBlob(done.download_url);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `jarvis-task-${task.id}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      announce("Reviewed task changes downloaded. Your main project was not modified.");
+    } catch (e) { announce(e.message); }
+  }
+
   async function exportReport(task) {
     try {
-      const data = await API.get(`/coding/tasks/${encodeURIComponent(task.id)}/report`);
+      const data = await codingGet(`/coding/tasks/${encodeURIComponent(task.id)}/report`);
       const text = JSON.stringify(data.report, null, 2);
       const box = clear(el("coding-results"));
       const pre = make("pre", "command-output");
@@ -1399,7 +1462,7 @@
     const container = clear(el("coding-history"));
     let data;
     try {
-      data = await API.get(`/coding/tasks?project_id=${encodeURIComponent(state.projectId)}`);
+      data = await codingGet(`/coding/tasks?project_id=${encodeURIComponent(state.projectId)}`);
     } catch (e) {
       container.appendChild(make("p", "form-error", e.message));
       return;

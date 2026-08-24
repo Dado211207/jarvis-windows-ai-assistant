@@ -131,9 +131,11 @@ class PreviewState:
 class PreviewSession:
     """One owned dev server. At most one per task."""
 
-    def __init__(self) -> None:
+    def __init__(self, owner_id: str = "") -> None:
         self._lock = threading.Lock()
+        self.owner_id = str(owner_id or "")
         self._handle: Optional[CommandHandle] = None
+        self._lifetime_timer: Optional[threading.Timer] = None
         self._state = PreviewState()
 
     @property
@@ -142,21 +144,109 @@ class PreviewSession:
         return self._state
 
     def _refresh(self) -> None:
-        """Recompute `running` from reality, never from a stored flag."""
+        """Recompute state and enforce the preview's hard lifetime."""
+        started = self._state.started_at
+        if started and (time.time() - started) >= limits.MAX_PREVIEW_LIFETIME_SECONDS:
+            self.stop("preview lifetime reached")
+            self._state = PreviewState(
+                last_error=(
+                    f"The preview stopped after the "
+                    f"{int(limits.MAX_PREVIEW_LIFETIME_SECONDS // 60)}-minute limit."
+                )
+            )
+            return
+
         with self._lock:
             handle = self._handle
             if handle is None or handle._process is None:
                 self._state.running = False
                 return
-            alive = handle._process.poll() is None
-            if not alive:
+            if handle._process.poll() is not None:
                 self._state.running = False
                 self._state.last_error = self._state.last_error or "The preview process exited."
+                ledger.forget(handle)
                 return
             port = self._state.port
-            self._state.running = bool(port and port_in_use(port))
-            if not self._state.running and not self._state.last_error:
-                self._state.last_error = "The preview process is running but not answering yet."
+
+        listener_state, reason = self._listener_status(handle, port)
+        self._state.running = listener_state == "ready"
+        if listener_state == "unsafe":
+            self.stop("unsafe preview listener")
+            self._state = PreviewState(last_error=reason)
+        elif not self._state.running and not self._state.last_error:
+            self._state.last_error = reason or "The preview process is running but not answering yet."
+
+    def _listener_status(self, handle: CommandHandle, port: Optional[int]) -> tuple[str, str]:
+        """Prove that this task owns a loopback-only listener on *port*."""
+        if not port or handle._process is None or handle._process.poll() is not None:
+            return "waiting", "The owned preview process is not listening yet."
+        try:
+            import psutil
+            handle._recapture()
+            identities = list(handle._captured)
+            if handle._own is not None:
+                identities.append(handle._own)
+            owned_pids = set()
+            listeners = []
+            for identity in identities:
+                try:
+                    process = psutil.Process(identity.pid)
+                    if identity.is_verifiable and not identity.matches(process.create_time()):
+                        continue
+                    owned_pids.add(identity.pid)
+                    getter = getattr(process, "net_connections", process.connections)
+                    for connection in getter(kind="inet"):
+                        if (
+                            connection.status == psutil.CONN_LISTEN
+                            and connection.laddr
+                            and int(connection.laddr.port) == int(port)
+                        ):
+                            listeners.append(connection)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                    continue
+
+            if listeners:
+                allowed = {LOOPBACK, "::1", "0:0:0:0:0:0:0:1"}
+                wide = [
+                    str(connection.laddr.ip)
+                    for connection in listeners
+                    if str(connection.laddr.ip) not in allowed
+                ]
+                if wide:
+                    return "unsafe", (
+                        "The preview tried to listen beyond this computer "
+                        f"({', '.join(sorted(set(wide)))}), so JARVIS stopped it."
+                    )
+                foreign = [
+                    connection for connection in psutil.net_connections(kind="inet")
+                    if (
+                        connection.status == psutil.CONN_LISTEN
+                        and connection.laddr
+                        and int(connection.laddr.port) == int(port)
+                        and connection.pid not in owned_pids
+                    )
+                ]
+                if foreign:
+                    return "unsafe", (
+                        "Another process also owns the selected preview port, so "
+                        "JARVIS stopped rather than adopting a shared listener."
+                    )
+                return "ready", ""
+
+            if port_in_use(port):
+                return "unsafe", (
+                    "Something other than the owned preview process took the selected "
+                    "port, so JARVIS stopped rather than adopting it."
+                )
+            return "waiting", "The owned preview process is not listening yet."
+        except Exception:
+            logger.warning("Could not verify preview listener ownership.", exc_info=True)
+            if port_in_use(port):
+                return "unsafe", (
+                    "JARVIS could not verify that the listener belongs to the task and "
+                    "is loopback-only, so it stopped the preview."
+                )
+            return "waiting", "The preview listener is not ready."
 
     def verify_ownership(self) -> tuple:
         """Prove this session's process is still the one JARVIS started.
@@ -183,6 +273,10 @@ class PreviewSession:
         if not port:
             return False, "The preview has no port."
 
+        listener_state, listener_reason = self._listener_status(handle, port)
+        if listener_state != "ready":
+            return False, listener_reason
+
         expected = handle._own
         if expected is None or not expected.is_verifiable:
             # psutil absent, or the process was not inspectable when it
@@ -200,6 +294,13 @@ class PreviewSession:
                 "(the PID has been reused)."
             )
         return True, ""
+
+    def _expire(self) -> None:
+        self.stop("preview lifetime reached")
+        self._state = PreviewState(last_error=(
+            f"The preview stopped after "
+            f"{int(limits.MAX_PREVIEW_LIFETIME_SECONDS // 60)} minutes."
+        ))
 
     def start(self, root: Path, argv: List[str], script: str) -> PreviewState:
         if self.state.running:
@@ -221,7 +322,9 @@ class PreviewSession:
         # Pin host and port on the command line as well as the environment:
         # different dev servers honour different ones, and a server that
         # ignored both would fail to come up rather than bind wide.
-        full_argv = list(argv) + ["--host", LOOPBACK, "--port", str(port), "--strictPort"]
+        full_argv = list(argv) + [
+            "--", "--host", LOOPBACK, "--port", str(port), "--strictPort"
+        ]
 
         handle = CommandHandle(full_argv, root, root.name)
         try:
@@ -239,9 +342,14 @@ class PreviewSession:
             self._state = PreviewState(last_error=f"The preview could not start ({type(exc).__name__}).")
             return self._state
 
-        ledger.track(handle)
+        ledger.track(handle, self.owner_id)
         with self._lock:
             self._handle = handle
+            self._lifetime_timer = threading.Timer(
+                limits.MAX_PREVIEW_LIFETIME_SECONDS, self._expire
+            )
+            self._lifetime_timer.daemon = True
+            self._lifetime_timer.start()
             self._state = PreviewState(
                 running=False, port=port, url=f"http://{LOOPBACK}:{port}/",
                 pid=handle.pid, script=script, started_at=time.time(),
@@ -250,24 +358,38 @@ class PreviewSession:
         deadline = time.monotonic() + limits.PREVIEW_READY_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             if handle._process is not None and handle._process.poll() is not None:
-                self._state.last_error = "The preview process exited before it started serving."
+                self.stop("preview exited during startup")
+                self._state = PreviewState(
+                    last_error="The preview process exited before it started serving."
+                )
                 return self._state
-            if port_in_use(port):
+            listener_state, listener_reason = self._listener_status(handle, port)
+            if listener_state == "ready":
                 self._state.running = True
                 self._state.last_error = ""
                 logger.info("Coding preview started on loopback port %d.", port)
                 return self._state
+            if listener_state == "unsafe":
+                self.stop("unsafe preview listener")
+                self._state = PreviewState(last_error=listener_reason)
+                return self._state
             time.sleep(limits.PREVIEW_POLL_INTERVAL_SECONDS)
 
-        self._state.last_error = (
-            f"The preview did not answer within {limits.PREVIEW_READY_TIMEOUT_SECONDS:.0f}s."
-        )
+        self.stop("preview readiness timeout")
+        self._state = PreviewState(last_error=(
+            f"The preview did not answer within "
+            f"{limits.PREVIEW_READY_TIMEOUT_SECONDS:.0f}s and was stopped."
+        ))
         return self._state
 
     def stop(self, reason: str = "stopped") -> dict:
         with self._lock:
             handle = self._handle
+            timer = self._lifetime_timer
             self._handle = None
+            self._lifetime_timer = None
+        if timer is not None:
+            timer.cancel()
         if handle is None:
             self._state = PreviewState()
             return {"stopped": False, "reason": "nothing was running"}
@@ -337,7 +459,9 @@ def handle(context, proposal):
     from app.coding.agent import StepOutcome
 
     action = proposal.action
-    session: PreviewSession = getattr(context, "preview", None) or PreviewSession()
+    session: PreviewSession = (
+        getattr(context, "preview", None) or PreviewSession(context.task_id)
+    )
     context.preview = session
 
     if action == "stop_preview":
@@ -347,7 +471,7 @@ def handle(context, proposal):
                            model_text="The preview is stopped.")
 
     if action == "start_preview":
-        entry = context.declared_commands.get(proposal.script) or context.declared_commands.get("dev")
+        entry = context.declared_commands.get(proposal.script)
         if entry is None:
             message = (
                 "This project does not declare a development-server script, so JARVIS "

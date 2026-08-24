@@ -6,14 +6,17 @@ is not a convention here but an enforced one:
 walks the assembled application and fails the build for any that does
 not.
 
-Read endpoints are deliberately readable without a token, matching the
-rest of the API — they expose project names, paths relative to the
-project, and state, never file contents or secrets.
+Sensitive read endpoints use the same double-submit session token as
+mutations. Project roots, source diffs, task requests, process identifiers
+and screenshots are private local data; only generic capability/template
+metadata remains readable before the dashboard session is established.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import secrets
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -112,7 +115,7 @@ def _safe_failure(exc: Exception, context: str) -> HTTPException:
 # Status and projects
 # --------------------------------------------------------------------------
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_session_token)])
 async def coding_status() -> dict:
     """Whether Coding Workspace is usable at all, and why not if it is not.
 
@@ -178,7 +181,7 @@ def _project_payload(project: projects.Project) -> dict:
     return payload
 
 
-@router.get("/projects")
+@router.get("/projects", dependencies=[Depends(require_session_token)])
 async def list_coding_projects() -> dict:
     return {"projects": [_project_payload(p) for p in projects.list_projects()]}
 
@@ -309,7 +312,7 @@ async def create_coding_project(body: CreateProjectRequest) -> dict:
 # endpoint rather than through the page.
 # --------------------------------------------------------------------------
 
-@router.get("/folder-dialog")
+@router.get("/folder-dialog", dependencies=[Depends(require_session_token)])
 async def folder_dialog_availability() -> dict:
     """Whether a native folder dialog can be opened right now.
 
@@ -404,7 +407,7 @@ async def list_templates() -> dict:
 # Project inspection
 # --------------------------------------------------------------------------
 
-@router.get("/projects/{project_id}/git")
+@router.get("/projects/{project_id}/git", dependencies=[Depends(require_session_token)])
 async def project_git(project_id: str) -> dict:
     try:
         root = projects.resolve_root(project_id)
@@ -422,7 +425,7 @@ async def project_git(project_id: str) -> dict:
     }
 
 
-@router.get("/projects/{project_id}/diff")
+@router.get("/projects/{project_id}/diff", dependencies=[Depends(require_session_token)])
 async def project_diff(project_id: str, staged: bool = False) -> dict:
     """The working-tree diff, labelled by who made it.
 
@@ -459,7 +462,7 @@ async def project_diff(project_id: str, staged: bool = False) -> dict:
 # Tasks
 # --------------------------------------------------------------------------
 
-@router.get("/tasks")
+@router.get("/tasks", dependencies=[Depends(require_session_token)])
 async def list_coding_tasks(project_id: str = "") -> dict:
     return {
         "tasks": [
@@ -474,7 +477,7 @@ async def list_coding_tasks(project_id: str = "") -> dict:
     }
 
 
-@router.get("/tasks/{task_id}")
+@router.get("/tasks/{task_id}", dependencies=[Depends(require_session_token)])
 async def get_coding_task(task_id: str) -> dict:
     record = tasks.get(task_id)
     if record is None:
@@ -482,7 +485,7 @@ async def get_coding_task(task_id: str) -> dict:
     return {"task": record.as_dict()}
 
 
-@router.get("/tasks/{task_id}/report")
+@router.get("/tasks/{task_id}/report", dependencies=[Depends(require_session_token)])
 async def export_coding_task(task_id: str) -> dict:
     record = tasks.get(task_id)
     if record is None:
@@ -492,6 +495,12 @@ async def export_coding_task(task_id: str) -> dict:
 
 @router.delete("/tasks/{task_id}", dependencies=[Depends(require_session_token)])
 async def delete_coding_task(task_id: str) -> dict:
+    from app.coding import sessions
+    if sessions.get(task_id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Stop the running task and wait for it to finish before deleting its history.",
+        )
     if not tasks.delete(task_id):
         raise HTTPException(status_code=404, detail="No such task.")
     return {"deleted": True}
@@ -499,6 +508,17 @@ async def delete_coding_task(task_id: str) -> dict:
 
 @router.post("/tasks/clear", dependencies=[Depends(require_session_token)])
 async def clear_coding_tasks(project_id: str = "") -> dict:
+    from app.coding import sessions
+    live = []
+    for task_id in sessions.live_ids():
+        record = tasks.get(task_id)
+        if not project_id or (record is not None and record.project_id == project_id):
+            live.append(task_id)
+    if live:
+        raise HTTPException(
+            status_code=409,
+            detail="Stop running tasks and wait for them to finish before clearing history.",
+        )
     removed = tasks.clear(project_id)
     return {"removed": removed}
 
@@ -621,8 +641,11 @@ async def stop_coding_task(body: TaskIdRequest) -> dict:
 async def stop_all_processes() -> dict:
     """The safety valve: end every command and preview Coding Workspace
     owns, right now."""
+    reports = []
+    for session in list(_previews.values()):
+        reports.append(session.stop("user requested stop-all"))
     _previews.clear()
-    reports = ledger.stop_all("user requested stop-all")
+    reports.extend(ledger.stop_all("user requested stop-all"))
     return {"stopped": reports, "count": len(reports), "reports": reports}
 
 
@@ -645,72 +668,102 @@ async def stop_all_processes() -> dict:
 _previews: dict = {}
 
 
-class PreviewStartRequest(BaseModel):
+class PreviewPlanRequest(BaseModel):
     project_id: str = Field(min_length=1, max_length=64)
     script: str = Field(default="dev", max_length=60)
 
+class PreviewConfirmRequest(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=128)
+
+class PreviewStopRequest(BaseModel):
+    project_id: str = Field(min_length=1, max_length=64)
 
 class PreviewCheckRequest(BaseModel):
     project_id: str = Field(min_length=1, max_length=64)
-    # A path inside the preview. `browser_origin.safe_route` refuses
-    # anything that is not one, so there is no URL a caller can name here.
     route: str = Field(default="/", max_length=512)
 
+_preview_plans: dict = {}
+_PREVIEW_PLAN_TTL_SECONDS = 300.0
 
 def _preview_for(project_id: str):
     from app.coding.preview import PreviewSession
-
     session = _previews.get(project_id)
     if session is None:
-        session = PreviewSession()
+        session = PreviewSession(f"manual-preview:{project_id}")
         _previews[project_id] = session
     return session
 
-
-@router.post("/preview/start", dependencies=[Depends(require_session_token)])
-async def start_preview(body: PreviewStartRequest) -> dict:
-    """Start the project's own declared development server.
-
-    JARVIS never guesses a command. A project that declares no dev script
-    gets a refusal naming that fact, not an invented `npm start`.
-    """
-    from app.coding import stacks
-
+@router.post("/preview/plan", dependencies=[Depends(require_session_token)])
+async def plan_preview(body: PreviewPlanRequest) -> dict:
+    """Describe the exact current script body; run nothing."""
     try:
         root = projects.resolve_root(body.project_id)
     except WorkspaceViolation as exc:
         raise HTTPException(status_code=400, detail=exc.reason) from None
-
     declared = stacks.project_commands(stacks.detect(root))
-    entry = declared.get(body.script) or declared.get("dev")
+    entry = declared.get(body.script)
     if entry is None:
+        raise HTTPException(status_code=400, detail="No declared preview script.")
+    argv = list(entry.get("argv") or [])
+    key = command_policy.approval_key(argv, declared)
+    now = time.time()
+    for expired_id, value in list(_preview_plans.items()):
+        if now > float(value.get("expires_at") or 0):
+            _preview_plans.pop(expired_id, None)
+    while len(_preview_plans) >= 128:
+        _preview_plans.pop(next(iter(_preview_plans)))
+    plan_id = secrets.token_urlsafe(24)
+    _preview_plans[plan_id] = {
+        "project_id": body.project_id, "script": body.script,
+        "approval_key": key, "expires_at": time.time() + _PREVIEW_PLAN_TTL_SECONDS,
+    }
+    return {"plan": {
+        "plan_id": plan_id, "project_id": body.project_id, "script": body.script,
+        "argv": argv, "source": str(entry.get("source") or ""),
+        "declared_script": str(entry.get("declared") or "")[:400],
+        "approval_key": key,
+        "warning": "This executes project code with your account permissions.",
+    }}
+
+@router.post("/preview/start", dependencies=[Depends(require_session_token)])
+async def start_preview(body: PreviewConfirmRequest) -> dict:
+    """Consume a reviewed plan and start exactly that declaration."""
+    plan = _preview_plans.pop(body.plan_id, None)
+    if plan is None or time.time() > float(plan.get("expires_at") or 0):
+        raise HTTPException(status_code=409, detail="Preview plan expired; review again.")
+    project_id = str(plan["project_id"])
+    try:
+        root = projects.resolve_root(project_id)
+    except WorkspaceViolation as exc:
+        raise HTTPException(status_code=400, detail=exc.reason) from None
+    declared = stacks.project_commands(stacks.detect(root))
+    script = str(plan["script"])
+    entry = declared.get(script)
+    argv = list((entry or {}).get("argv") or [])
+    current_key = command_policy.approval_key(argv, declared) if entry else ""
+    if not entry or current_key != str(plan.get("approval_key") or ""):
         raise HTTPException(
-            status_code=400,
-            detail=("This project does not declare a development-server script, so "
-                    "JARVIS has nothing safe to start. It will not guess a command."),
+            status_code=409,
+            detail="The preview script changed after review. Review it again.",
         )
-
-    session = _preview_for(body.project_id)
-    state = session.start(root, list(entry["argv"]), body.script)
-    return {"preview": state.as_dict(), "evidence": entry.get("evidence", "")}
-
+    session = _preview_for(project_id)
+    state = session.start(root, argv, script)
+    return {"preview": state.as_dict(), "source": entry.get("source", "")}
 
 @router.post("/preview/stop", dependencies=[Depends(require_session_token)])
-async def stop_preview(body: PreviewStartRequest) -> dict:
+async def stop_preview(body: PreviewStopRequest) -> dict:
     session = _previews.pop(body.project_id, None)
     if session is None:
         return {"stopped": False, "reason": "nothing was running"}
     return session.stop("stopped from the Preview panel")
 
-
-@router.get("/preview/{project_id}")
+@router.get("/preview/{project_id}", dependencies=[Depends(require_session_token)])
 async def read_preview(project_id: str) -> dict:
     session = _previews.get(project_id)
     if session is None:
         from app.coding.preview import PreviewState
         return {"preview": PreviewState().as_dict()}
     return {"preview": session.state.as_dict()}
-
 
 @router.post("/preview/check", dependencies=[Depends(require_session_token)])
 async def check_preview(body: PreviewCheckRequest) -> dict:
@@ -781,7 +834,7 @@ async def decide_coding_approval(body: ApprovalDecisionRequest) -> dict:
         raise _safe_failure(exc, "record a coding approval") from None
 
 
-@router.get("/tasks/{task_id}/live")
+@router.get("/tasks/{task_id}/live", dependencies=[Depends(require_session_token)])
 async def coding_task_live(task_id: str) -> dict:
     """What is happening right now — from the live session, not the record.
 
@@ -792,6 +845,106 @@ async def coding_task_live(task_id: str) -> dict:
     from app.coding import service
 
     return service.live_state(task_id)
+
+
+def _task_root(record: tasks.TaskRecord) -> Path:
+    """Resolve the exact task tree; never cross isolation modes."""
+    isolation = dict(record.isolation or {})
+    expected = str(isolation.get("worktree_path") or "")
+    if isolation.get("strategy") == "worktree" or expected:
+        root = Path(expected)
+        if not expected or not root.is_dir():
+            raise HTTPException(
+                status_code=409,
+                detail=("The isolated worktree for this task is missing. JARVIS will not "
+                        "fall back to your main project."),
+            )
+        return root
+    try:
+        return projects.resolve_root(record.project_id)
+    except WorkspaceViolation as exc:
+        raise HTTPException(status_code=404, detail=exc.reason) from None
+
+
+@router.get("/tasks/{task_id}/diff", dependencies=[Depends(require_session_token)])
+async def task_review_diff(task_id: str) -> dict:
+    """Review changes from the exact task worktree, never the main tree."""
+    from app.coding import delivery
+    record = tasks.get(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No such task.")
+    root = _task_root(record)
+    start_sha = str(record.isolation.get("start_sha") or "")
+    paths = delivery.task_paths(record)
+    return {
+        "task_id": task_id,
+        "root_kind": (
+            "isolated task worktree"
+            if record.isolation.get("strategy") == "worktree"
+            else "explicit in-place task root"
+        ),
+        "changed": [{"path": path, "changed_by": "jarvis"} for path in paths],
+        "diff": delivery.review_diff(root, start_sha, paths),
+    }
+
+
+class ExportPlanRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=64)
+
+
+class ExportConfirmRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=64)
+    plan_id: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/tasks/export/plan", dependencies=[Depends(require_session_token)])
+async def plan_task_export(body: ExportPlanRequest) -> dict:
+    from app.coding import delivery
+    record = tasks.get(body.task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No such task.")
+    root = _task_root(record)
+    try:
+        plan = delivery.plan_export(record, root)
+    except WorkspaceViolation as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from None
+    return {"plan": plan.as_dict(), "written": False}
+
+
+@router.post("/tasks/export", dependencies=[Depends(require_session_token)])
+async def export_task(body: ExportConfirmRequest) -> dict:
+    from app.coding import delivery
+    record = tasks.get(body.task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No such task.")
+    root = _task_root(record)
+    try:
+        token, _ = delivery.create_export(body.plan_id, record, root)
+    except WorkspaceViolation as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from None
+    tasks.append_step(record, "note", "Exported reviewed task changes.",
+                      {"paths": len(delivery.task_paths(record))}, ok=True)
+    tasks.save(record)
+    return {
+        "exported": True,
+        "download_url": f"/coding/tasks/{record.id}/exports/{token}",
+        "project_modified": False,
+    }
+
+
+@router.get("/tasks/{task_id}/exports/{token}",
+            dependencies=[Depends(require_session_token)])
+async def download_task_export(task_id: str, token: str):
+    from fastapi.responses import FileResponse
+    from app.coding import delivery
+    try:
+        path = delivery.export_path(task_id, token)
+    except WorkspaceViolation as exc:
+        raise HTTPException(status_code=404, detail=exc.reason) from None
+    return FileResponse(
+        str(path), media_type="application/zip",
+        filename=f"jarvis-task-{task_id}.zip",
+    )
 
 
 class CommitRequest(BaseModel):
@@ -812,12 +965,7 @@ async def commit_task_changes(body: CommitRequest) -> dict:
     if record is None:
         raise HTTPException(status_code=404, detail="No such task.")
 
-    root = Path(record.isolation.get("worktree_path") or "")
-    if not root.is_dir():
-        try:
-            root = projects.resolve_root(record.project_id)
-        except WorkspaceViolation as exc:
-            raise HTTPException(status_code=404, detail=exc.reason) from None
+    root = _task_root(record)
 
     paths = []
     for change in record.files_changed:
@@ -856,12 +1004,7 @@ async def undo_task_changes(body: UndoRequest) -> dict:
     if record is None:
         raise HTTPException(status_code=404, detail="No such task.")
 
-    root = Path(record.isolation.get("worktree_path") or "")
-    if not root.is_dir():
-        try:
-            root = projects.resolve_root(record.project_id)
-        except WorkspaceViolation as exc:
-            raise HTTPException(status_code=404, detail=exc.reason) from None
+    root = _task_root(record)
 
     results = gitsafe.undo_task_edits(
         root, record.id, list(record.files_changed)
@@ -883,7 +1026,7 @@ async def undo_task_changes(body: UndoRequest) -> dict:
     }
 
 
-@router.get("/screenshots/{name}")
+@router.get("/screenshots/{name}", dependencies=[Depends(require_session_token)])
 async def coding_screenshot(name: str):
     """Serve one browser-check screenshot.
 
@@ -904,7 +1047,7 @@ async def coding_screenshot(name: str):
     raise HTTPException(status_code=404, detail="No such screenshot.")
 
 
-@router.get("/toolchain")
+@router.get("/toolchain", dependencies=[Depends(require_session_token)])
 async def coding_toolchain(project_id: str = "") -> dict:
     """What is installed on this machine, and what cannot run without it.
 
