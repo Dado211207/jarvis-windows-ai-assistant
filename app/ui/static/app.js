@@ -2655,6 +2655,13 @@ function _setSetupKeyMessage(text, ok) {
   el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
 }
 
+function _setSetupFinishMessage(text, ok) {
+  const el = $("setup-finish-message");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
+}
+
 async function refreshSetupKeyStatus() {
   const el = $("setup-key-status");
   if (!el) return;
@@ -2723,12 +2730,25 @@ async function saveApiKeyFrom(inputId, buttonId, setMessage) {
 }
 
 async function finishSetup() {
+  const continueBtn = $("setup-continue");
+  const skipBtn = $("setup-skip");
+  if (continueBtn) continueBtn.disabled = true;
+  if (skipBtn) skipBtn.disabled = true;
   try {
-    await API.post("/onboarding/complete", {});
+    const result = await API.post("/onboarding/complete", {});
+    if (!result.success) throw new Error("completion was not persisted");
+    window.location.href = "/ui/";
+    return true;
   } catch (e) {
-    // Non-fatal — the dashboard is reachable either way.
+    _setSetupFinishMessage(
+      "JARVIS could not finish setup. Nothing was marked complete; try again.",
+      false,
+    );
+    return false;
+  } finally {
+    if (continueBtn) continueBtn.disabled = false;
+    if (skipBtn) skipBtn.disabled = false;
   }
-  window.location.href = "/ui/";
 }
 
 function initSetup() {
@@ -2742,7 +2762,15 @@ function initSetup() {
   if (skipBtn) skipBtn.addEventListener("click", finishSetup);
 
   if (continueBtn) continueBtn.addEventListener("click", async () => {
-    await savePreferredName("setup-name-input");
+    _setSetupFinishMessage("", true);
+    const nameSaved = await savePreferredName("setup-name-input");
+    if (!nameSaved) {
+      _setSetupFinishMessage(
+        "JARVIS could not save your name. Nothing was marked complete; try again.",
+        false,
+      );
+      return;
+    }
 
     const typedKey = keyInput ? keyInput.value.trim() : "";
     if (typedKey) {
@@ -2755,7 +2783,7 @@ function initSetup() {
       const stillUnconfigured = status && status.textContent === "Not configured yet";
       if (!ok && stillUnconfigured) return;
     }
-    finishSetup();
+    await finishSetup();
   });
 
   if (keyInput) keyInput.addEventListener("keydown", (event) => {

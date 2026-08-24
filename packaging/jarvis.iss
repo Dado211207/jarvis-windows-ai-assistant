@@ -96,11 +96,12 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 ; No admin/UAC requirement — a real, deliberate choice, not an
-; oversight. PrivilegesRequiredOverridesAllowed=dialog lets a user who
-; specifically wants a per-machine install opt into elevation; nothing
-; here requires it.
+; oversight. This is strictly a per-user install: do not allow an
+; administrative/all-users override. The executable, mutable data,
+; Credential Manager entries and Startup shortcut all belong to one
+; Windows profile; exposing an all-users Start Menu entry that points
+; into that profile would be both misleading and unusable by other users.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=dist\installer
 OutputBaseFilename=JARVIS-Setup-v{#MyAppVersion}-x64
 SetupIconFile=..\app\ui\static\icon.ico
@@ -160,6 +161,8 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: no
 // swept after the files have gone (usPostUninstall).
 var
   UninstallCompleteRemoval: Boolean;
+  UninstallCleanupSucceeded: Boolean;
+  UninstallCleanupReportPath: String;
 
 // ---------------------------------------------------------------------------
 // WebView2: install it if it is missing, rather than letting the app
@@ -285,25 +288,77 @@ end;
 // app/core/ownership.py, which is the manifest of what "everything
 // JARVIS owns" actually means.
 //
-// A failure here is logged and ignored on purpose: the files are going
-// regardless, and aborting halfway would leave a half-removed
-// installation, which is worse than an orphaned shortcut.
-procedure RunApplicationCleanup(PurgeData: Boolean);
+// Cleanup writes a durable report under {tmp} and returns non-zero when
+// anything remains. The uninstaller then keeps the data directory and
+// copies the report there, so a full-uninstall failure is visible and
+// the only recovery evidence is not deleted by the post-uninstall sweep.
+function RunApplicationCleanup(PurgeData: Boolean): Boolean;
 var
   Exe: String;
   Params: String;
   ResultCode: Integer;
 begin
+  Result := False;
+  UninstallCleanupReportPath := ExpandConstant('{tmp}\JARVIS-uninstall-cleanup.json');
+  DeleteFile(UninstallCleanupReportPath);
+
   Exe := ExpandConstant('{app}\{#MyAppExeName}');
   if not FileExists(Exe) then
+  begin
+    Log('JARVIS cleanup executable is missing; cleanup cannot be verified.');
     Exit;
+  end;
 
-  Params := '--uninstall-cleanup';
+  Params := '--uninstall-cleanup --report-file="' + UninstallCleanupReportPath + '"';
   if PurgeData then
     Params := Params + ' --purge-data';
 
   if not Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Log('JARVIS cleanup could not be started; continuing with uninstall.');
+  begin
+    Log('JARVIS cleanup could not be started; recovery evidence will be preserved.');
+    Exit;
+  end;
+
+  if ResultCode <> 0 then
+  begin
+    Log('JARVIS cleanup returned exit code ' + IntToStr(ResultCode) +
+      '; recovery evidence will be preserved.');
+    Exit;
+  end;
+
+  if not FileExists(UninstallCleanupReportPath) then
+  begin
+    Log('JARVIS cleanup returned success without its report; treating cleanup as incomplete.');
+    Exit;
+  end;
+
+  Result := True;
+end;
+
+procedure PreserveCleanupEvidence(DataDir: String);
+var
+  EvidencePath: String;
+begin
+  ForceDirectories(DataDir);
+  EvidencePath := DataDir + '\uninstall-cleanup-report.json';
+
+  if FileExists(UninstallCleanupReportPath) then
+  begin
+    if FileCopy(UninstallCleanupReportPath, EvidencePath, False) then
+      Log('JARVIS uninstall cleanup report preserved at ' + EvidencePath)
+    else
+      Log('JARVIS uninstall cleanup report could not be copied to ' + EvidencePath);
+  end
+  else
+  begin
+    EvidencePath := DataDir + '\uninstall-cleanup-error.txt';
+    SaveStringToFile(
+      EvidencePath,
+      'JARVIS uninstall cleanup could not be verified. The data folder was kept for recovery.' + #13#10,
+      False
+    );
+    Log('JARVIS uninstall cleanup failure notice preserved at ' + EvidencePath);
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -348,8 +403,22 @@ begin
       ShouldDelete := (Answer = IDYES);
     end;
 
-    RunApplicationCleanup(ShouldDelete);
-    UninstallCompleteRemoval := ShouldDelete;
+    UninstallCleanupSucceeded := RunApplicationCleanup(ShouldDelete);
+    UninstallCompleteRemoval := ShouldDelete and UninstallCleanupSucceeded;
+
+    if not UninstallCleanupSucceeded then
+    begin
+      PreserveCleanupEvidence(DataDir);
+      if not UninstallSilent() then
+        MsgBox(
+          'JARVIS could not finish removing its Startup shortcut and/or saved credentials.' +
+          #13#10 + #13#10 +
+          'Your data was kept for recovery at:' + #13#10 + DataDir + #13#10 + #13#10 +
+          'Review uninstall-cleanup-report.json there. You may need to remove JARVIS entries ' +
+          'from Windows Credential Manager manually.',
+          mbError, MB_OK
+        );
+    end;
   end;
 
   if CurUninstallStep = usPostUninstall then

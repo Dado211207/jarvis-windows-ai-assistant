@@ -107,12 +107,30 @@ def test_a_complete_uninstall_removes_the_data_and_the_key(tmp_path):
     with patch.object(ownership, "data_dir", return_value=data), \
          patch.object(ownership, "startup_shortcut_path", return_value=None), \
          patch("app.core.credentials.get_stored_api_key", return_value="sk-ant-something"), \
-         patch("app.core.credentials.clear_stored_api_key", return_value=True) as clear:
+         patch("app.core.credentials.clear_stored_api_key", return_value=True) as clear, \
+         patch("app.core.credentials.get_elevenlabs_key", return_value=""):
         report = ownership.remove(purge_data=True)
 
     assert not data.exists()
     clear.assert_called_once()
     assert any("API key" in line for line in report.removed)
+
+
+def test_a_failed_credential_purge_keeps_the_data_as_recovery_evidence(tmp_path):
+    data = tmp_path / "JARVIS"
+    data.mkdir()
+    (data / "jarvis.log").write_text("cleanup evidence")
+
+    with patch.object(ownership, "data_dir", return_value=data), \
+         patch.object(ownership, "startup_shortcut_path", return_value=None), \
+         patch("app.core.credentials.get_stored_api_key", return_value="sk-ant-something"), \
+         patch("app.core.credentials.clear_stored_api_key", return_value=False), \
+         patch("app.core.credentials.get_elevenlabs_key", return_value=""):
+        report = ownership.remove(purge_data=True)
+
+    assert report.failed
+    assert data.exists(), "failed secret cleanup must not erase the recovery evidence"
+    assert any("cleanup was incomplete" in line for line in report.kept)
 
 
 def test_the_sign_in_shortcut_is_removed_either_way(tmp_path):
@@ -218,6 +236,54 @@ def test_purging_is_never_the_default():
     assert '"--purge-data" in argv' in source
 
 
+def test_cleanup_failure_has_a_nonzero_exit_and_a_durable_report(tmp_path):
+    from app.core.ownership import RemovalReport
+    from app.launcher import uninstall
+
+    report_path = tmp_path / "cleanup.json"
+    incomplete = RemovalReport(
+        failed=["Your API key could not be removed."],
+        kept=["The JARVIS data folder for recovery"],
+    )
+    with patch("app.core.ownership.remove", return_value=incomplete):
+        code = uninstall.run([
+            "--purge-data",
+            f"--report-file={report_path}",
+        ])
+
+    assert code == uninstall.EXIT_CLEANUP_INCOMPLETE
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "incomplete"
+    assert payload["purge_data"] is True
+    assert payload["failed"] == ["Your API key could not be removed."]
+
+
+def test_cleanup_success_requires_and_writes_the_final_report(tmp_path):
+    from app.core.ownership import RemovalReport
+    from app.launcher import uninstall
+
+    report_path = tmp_path / "cleanup.json"
+    complete = RemovalReport(not_present=["The sign-in shortcut"])
+    with patch("app.core.ownership.remove", return_value=complete):
+        code = uninstall.run([f"--report-file={report_path}"])
+
+    assert code == uninstall.EXIT_OK
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "complete"
+
+
+def test_unwritable_report_prevents_destructive_cleanup(tmp_path):
+    from app.launcher import uninstall
+
+    report_path = tmp_path / "cleanup.json"
+    with patch.object(uninstall, "_write_report", return_value=False), \
+         patch("app.core.ownership.remove") as remove:
+        code = uninstall.run(["--purge-data", f"--report-file={report_path}"])
+
+    assert code == uninstall.EXIT_REPORT_UNAVAILABLE
+    remove.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # The installer's half
 # ---------------------------------------------------------------------------
@@ -266,6 +332,20 @@ def test_a_silent_uninstall_still_preserves_data_without_the_flag():
     content = _iss()
 
     assert "{param:DELETEDATA|no}" in content
+
+
+def test_full_uninstall_only_sweeps_data_after_verified_cleanup():
+    content = _iss()
+
+    assert '--report-file="' in content
+    assert "ResultCode <> 0" in content
+    assert "FileExists(UninstallCleanupReportPath)" in content
+    assert (
+        "UninstallCompleteRemoval := ShouldDelete and UninstallCleanupSucceeded"
+        in content
+    )
+    assert "FileCopy(UninstallCleanupReportPath, EvidencePath, False)" in content
+    assert "JARVIS could not finish removing" in content
 
 
 def test_the_installer_never_removes_a_shared_component():

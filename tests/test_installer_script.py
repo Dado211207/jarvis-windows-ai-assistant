@@ -58,6 +58,19 @@ def test_no_admin_privileges_required_by_default():
     assert "PrivilegesRequired=lowest" in setup
 
 
+def test_install_mode_cannot_be_overridden_to_all_users():
+    """Every installed/runtime path is intentionally per-user.
+
+    Inno's ``PrivilegesRequiredOverridesAllowed=dialog`` also enables
+    ``/ALLUSERS``. In administrative mode ``{group}`` becomes an All
+    Users Start Menu folder while ``{localappdata}``, Credential Manager
+    and ``{userstartup}`` still belong to one profile — a public shortcut
+    to a private-profile executable. Do not offer that broken mode.
+    """
+    setup = _section("Setup")
+    assert "PrivilegesRequiredOverridesAllowed" not in setup
+
+
 def test_default_install_dir_is_per_user_localappdata():
     setup = _section("Setup")
     assert "DefaultDirName={localappdata}\\Programs\\{#MyAppName}" in setup
