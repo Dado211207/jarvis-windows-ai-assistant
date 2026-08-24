@@ -622,6 +622,27 @@ def test_a_stream_failure_after_acceptance_never_replays_the_command():
     assert "run an action twice" in catch
 
 
+def test_an_accepted_stream_must_end_with_a_terminal_event():
+    """A clean TCP EOF is not proof that an accepted command completed."""
+    js = _chat_js()
+    stream = js[js.index("async function streamChat"):js.index("async function sendChatFallback")]
+    assert "sawTerminalEvent = false" in stream
+    assert 'evt.type === "routed"' in stream
+    assert 'evt.type === "error"' in stream
+    assert 'evt.type === "done"' in stream
+    assert "if (!sawTerminalEvent)" in stream
+    assert "chat stream ended before a terminal event" in stream
+
+
+def test_conversation_storage_has_a_deterministic_newest_first_order():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "db" / "database.py").read_text(encoding="utf-8")
+    query = source[source.index("def get_recent_conversations"):source.index("def clear_conversations")]
+    assert "ORDER BY id DESC" in query
+    assert "ORDER BY created_at DESC" not in query
+
+
 def test_chat_ui_hydrates_visible_history_before_accepting_a_new_message():
     """The model receives stored context, so the user must see the same
     context before they can add another turn."""
@@ -629,12 +650,18 @@ def test_chat_ui_hydrates_visible_history_before_accepting_a_new_message():
     history = js[js.index("async function loadChatHistory()"):js.index("function initChat()")]
     init = js[js.index("function initChat()"):js.index("// The \"Speak replies\" switch")]
     assert 'API.get("/conversation?limit=50")' in history
+    assert "entries.slice().reverse()" in history
     assert "addMessage(role, entry.content" in history
+    assert "throw new Error" in history
     assert "btn.disabled = true" in init
     assert "input.disabled = true" in init
+    assert "reset.disabled = true" in init
+    assert 'list.setAttribute("aria-busy", "true")' in init
     assert "loadChatHistory().finally" in init
     assert "btn.disabled = false" in init
     assert "input.disabled = false" in init
+    assert "reset.disabled = false" in init
+    assert 'list.setAttribute("aria-busy", "false")' in init
 
 
 def test_reset_asks_before_deleting():

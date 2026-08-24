@@ -7,9 +7,10 @@
   <div class="page-header">
     <h1 class="page-title">Voice</h1>
     <p class="page-subtitle">
-      Speaking and listening, both handled on this computer. The speech engine only ever
-      produces sound &mdash; it never captures audio. Listening happens only while you hold the
-      microphone button on the <a href="/ui/chat">Chat</a> page.
+      Voice input stays on this computer. Push-to-talk records only after you press the
+      microphone button on <a href="/ui/chat">Chat</a>; optional double-clap activation measures
+      sound levels while enabled. Spoken replies use local voices by default, or ElevenLabs only
+      after you explicitly select its cloud voice.
     </p>
   </div>
 
@@ -80,11 +81,12 @@
   <div class="card mb-4" id="cloud-voice-card">
     <h2 class="card-title">Premium cloud voice (optional)</h2>
     <p class="text-xs text-muted mt-2">
-      ElevenLabs produces a more natural voice than anything that runs locally, using your own
-      ElevenLabs account. It is entirely optional. <strong>What changes if you turn it on:</strong>
-      the text of each spoken reply is sent to ElevenLabs&rsquo; servers to be turned into audio.
-      Nothing else is sent &mdash; not your conversations, not your files, and never your microphone.
-      Privacy mode switches it off completely.
+      ElevenLabs produces an <strong>AI-generated voice</strong> using your own ElevenLabs
+      account. It is entirely optional, requires internet access, and API usage may incur cost.
+      <strong>What changes if you turn it on:</strong> the text of each spoken reply is sent to
+      ElevenLabs&rsquo; servers to be turned into audio. Nothing else is sent &mdash; not the
+      rest of your conversation, not your files, and never your microphone. Privacy Mode blocks
+      every ElevenLabs request.
     </p>
 
     <div class="status-row mt-3">
@@ -490,7 +492,7 @@
         <li><span class="check-ok">&#10003;</span> This engine is output only — it never captures audio</li>
         <li><span class="check-ok">&#10003;</span> Push-to-talk voice input (mic button on the <a href="/ui/chat">Chat</a> page)</li>
         <li><span class="check-ok">&#10003;</span> No wake-word speech recognition; opt-in clap activation monitors sound levels only</li>
-        <li><span class="check-ok">&#10003;</span> No cloud TTS or cloud STT — local engines only</li>
+        <li><span class="check-ok">&#10003;</span> Speech recognition stays local; optional ElevenLabs TTS sends only spoken reply text</li>
         <li><span class="check-plan">&#9675;</span> <span style="color:var(--text-muted);">Wake word / continuous listening &mdash; planned for a later phase</span></li>
       </ul>
     </div>
@@ -509,10 +511,11 @@
   </div>
 
   <div class="info-box">
-    Speech is produced on this computer &mdash; nothing is sent to a speech service, and no
-    speech component here is downloaded without its size, source and licence being shown
-    first. Audio errors never interrupt JARVIS; they are recorded and
-    the app carries on silently.
+    Speech is produced on this computer unless you explicitly select ElevenLabs above.
+    That cloud option sends only the text being spoken, requires internet access, may incur
+    API cost, and is blocked by Privacy Mode. Local speech components are not downloaded
+    without their size, source and licence being shown first. Audio errors never interrupt
+    JARVIS; they are recorded and the app carries on silently.
     Push-to-talk needs a local speech model &mdash; install one above, with its license, size and
     checksum shown first.
     Wake-word speech recognition is not part of this build. If you enable double-clap

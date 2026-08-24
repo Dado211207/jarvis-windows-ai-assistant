@@ -274,3 +274,19 @@ def test_help_explains_that_opt_in_clap_monitoring_keeps_the_microphone_open(api
     body = api_client.get("/ui/help").text
     assert "keeps" in body and "microphone open to measure sound levels" in body
     assert "never recognises words" in body
+
+
+
+def test_topbar_names_an_unavailable_selected_provider(api_client):
+    js = api_client.get("/ui/static/app.js").text
+    brain = js[js.index("function setTopbarBrain"):js.index("async function refreshTopbarHealth")]
+    assert "brain_configured" in brain
+    assert "Claude unavailable" in brain
+    assert "Ollama unavailable" in brain
+    assert 'label.textContent = "local mode"' not in brain
+
+
+def test_privacy_tooltip_names_cloud_and_clap_effects(api_client):
+    body = api_client.get("/ui/").text
+    assert "blocks cloud AI and cloud speech requests" in body
+    assert "pauses clap monitoring" in body

@@ -229,7 +229,7 @@ def test_health_reports_a_ready_selected_ollama_provider(api_client):
     assert body["brain_configured"] is True
 
 
-def test_health_reports_local_mode_when_the_selected_provider_is_unavailable(api_client):
+def test_health_keeps_the_unavailable_selected_provider_visible(api_client):
     from app.core.providers import ProviderStatus
 
     unavailable = ProviderStatus(
@@ -243,8 +243,11 @@ def test_health_reports_local_mode_when_the_selected_provider_is_unavailable(api
          patch("app.core.providers.ollama_status", return_value=unavailable):
         body = api_client.get("/health").json()
 
-    assert body["brain"] == "local"
+    assert body["brain"] == "ollama"
     assert body["brain_configured"] is False
+    # Deterministic local commands still make the service operational.
+    assert body["healthy"] is True
+    assert body["status"] == "ok"
 
 
 def test_tools_returns_200_and_non_empty(api_client):

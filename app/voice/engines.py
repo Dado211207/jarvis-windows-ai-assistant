@@ -154,6 +154,7 @@ class SpeakOutcome:
     started: bool
     engine: str
     message: str
+    fallback_message: str = ""
 
 
 def speak(
@@ -168,22 +169,39 @@ def speak(
     request that blocks for the length of a spoken paragraph is a
     request that has timed out.
     """
-    if selected_engine() == ELEVENLABS:
+    selected = selected_engine()
+    if selected == ELEVENLABS:
         outcome = _speak_elevenlabs(text)
         if outcome is not None:
             return outcome
         # None means "the cloud voice could not be used and falling back
         # was allowed" — carry on into the local chain below, and say so.
+    else:
+        # A fallback is an utterance-specific fact. Do not attach the last
+        # cloud failure to a later, deliberately local utterance.
+        _note_fallback("")
 
     chosen = active_engine(voice_key)
 
     if chosen == KOKORO:
-        return _speak_kokoro(text, voice_key, speed)
-    if chosen == WINDOWS:
-        return _speak_windows(text)
-    if chosen == SAPI5:
-        return _speak_sapi5(text)
-    return SpeakOutcome(started=False, engine=NONE, message=unavailable_message(voice_key))
+        outcome = _speak_kokoro(text, voice_key, speed)
+    elif chosen == WINDOWS:
+        outcome = _speak_windows(text)
+    elif chosen == SAPI5:
+        outcome = _speak_sapi5(text)
+    else:
+        outcome = SpeakOutcome(started=False, engine=NONE, message=unavailable_message(voice_key))
+
+    reason = last_fallback_reason()
+    if reason and outcome.started:
+        fallback_message = f"{reason} Using {DISPLAY_NAMES[outcome.engine]} instead."
+        return SpeakOutcome(
+            started=True,
+            engine=outcome.engine,
+            message=fallback_message,
+            fallback_message=fallback_message,
+        )
+    return outcome
 
 
 def _speak_elevenlabs(text: str) -> Optional["SpeakOutcome"]:
