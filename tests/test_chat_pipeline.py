@@ -600,12 +600,41 @@ def test_streaming_client_never_builds_markup_from_a_response():
     assert "insertAdjacentHTML" not in js
 
 
-def test_streaming_falls_back_to_the_plain_endpoint():
-    """A browser that cannot stream a response body must still be able to
-    chat, so the failure path is a fallback, not an error message."""
+def test_an_unsupported_browser_falls_back_before_sending_a_stream_request():
+    """Legacy-browser fallback is decided before /chat/stream receives the
+    command, so the plain endpoint is the first execution, never a retry."""
     js = _chat_js()
-    assert "sendChatFallback" in js
-    assert '"/command"' in js
+    send = js[js.index("async function sendChat()"):js.index("async function streamChat")]
+    assert "supportsStreamingChat()" in send
+    assert "await sendChatFallback(text)" in send
+    assert "await streamChat(text)" in send
+
+
+def test_a_stream_failure_after_acceptance_never_replays_the_command():
+    """A dropped response body is ambiguous: the server may already have
+    executed a deterministic action. The catch path must report that and
+    never call /command with the same text."""
+    js = _chat_js()
+    send = js[js.index("async function sendChat()"):js.index("async function streamChat")]
+    catch = send[send.index("} catch (e) {"):]
+    assert "sendChatFallback" not in catch
+    assert "did not resend" in catch
+    assert "run an action twice" in catch
+
+
+def test_chat_ui_hydrates_visible_history_before_accepting_a_new_message():
+    """The model receives stored context, so the user must see the same
+    context before they can add another turn."""
+    js = _chat_js()
+    history = js[js.index("async function loadChatHistory()"):js.index("function initChat()")]
+    init = js[js.index("function initChat()"):js.index("// The \"Speak replies\" switch")]
+    assert 'API.get("/conversation?limit=50")' in history
+    assert "addMessage(role, entry.content" in history
+    assert "btn.disabled = true" in init
+    assert "input.disabled = true" in init
+    assert "loadChatHistory().finally" in init
+    assert "btn.disabled = false" in init
+    assert "input.disabled = false" in init
 
 
 def test_reset_asks_before_deleting():

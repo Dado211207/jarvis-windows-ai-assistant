@@ -489,7 +489,7 @@
         <li><span class="check-ok">&#10003;</span> Windows' own natural voices as a fallback, the older robotic voice last</li>
         <li><span class="check-ok">&#10003;</span> This engine is output only — it never captures audio</li>
         <li><span class="check-ok">&#10003;</span> Push-to-talk voice input (mic button on the <a href="/ui/chat">Chat</a> page)</li>
-        <li><span class="check-ok">&#10003;</span> No wake word or always-listening, ever</li>
+        <li><span class="check-ok">&#10003;</span> No wake-word speech recognition; opt-in clap activation monitors sound levels only</li>
         <li><span class="check-ok">&#10003;</span> No cloud TTS or cloud STT — local engines only</li>
         <li><span class="check-plan">&#9675;</span> <span style="color:var(--text-muted);">Wake word / continuous listening &mdash; planned for a later phase</span></li>
       </ul>
@@ -515,7 +515,9 @@
     the app carries on silently.
     Push-to-talk needs a local speech model &mdash; install one above, with its license, size and
     checksum shown first.
-    Wake-word detection and always-listening behaviour are not part of this build.
+    Wake-word speech recognition is not part of this build. If you enable double-clap
+    activation above, the microphone remains open to measure sound levels until you
+    switch it off, enable Privacy Mode, or quit JARVIS.
   </div>
 
 </div>
