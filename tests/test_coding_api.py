@@ -10,6 +10,7 @@ carries a secret or a raw exception.
 import json
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -158,9 +159,106 @@ def test_status_is_disabled_until_a_project_exists(client, project):
     assert client.get("/coding/status").json()["enabled"] is True
 
 
+
+class _FinishCodingProvider:
+    def stream(self, messages, system_prompt, cancel=None):
+        yield json.dumps({
+            "thinking": "The setup path is healthy.",
+            "proposals": [{
+                "action": "finish_task",
+                "summary": "Started and finished without changing files.",
+                "unresolved": [],
+            }],
+        })
+
+
+def _use_ready_coding_provider(monkeypatch):
+    from app.coding import loop, service
+
+    choice = loop.ProviderChoice(
+        "scripted", "Scripted", "scripted-model",
+        is_cloud=False, ready=True,
+    )
+    monkeypatch.setattr(
+        service.loop,
+        "resolve_provider",
+        lambda: (_FinishCodingProvider(), choice),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Planning
 # ---------------------------------------------------------------------------
+
+def test_a_planned_task_can_start_successfully_through_the_http_boundary(
+    client, project, monkeypatch,
+):
+    from app.coding import tasks
+
+    _use_ready_coding_provider(monkeypatch)
+    added = client.post(
+        "/coding/projects",
+        json={"path": str(project), "name": "demo"},
+        headers=token_headers(client),
+    ).json()["project"]
+    plan = client.post(
+        "/coding/tasks/plan",
+        json={"project_id": added["id"], "request": "inspect and finish"},
+        headers=token_headers(client),
+    ).json()["plan"]
+
+    response = client.post(
+        "/coding/tasks/start",
+        json={"task_id": plan["task_id"]},
+        headers=token_headers(client),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["started"] is True
+
+    deadline = time.monotonic() + 5.0
+    record = tasks.get(plan["task_id"])
+    while record is not None and record.state == tasks.TaskState.RUNNING.value:
+        assert time.monotonic() < deadline, "the scripted task did not finish"
+        time.sleep(0.02)
+        record = tasks.get(plan["task_id"])
+    assert record is not None
+    assert record.state == tasks.TaskState.COMPLETED.value
+
+
+def test_a_setup_failure_removes_the_worktree_and_branch_it_just_created(
+    client, project, monkeypatch,
+):
+    from app.coding import service
+
+    _use_ready_coding_provider(monkeypatch)
+    added = client.post(
+        "/coding/projects",
+        json={"path": str(project), "name": "demo"},
+        headers=token_headers(client),
+    ).json()["project"]
+    plan = client.post(
+        "/coding/tasks/plan",
+        json={"project_id": added["id"], "request": "fail during setup"},
+        headers=token_headers(client),
+    ).json()["plan"]
+    isolation = plan["isolation"]
+
+    def fail_opening_message(*args, **kwargs):
+        raise RuntimeError("injected setup failure")
+
+    monkeypatch.setattr(service, "_opening_message", fail_opening_message)
+    response = client.post(
+        "/coding/tasks/start",
+        json={"task_id": plan["task_id"]},
+        headers=token_headers(client),
+    )
+
+    assert response.status_code == 409
+    assert not Path(isolation["worktree_path"]).exists()
+    branch_ref = f"refs/heads/{isolation['branch_name']}"
+    assert fx.git(project, "show-ref", "--verify", branch_ref).returncode != 0
+
 
 def test_the_plan_endpoint_runs_nothing_and_changes_nothing(client, project):
     added = client.post("/coding/projects", json={"path": str(project), "name": "demo"},

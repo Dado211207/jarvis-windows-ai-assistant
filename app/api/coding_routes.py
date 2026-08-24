@@ -442,6 +442,8 @@ async def project_diff(project_id: str, staged: bool = False) -> dict:
         for changed in record.files_changed:
             if changed.get("path"):
                 jarvis_paths.add(str(changed["path"]))
+            if changed.get("kind") == "rename" and changed.get("destination"):
+                jarvis_paths.add(str(changed["destination"]))
 
     return {
         "diff": gitsafe.diff(root, staged=staged),
@@ -538,7 +540,8 @@ async def plan_coding_task(body: StartTaskRequest) -> dict:
         "operations_requiring_approval": [
             "Installing, updating or removing any package",
             "Deleting any file",
-            "Any command not declared by this project",
+            "Every test, lint, format, typecheck, build or dev script declared by this project",
+            "Any other development command",
             "Any command that reaches the network",
             "Creating a Git commit",
         ],
@@ -816,7 +819,13 @@ async def commit_task_changes(body: CommitRequest) -> dict:
         except WorkspaceViolation as exc:
             raise HTTPException(status_code=404, detail=exc.reason) from None
 
-    paths = [str(f.get("path")) for f in record.files_changed if f.get("path")]
+    paths = []
+    for change in record.files_changed:
+        if change.get("path"):
+            paths.append(str(change["path"]))
+        if change.get("kind") == "rename" and change.get("destination"):
+            paths.append(str(change["destination"]))
+    paths = sorted(set(paths))
     if not paths:
         raise HTTPException(status_code=400, detail="This task changed no files.")
 
@@ -854,10 +863,9 @@ async def undo_task_changes(body: UndoRequest) -> dict:
         except WorkspaceViolation as exc:
             raise HTTPException(status_code=404, detail=exc.reason) from None
 
-    paths = [str(f["path"]) for f in record.files_changed if f.get("path")]
-    expected = {str(f["path"]): f.get("after_sha256") for f in record.files_changed
-                if f.get("path")}
-    results = gitsafe.undo_task_edits(root, paths, expected)
+    results = gitsafe.undo_task_edits(
+        root, record.id, list(record.files_changed)
+    )
     reverted = [r for r in results if r.get("reverted")]
     skipped = [r for r in results if not r.get("reverted")]
     tasks.append_step(record, "note",

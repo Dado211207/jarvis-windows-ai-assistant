@@ -10,12 +10,14 @@ proves nothing about a code path that calls `git checkout --force`
 instead.
 """
 
+import hashlib
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from app.coding import gitsafe
+from app.coding import gitsafe, undo
 from tests import coding_fixtures as fx
 
 
@@ -223,38 +225,98 @@ def test_forbidden_verbs_are_declared_and_include_the_dangerous_ones():
     assert {"reset", "clean", "push", "filter-branch"} <= set(gitsafe.FORBIDDEN_VERBS)
 
 
-def test_undo_only_touches_files_whose_hash_still_matches(tmp_path):
-    """A file the user edited after JARVIS wrote it must be left alone."""
+@pytest.fixture
+def undo_store(tmp_path, monkeypatch):
+    location = tmp_path / "undo-store"
+    monkeypatch.setattr(undo, "_undo_root", lambda: location)
+    return undo
+
+
+def _sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def test_undo_restores_an_updated_file_byte_for_byte(tmp_path, undo_store):
     root = fx.static_site(tmp_path / "project", with_defect=False)
-    fx.init_repo(root)
+    original = (root / "index.html").read_bytes()
+    backup = undo_store.store_bytes("task-update", original)
+    changed = b"<h1>JARVIS changed this</h1>\r\n"
+    fx.write(root, "index.html", changed)
 
-    import hashlib
+    results = gitsafe.undo_task_edits(root, "task-update", [{
+        "path": "index.html", "destination": "", "kind": "update",
+        "before_sha256": _sha(original), "after_sha256": _sha(changed),
+        "undo_backup": backup,
+    }])
 
-    # Written through fx.write, which writes exact bytes. Python's text
-    # mode would translate "\n" to "\r\n" on Windows, so a hash computed
-    # over the intended string would not match the file — the test would
-    # fail for a reason unrelated to what it is testing.
-    jarvis_wrote = "<h1>JARVIS wrote this</h1>\n"
-    fx.write(root, "index.html", jarvis_wrote)
-    recorded = hashlib.sha256(jarvis_wrote.encode("utf-8")).hexdigest()
+    assert results[0]["reverted"] is True
+    assert (root / "index.html").read_bytes() == original
 
-    style_wrote = "/* JARVIS wrote this too */\n"
-    fx.write(root, "style.css", style_wrote)
-    style_hash = hashlib.sha256(style_wrote.encode("utf-8")).hexdigest()
 
-    # Now the user edits one of them.
-    user_text = "<h1>and then the user changed it</h1>\n"
-    fx.write(root, "index.html", user_text)
+def test_undo_removes_a_created_file_only_when_it_is_unchanged(tmp_path, undo_store):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    created = b"created by JARVIS\n"
+    fx.write(root, "new.txt", created)
 
-    results = gitsafe.undo_task_edits(
-        root, ["index.html", "style.css"],
-        {"index.html": recorded, "style.css": style_hash},
-    )
-    by_path = {r["path"]: r for r in results}
-    assert by_path["index.html"]["reverted"] is False, "the user's later edit was discarded"
-    assert (root / "index.html").read_bytes() == user_text.encode("utf-8")
-    assert by_path["style.css"]["reverted"] is True
+    results = gitsafe.undo_task_edits(root, "task-create", [{
+        "path": "new.txt", "destination": "", "kind": "create",
+        "before_sha256": None, "after_sha256": _sha(created), "undo_backup": "",
+    }])
 
+    assert results[0]["reverted"] is True
+    assert not (root / "new.txt").exists()
+
+
+def test_undo_recreates_a_deleted_file_with_exact_bytes(tmp_path, undo_store):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    original = b"first\r\nsecond\x00third\n"
+    fx.write(root, "delete-me.txt", original)
+    backup = undo_store.store_bytes("task-delete", original)
+    (root / "delete-me.txt").unlink()
+
+    results = gitsafe.undo_task_edits(root, "task-delete", [{
+        "path": "delete-me.txt", "destination": "", "kind": "delete",
+        "before_sha256": _sha(original), "after_sha256": None,
+        "undo_backup": backup,
+    }])
+
+    assert results[0]["reverted"] is True
+    assert (root / "delete-me.txt").read_bytes() == original
+
+
+def test_undo_moves_a_renamed_file_back_to_its_exact_path(tmp_path, undo_store):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    original = (root / "style.css").read_bytes()
+    backup = undo_store.store_bytes("task-rename", original)
+    os.replace(root / "style.css", root / "assets.css")
+
+    results = gitsafe.undo_task_edits(root, "task-rename", [{
+        "path": "style.css", "destination": "assets.css", "kind": "rename",
+        "before_sha256": _sha(original), "after_sha256": _sha(original),
+        "undo_backup": backup,
+    }])
+
+    assert results[0]["reverted"] is True
+    assert (root / "style.css").read_bytes() == original
+    assert not (root / "assets.css").exists()
+
+
+def test_undo_leaves_a_file_changed_after_jarvis_alone(tmp_path, undo_store):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    original = (root / "index.html").read_bytes()
+    backup = undo_store.store_bytes("task-stale", original)
+    jarvis_wrote = b"<h1>JARVIS wrote this</h1>\n"
+    user_wrote = b"<h1>the user changed it afterwards</h1>\n"
+    fx.write(root, "index.html", user_wrote)
+
+    results = gitsafe.undo_task_edits(root, "task-stale", [{
+        "path": "index.html", "destination": "", "kind": "update",
+        "before_sha256": _sha(original), "after_sha256": _sha(jarvis_wrote),
+        "undo_backup": backup,
+    }])
+
+    assert results[0]["reverted"] is False
+    assert (root / "index.html").read_bytes() == user_wrote
 
 def test_a_commit_proposal_does_not_commit(tmp_path):
     root = fx.static_site(tmp_path / "project", with_defect=False)

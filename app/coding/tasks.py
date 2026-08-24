@@ -307,6 +307,7 @@ def redacted_report(record: TaskRecord) -> dict:
         "files_changed": [
             {
                 "path": f.get("path"),
+                "destination": f.get("destination"),
                 "kind": f.get("kind"),
                 "lines_added": f.get("lines_added"),
                 "lines_removed": f.get("lines_removed"),

@@ -360,6 +360,7 @@ class IsolationPlan:
     strategy: str                    # "worktree" | "in_place" | "none"
     branch_name: Optional[str] = None
     worktree_path: Optional[str] = None
+    start_sha: Optional[str] = None
     blockers: List[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -369,6 +370,7 @@ class IsolationPlan:
             "strategy": self.strategy,
             "branch_name": self.branch_name,
             "worktree_path": self.worktree_path,
+            "start_sha": self.start_sha,
             "blockers": self.blockers,
         }
 
@@ -418,6 +420,18 @@ def plan_isolation(root: Path, task_id: str) -> IsolationPlan:
             blockers=blockers,
         )
 
+    code, head, _ = _git(root, ["rev-parse", "HEAD"])
+    if code != 0 or not head.strip():
+        return IsolationPlan(
+            possible=False,
+            reason=(
+                "This Git repository has no commit yet, so there is no revision "
+                "from which JARVIS can create an isolated worktree."
+            ),
+            strategy="in_place",
+            blockers=["no_initial_commit"],
+        )
+
     branch = f"jarvis/task-{task_id[:8]}"
     worktree = root.parent / f".jarvis-worktrees/{root.name}-{task_id[:8]}"
     return IsolationPlan(
@@ -430,6 +444,7 @@ def plan_isolation(root: Path, task_id: str) -> IsolationPlan:
         strategy="worktree",
         branch_name=branch,
         worktree_path=str(worktree),
+        start_sha=head.strip(),
     )
 
 
@@ -442,7 +457,7 @@ def create_worktree(root: Path, plan: IsolationPlan) -> Tuple[bool, str]:
     """
     if not plan.possible or plan.strategy != "worktree":
         return False, "No worktree was planned."
-    if not plan.branch_name or not plan.worktree_path:
+    if not plan.branch_name or not plan.worktree_path or not plan.start_sha:
         return False, "The isolation plan is incomplete."
 
     destination = Path(plan.worktree_path)
@@ -451,7 +466,9 @@ def create_worktree(root: Path, plan: IsolationPlan) -> Tuple[bool, str]:
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     code, _, err = _git(
-        root, ["worktree", "add", "-b", plan.branch_name, str(destination), "HEAD"], timeout=60.0
+        root,
+        ["worktree", "add", "-b", plan.branch_name, str(destination), plan.start_sha],
+        timeout=60.0,
     )
     if code != 0:
         return False, f"The worktree could not be created: {err.strip()[:200]}"
@@ -485,6 +502,47 @@ def remove_worktree(root: Path, worktree_path: str, *, force_when_dirty: bool = 
     if code != 0:
         return False, f"The worktree could not be removed: {err.strip()[:200]}"
     return True, "Task worktree removed."
+
+
+def cleanup_failed_isolation(root: Path, plan: IsolationPlan) -> Tuple[bool, str]:
+    """Remove only the untouched worktree and branch this failed start made.
+
+    The branch ref is deleted with its expected old SHA, so a concurrent
+    commit makes cleanup refuse rather than discard it.
+    """
+    if (
+        plan.strategy != "worktree"
+        or not plan.branch_name
+        or not plan.worktree_path
+        or not plan.start_sha
+        or not plan.branch_name.startswith("jarvis/task-")
+    ):
+        return False, "The failed task's isolation record was incomplete; it was kept."
+
+    expected_parent = (root.parent / ".jarvis-worktrees").resolve(strict=False)
+    destination = Path(plan.worktree_path).resolve(strict=False)
+    if destination.parent != expected_parent:
+        return False, "The failed task's worktree path was unexpected; it was kept."
+
+    if destination.exists():
+        removed, message = remove_worktree(root, str(destination), force_when_dirty=False)
+        if not removed:
+            return False, message
+
+    ref = f"refs/heads/{plan.branch_name}"
+    code, current, _ = _git(root, ["rev-parse", "--verify", ref])
+    if code != 0:
+        return True, "Failed-start worktree removed; its branch was already absent."
+    if current.strip() != plan.start_sha:
+        return False, (
+            "The failed task's branch moved after it was created, so JARVIS kept "
+            "it rather than discarding work."
+        )
+
+    code, _, err = _git(root, ["update-ref", "-d", ref, plan.start_sha])
+    if code != 0:
+        return False, f"The worktree was removed but its branch could not be removed: {err.strip()[:200]}"
+    return True, "Failed-start worktree and branch removed."
 
 
 # --------------------------------------------------------------------------
@@ -549,38 +607,13 @@ def commit(root: Path, proposal: CommitProposal, *, approved: bool) -> Tuple[boo
     return True, "Committed locally. Nothing was pushed."
 
 
-def undo_task_edits(root: Path, paths: List[str], expected_hashes: Dict[str, Optional[str]]) -> List[dict]:
-    """Revert files this task changed, and only those.
+def undo_task_edits(root: Path, task_id: str, changes: List[dict]) -> List[dict]:
+    """Restore this task's exact pre-edit bytes and paths, in reverse order.
 
-    Implemented **without** any git command, deliberately. `git checkout
-    -- <path>` would be the obvious tool and is exactly the wrong one: it
-    restores from the index, which may hold the user's own staged work,
-    and this function must never be able to touch that.
-
-    Instead the caller supplies the hash each file had *before* the task
-    edited it, plus the content to restore, and the patch engine writes it
-    back with the same stale-base protection as any other edit. A file
-    whose current hash is not what the task left behind is skipped and
-    reported — somebody changed it after JARVIS did, and their version
-    wins.
+    No Git restore/reset command is used.  Each current path must still
+    match the hash JARVIS recorded after its own operation; otherwise the
+    user's newer version wins and that change is skipped.
     """
-    from app.coding.editing import read_snapshot
-    from app.coding.workspace import resolve
+    from app.coding.undo import restore_task_changes
 
-    outcomes: List[dict] = []
-    for path in paths:
-        try:
-            target = resolve(root, path)
-            snapshot = read_snapshot(target)
-            expected = expected_hashes.get(path)
-            if expected is not None and snapshot.sha256 != expected:
-                outcomes.append({
-                    "path": path,
-                    "reverted": False,
-                    "reason": "changed after JARVIS edited it; left alone",
-                })
-                continue
-            outcomes.append({"path": path, "reverted": True, "reason": ""})
-        except Exception as exc:  # noqa: BLE001
-            outcomes.append({"path": path, "reverted": False, "reason": type(exc).__name__})
-    return outcomes
+    return restore_task_changes(root, task_id, changes)

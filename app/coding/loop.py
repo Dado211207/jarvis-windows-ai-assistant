@@ -389,6 +389,8 @@ class TaskRunner:
             self.context.approved_argvs.append(list(proposal.argv))
         elif action == "delete_file":
             self.context.approved_deletes.append(proposal.path)
+        elif action == "start_preview":
+            self.context.approved_previews.append(proposal.script)
 
         tasks.append_step(self.context.record, "approval",
                           f"You approved: {request.summary}", {}, ok=True)

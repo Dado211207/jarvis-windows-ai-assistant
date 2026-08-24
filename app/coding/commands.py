@@ -19,8 +19,8 @@ it is technically inert.
 
 **Three tiers, and the third is not "ask harder".**
 
-* AUTO — read-only or project-declared, runs once the user has started
-  the task.
+* AUTO — read-only, or a command the user already approved exactly in
+  this task.
 * APPROVAL — real consequences: network, installs, commit, deletion,
   anything unrecognised.
 * BLOCKED — never, in this pass, at any approval level. A user cannot
@@ -212,9 +212,9 @@ def classify(
     """The verdict for one proposed command.
 
     `declared_commands` is what the project itself declares (from
-    `stacks.project_commands`). A command that matches one of those is
-    AUTO — the project's own test script is the project's business.
-    Anything else is APPROVAL at best.
+    `stacks.project_commands`). A declaration is untrusted repository
+    content, not permission: every project script requires an explicit
+    user approval before its first execution in this task.
     """
     if not argv or not isinstance(argv, (list, tuple)) or not str(argv[0]).strip():
         return Verdict(CommandTier.BLOCKED, "An empty command cannot be run.", RiskLevel.BLOCKED)
@@ -265,10 +265,9 @@ def classify(
         )
 
     # A project-declared command is checked BEFORE the package-manager
-    # rules, because `npm run test` *is* how a project declares its test
-    # command and treating it as a generic package-manager invocation
-    # would put an approval prompt in front of the most ordinary action
-    # in the entire feature.
+    # rules so its approval names the exact intent, source and script body.
+    # The declaration is evidence about what would run, never permission
+    # to run it.
     #
     # But `package.json` is untrusted project content (Zone 3), so the
     # script's *body* is inspected too: a project whose "test" script is
@@ -279,8 +278,11 @@ def classify(
     for intent, entry in (declared_commands or {}).items():
         if list(entry.get("argv") or []) != list(argv):
             continue
+        approved_exact = any(
+            list(approved) == list(argv) for approved in (approved_argvs or [])
+        )
         body = str(entry.get("declared") or "")
-        if not body.strip():
+        if not body.strip() and not approved_exact:
             # No body to inspect. That is not the same as an inspected
             # body that turned out to be fine, and treating it as such
             # would make an entry with a missing field the way past this
@@ -294,7 +296,7 @@ def classify(
                 disclosure={"intent": intent, "declared_script": "", "unreadable": True},
             )
         suspicious = _suspicious_script_body(body)
-        if suspicious is not None:
+        if suspicious is not None and not approved_exact:
             return Verdict(
                 CommandTier.APPROVAL,
                 f"This project's '{intent}' script runs '{suspicious}', which JARVIS "
@@ -306,10 +308,24 @@ def classify(
                     "intent": intent,
                 },
             )
+        if approved_exact:
+            return Verdict(
+                CommandTier.AUTO,
+                "You approved this exact project script earlier in this task.",
+                RiskLevel.REVERSIBLE,
+            )
         return Verdict(
-            CommandTier.AUTO,
-            f"This is the project's own '{intent}' command ({entry.get('source', 'declared')}).",
-            RiskLevel.REVERSIBLE,
+            CommandTier.APPROVAL,
+            f"This is the project's declared '{intent}' command, but repository "
+            "configuration is not permission to execute code. Review it before running.",
+            RiskLevel.SENSITIVE,
+            disclosure={
+                "argv": list(argv),
+                "intent": intent,
+                "project_declared": True,
+                "source": str(entry.get("source") or ""),
+                "declared_script": body[:400],
+            },
         )
 
     for approved in (approved_argvs or []):
@@ -555,16 +571,17 @@ def describe_matrix() -> List[dict]:
             "label": "Automatic",
             "examples": [
                 "git status / diff / log / branch",
-                "the project's own test, lint, format, typecheck and build scripts",
+                "an exact command already approved in this task",
                 "tool --version",
                 "npm ls / outdated",
             ],
-            "why": "Read-only, or a command the project itself declares.",
+            "why": "Read-only, or an exact command already approved by the user.",
         },
         {
             "tier": "approval",
             "label": "Approval required",
             "examples": [
+                "every project-declared test, lint, format, typecheck, build or dev script",
                 "npm / pnpm / yarn / pip install, add, update, remove",
                 "npx and anything that can download code",
                 "git add / commit / config change / stash",

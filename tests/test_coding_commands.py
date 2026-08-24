@@ -159,8 +159,8 @@ def test_npx_is_never_automatic():
     ["npm", "run", "build"],
     ["npm", "run", "test"],
 ])
-def test_a_script_the_project_declares_runs_without_asking(argv):
-    assert tier(argv, declared_commands=DECLARED) is CommandTier.AUTO
+def test_a_script_the_project_declares_requires_explicit_approval(argv):
+    assert tier(argv, declared_commands=DECLARED) is CommandTier.APPROVAL
 
 
 def test_a_script_the_project_does_not_declare_asks_first():
@@ -180,11 +180,28 @@ def test_a_declared_script_whose_body_is_dangerous_still_asks():
     assert "curl" in verdict.reason.lower() or "script" in verdict.reason.lower()
 
 
-def test_an_ordinary_declared_script_body_stays_automatic():
-    """The check above must not be so broad that `tsc && vite build`
-    trips it — that would make every real project need approval for its
-    own build."""
-    assert tier(["npm", "run", "build"], declared_commands=DECLARED) is CommandTier.AUTO
+def test_an_ordinary_declared_script_runs_only_after_exact_approval():
+    """A package.json declaration is evidence, not permission."""
+    argv = ["npm", "run", "build"]
+    assert tier(argv, declared_commands=DECLARED) is CommandTier.APPROVAL
+    assert tier(
+        argv, declared_commands=DECLARED, approved_argvs=[argv]
+    ) is CommandTier.AUTO
+
+
+
+def test_an_approved_declared_script_does_not_approve_a_neighbour():
+    approved = [["npm", "run", "test"]]
+    assert tier(
+        ["npm", "run", "test"],
+        declared_commands=DECLARED,
+        approved_argvs=approved,
+    ) is CommandTier.AUTO
+    assert tier(
+        ["npm", "run", "build"],
+        declared_commands=DECLARED,
+        approved_argvs=approved,
+    ) is CommandTier.APPROVAL
 
 
 # ---------------------------------------------------------------------------

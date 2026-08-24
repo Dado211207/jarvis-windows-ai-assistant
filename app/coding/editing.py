@@ -270,6 +270,11 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             pass
 
 
+def atomic_write_bytes(target: ResolvedPath, payload: bytes) -> None:
+    """Restore already-validated exact bytes with the normal atomic writer."""
+    _atomic_write(target.absolute, payload)
+
+
 def preview(root: Path, proposal: EditProposal) -> EditResult:
     """Produce the diff for a proposal without touching the disk.
 
@@ -356,6 +361,11 @@ def apply(root: Path, proposal: EditProposal, *, approved_delete: bool = False) 
 
         if proposal.kind is EditKind.RENAME:
             source = resolve(root, proposal.path, must_exist=True)
+            snapshot = read_snapshot(source)
+            if proposal.base_sha256 and snapshot.sha256 != proposal.base_sha256:
+                raise StaleBaseError(
+                    f"'{source.display}' changed since it was read; it was not renamed."
+                )
             if not proposal.destination:
                 return EditResult(proposal, False, "A rename needs a destination.")
             destination = resolve(root, proposal.destination)
@@ -369,6 +379,8 @@ def apply(root: Path, proposal: EditProposal, *, approved_delete: bool = False) 
             return EditResult(
                 proposal, True,
                 f"Renamed '{source.display}' to '{destination.display}'.",
+                before_sha256=snapshot.sha256,
+                after_sha256=snapshot.sha256,
             )
 
         target = resolve(root, proposal.path)
