@@ -130,3 +130,39 @@ def test_approved_clipboard_content_is_returned_once_but_never_retained():
     finally:
         with pending_store._lock:
             pending_store._actions.clear()
+
+
+
+def test_failed_approval_payload_is_not_retained_or_exposed():
+    from fastapi.testclient import TestClient
+
+    from app.api.server import app as jarvis_app
+    from app.core.pending_actions import pending_store
+    from tests.conftest import prime_session
+
+    marker = "one-shot-failure-detail-clipboard-marker-8821"
+    credential = "sk-proj-FAKE0000NOTREAL1111EXAMPLE2222pending"
+    action = pending_store.create(
+        command=f"read clipboard with {credential}",
+        tool_name="read_clipboard",
+        action_name="Read clipboard",
+        description="Read clipboard once",
+        risk_level="sensitive",
+        parameters={"clipboard_token": credential},
+    )
+    pending_store.mark_failed(action.id, marker)
+
+    try:
+        retained = repr(pending_store.get(action.id))
+        assert marker not in retained
+        assert credential not in retained
+        with TestClient(jarvis_app, raise_server_exceptions=True) as client:
+            prime_session(client)
+            detail = client.get(f"/actions/{action.id}")
+        assert detail.status_code == 200
+        assert detail.json()["result"] is None
+        assert detail.json()["error"] is None
+        assert marker not in detail.text
+    finally:
+        with pending_store._lock:
+            pending_store._actions.pop(action.id, None)

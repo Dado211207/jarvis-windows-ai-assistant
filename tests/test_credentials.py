@@ -231,3 +231,22 @@ def test_run_isolated_returns_false_on_base_exception():
 
     ok, value = credentials._run_isolated(_boom)
     assert (ok, value) == (False, None)
+
+
+
+def test_keyring_exception_logs_only_the_class_not_its_message(monkeypatch, caplog):
+    import logging
+
+    from app.core import credentials
+
+    marker = "sk-proj-FAKE0000NOTREAL1111EXAMPLE2222backend"
+    class _LeaksItsInput:
+        def set_password(self, service, username, value):
+            raise RuntimeError(f"backend rejected {value}")
+
+    _install_fake_keyring(monkeypatch, _LeaksItsInput())
+    with caplog.at_level(logging.WARNING, logger="jarvis.core.credentials"):
+        assert credentials.set_stored_api_key(marker) is False
+
+    assert marker not in caplog.text
+    assert "RuntimeError" in caplog.text

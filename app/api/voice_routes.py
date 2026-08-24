@@ -7,9 +7,11 @@ JARVIS speaks with, and all of it reads its facts from
 app/voice/status.py so the Voice page, the diagnostics panel and the
 `speak status` command cannot disagree.
 
-Every mutating route is session-token protected, the same as every other
-mutation in this application. Nothing here downloads anything without an
-explicit request naming what it is about to fetch.
+Every route in this integration is session-token protected at the router
+boundary. Several reads expose user-selected voices, pronunciations and
+provider configuration; keeping the dependency on the router also protects
+future provider-specific GETs by default. Nothing here downloads anything
+without an explicit request naming what it is about to fetch.
 """
 
 from typing import List, Optional
@@ -24,7 +26,7 @@ from app.voice.kokoro import assets, install
 
 logger = get_logger("api.voice")
 
-router = APIRouter(tags=["voice"])
+router = APIRouter(tags=["voice"], dependencies=[Depends(require_session_token)])
 
 
 # ---------------------------------------------------------------------------

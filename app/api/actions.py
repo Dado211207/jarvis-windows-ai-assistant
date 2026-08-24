@@ -63,7 +63,7 @@ def _to_preview(action: PendingAction) -> ActionPreview:
         # Tool payloads may contain clipboard text or future sensitive
         # output. They are returned once by confirm, never retained.
         result=None,
-        error=action.error,
+        error=None,
     )
 
 
@@ -240,9 +240,11 @@ def confirm_action(action_id: str) -> ActionResponse:
         logger.info("Action confirmed and executed: %s (id=%s)", action.tool_name, action_id)
         return ActionResponse(
             success=True,
-            message=result.get("message", "Action executed successfully."),
+            message=redact_message(str(result.get("message", "Action executed successfully."))),
             action_id=action_id,
             status="executed",
+            # Sensitive approval data (for example clipboard text) is
+            # intentionally delivered once, only to this confirming call.
             data=result.get("data"),
         )
     else:
@@ -264,7 +266,7 @@ def confirm_action(action_id: str) -> ActionResponse:
         logger.warning("Action confirmed but execution failed: %s (id=%s)", action.tool_name, action_id)
         return ActionResponse(
             success=False,
-            message=result.get("message", "Execution failed."),
+            message=redact_message(str(result.get("message", "Execution failed."))),
             action_id=action_id,
             status="failed",
         )

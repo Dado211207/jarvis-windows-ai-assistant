@@ -35,6 +35,9 @@ import pytest
 
 SECRET = "sk-ant-api03-FAKE0000NOTREAL1111EXAMPLE2222abcdefghijklmnopqrstuvwxyz3333"
 GITHUB = "ghp_FAKE0000NOTREAL1111EXAMPLE2222abcdefgh"
+OPENAI_PROJECT = "sk-proj-FAKE0000NOTREAL1111EXAMPLE2222abcdefgh"
+GITLAB = "glpat-FAKE0000NOTREAL1111EXAMPLE2222"
+PYPI = "pypi-FAKE0000NOTREAL1111EXAMPLE2222abcdefgh"
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +262,9 @@ def test_a_format_string_is_never_rewritten(log_capture):
         "Could not remove the stored API key: %s", OSError("boom"),
     )
 
-    assert "Could not remove the stored API key: boom" in log_capture.read()
+    body = log_capture.read()
+    assert "Could not remove the stored API key: OSError" in body
+    assert "boom" not in body
 
 
 def test_ordinary_log_lines_are_untouched(log_capture):
@@ -410,3 +415,133 @@ def test_logs_api_returns_only_centrally_redacted_values(isolated_db):
     assert SECRET not in response.text
     assert GITHUB not in response.text
     assert "redacted" in response.text.lower()
+
+
+
+@pytest.mark.parametrize("value", [OPENAI_PROJECT, GITLAB, PYPI])
+def test_modern_credential_shapes_are_redacted_without_broad_false_positives(value):
+    from app.core.redaction import redact_message
+
+    assert value not in redact_message(f"provider returned {value}")
+    assert "redacted" in redact_message(f"provider returned {value}").lower()
+    assert redact_message("review the sk-proj migration plan") == "review the sk-proj migration plan"
+
+
+def test_lifecycle_database_methods_redact_even_when_called_directly(isolated_db):
+    from datetime import datetime, timezone
+
+    from app.core.models import ActionLifecycleRecord, ActionLifecycleStatus
+    from db.database import get_db
+
+    now = datetime.now(timezone.utc)
+    record = ActionLifecycleRecord(
+        id="central-redaction-test",
+        tool_name="test_tool",
+        status=ActionLifecycleStatus.PROPOSED,
+        input_summary={"content": f"use {OPENAI_PROJECT}"},
+        policy_reason=f"rejected {GITLAB}",
+        created_at=now,
+        updated_at=now,
+    )
+    database = get_db()
+    database.create_action_lifecycle_record(record)
+    database.update_action_lifecycle_record(
+        record.id,
+        status=ActionLifecycleStatus.FAILED,
+        result_summary=f"provider returned {PYPI}",
+    )
+
+    conn = sqlite3.connect(isolated_db)
+    try:
+        row = conn.execute(
+            "SELECT input_summary, policy_reason, result_summary "
+            "FROM action_lifecycle WHERE id = ?",
+            (record.id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    joined = " ".join(value or "" for value in row)
+    for secret in (OPENAI_PROJECT, GITLAB, PYPI):
+        assert secret not in joined
+        assert secret.encode() not in isolated_db.read_bytes()
+    assert "redacted" in joined.lower()
+
+
+def test_action_history_api_cannot_reexpose_centrally_redacted_lifecycle_data(isolated_db):
+    from datetime import datetime, timezone
+
+    from fastapi.testclient import TestClient
+
+    from app.api.server import app as jarvis_app
+    from app.core.models import ActionLifecycleRecord, ActionLifecycleStatus
+    from db.database import get_db
+    from tests.conftest import prime_session
+
+    now = datetime.now(timezone.utc)
+    get_db().create_action_lifecycle_record(ActionLifecycleRecord(
+        id="history-redaction-test",
+        tool_name="test_tool",
+        status=ActionLifecycleStatus.PROPOSED,
+        input_summary={"content": OPENAI_PROJECT},
+        result_summary=GITLAB,
+        created_at=now,
+        updated_at=now,
+    ))
+
+    with TestClient(jarvis_app, raise_server_exceptions=True) as client:
+        prime_session(client)
+        response = client.get("/actions/history")
+
+    assert response.status_code == 200
+    assert OPENAI_PROJECT not in response.text
+    assert GITLAB not in response.text
+    assert "redacted" in response.text.lower()
+
+
+
+def test_traceback_logging_keeps_only_the_exception_class(log_capture):
+    from app.logging_config import get_logger
+
+    marker = "sk-proj-FAKE0000NOTREAL1111EXAMPLE2222traceback"
+    try:
+        raise RuntimeError(f"provider rejected {marker}")
+    except RuntimeError:
+        get_logger("test.redaction").exception("Provider operation failed.")
+
+    body = log_capture.read()
+    assert marker not in body
+    assert "RuntimeError" in body
+    assert "provider rejected" not in body
+
+
+
+def test_exception_used_as_the_log_message_is_reduced_to_its_class(log_capture):
+    from app.logging_config import get_logger
+
+    marker = "sk-proj-FAKE0000NOTREAL1111EXAMPLE2222message"
+    get_logger("test.redaction").warning(RuntimeError(f"backend rejected {marker}"))
+
+    body = log_capture.read()
+    assert marker not in body
+    assert "RuntimeError" in body
+    assert "backend rejected" not in body
+
+
+
+def test_redaction_depth_limit_collapses_unvisited_containers():
+    from app.core.redaction import redact_params
+
+    nested = {"level": {"level": {"level": {"level": {"secret": OPENAI_PROJECT}}}}}
+    output = redact_params({"payload": nested})
+    serialised = json.dumps(output)
+    assert OPENAI_PROJECT not in serialised
+    assert "redacted" in serialised.lower()
+
+
+def test_credential_shaped_dictionary_keys_are_redacted_too():
+    from app.core.redaction import redact_params
+
+    serialised = json.dumps(redact_params({OPENAI_PROJECT: "value"}))
+    assert OPENAI_PROJECT not in serialised
+    assert "redacted" in serialised.lower()

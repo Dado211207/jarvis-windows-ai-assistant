@@ -2,7 +2,7 @@
 
 What is checked here is not that the endpoints work — the modules under
 them are tested directly. It is the things only visible at the boundary:
-that mutations need the session token, that a refusal explains itself,
+that every browser-facing read and mutation needs the session token, that a refusal explains itself,
 that removing a project deletes nothing, and that no response ever
 carries a secret or a raw exception.
 """
@@ -27,10 +27,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
 
     from app.api.server import create_app
+    from tests.conftest import prime_session
 
-    test_client = TestClient(create_app())
-    test_client.get("/health")          # sets the session cookie
-    return test_client
+    return prime_session(TestClient(create_app()))
 
 
 def token_headers(client) -> dict:
@@ -73,7 +72,8 @@ MUTATING = [
 @pytest.mark.parametrize("method,path,body", MUTATING)
 def test_every_mutating_endpoint_refuses_without_the_session_token(client, method, path, body):
     call = getattr(client, method)
-    response = call(path, json=body) if body is not None else call(path)
+    headers = {"X-JARVIS-Session-Token": ""}
+    response = call(path, json=body, headers=headers) if body is not None else call(path, headers=headers)
     assert response.status_code in (401, 403), (
         f"{method.upper()} {path} accepted a request with no session token "
         f"({response.status_code})"
@@ -83,8 +83,9 @@ def test_every_mutating_endpoint_refuses_without_the_session_token(client, metho
 @pytest.mark.parametrize("path", [
     "/coding/status", "/coding/projects", "/coding/templates", "/coding/browser-check",
 ])
-def test_read_endpoints_work_without_a_token(client, path):
-    assert client.get(path).status_code == 200
+def test_read_endpoints_refuse_without_a_token(client, path):
+    response = client.get(path, headers={"X-JARVIS-Session-Token": ""})
+    assert response.status_code in (401, 403)
 
 
 def test_a_wrong_token_is_refused(client):

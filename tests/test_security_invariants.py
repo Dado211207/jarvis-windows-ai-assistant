@@ -179,28 +179,58 @@ def test_the_desktop_secret_is_never_sent_to_a_browser():
         os.environ.pop(SESSION_SECRET_ENV, None)
 
 
-def test_read_only_endpoints_do_not_demand_a_token_unnecessarily():
-    """The other half of the same judgement: a GET that mutates nothing
-    should not require a token, or the requirement stops meaning
-    anything. Stated as an inventory so a GET that starts mutating has to
-    be argued for here."""
-    #: GETs that do require a token, each because it returns something
-    #: about the person rather than about the product. Adding one means
-    #: adding it here, which is the point.
-    justified = {
-        # Returns the folder a person picked in the native dialog — an
-        # absolute Windows path, which contains their account name. The
-        # request id is unguessable, but "hard to guess" is not a gate.
-        "/coding/folder-dialog/{request_id}",
-    }
-    token_gated_gets = sorted(
-        route.path for route in _api_routes()
-        if "GET" in route.methods and _requires_session_token(route)
-    )
+_SENSITIVE_PERSONAL_GETS = {
+    "/conversation",
+    "/memory",
+    "/memory/search",
+    "/logs",
+    "/diagnostics",
+    "/voice/diagnostics",
+    "/privacy/data",
+    "/actions/pending",
+    "/actions/history",
+    "/actions/{action_id}",
+}
 
-    assert set(token_gated_gets) <= justified, (
-        f"a GET started requiring a token without being argued for: "
-        f"{sorted(set(token_gated_gets) - justified)}")
+
+def test_sensitive_personal_gets_require_the_session_token():
+    """Known user-data reads stay behind the dashboard session."""
+    routes = {route.path: route for route in _api_routes() if "GET" in route.methods}
+    missing = sorted(path for path in _SENSITIVE_PERSONAL_GETS if path not in routes)
+    assert missing == [], f"sensitive GET inventory points at missing routes: {missing}"
+
+    unprotected = sorted(
+        path for path in _SENSITIVE_PERSONAL_GETS
+        if not _requires_session_token(routes[path])
+    )
+    assert unprotected == [], f"unprotected sensitive GET endpoint(s): {unprotected}"
+
+
+def test_optional_voice_and_coding_integration_gets_are_protected_when_present():
+    """Integration branches can add routes without editing this inventory.
+
+    The endpoint module identifies ownership, so ordinary /voice/status
+    bootstrap metadata in app.api.routes is not accidentally swept in.
+    If either integration is absent on a merge target, there is nothing to
+    assert; as soon as one of its GETs exists, the dependency is mandatory.
+    """
+    integration_modules = {"app.api.voice_routes", "app.api.coding_routes"}
+    candidates = [
+        route for route in _api_routes()
+        if "GET" in route.methods
+        and getattr(route.endpoint, "__module__", "") in integration_modules
+    ]
+    unprotected = sorted(route.path for route in candidates if not _requires_session_token(route))
+    assert unprotected == [], f"unprotected integration GET endpoint(s): {unprotected}"
+
+
+def test_health_and_onboarding_bootstrap_remain_public():
+    routes = {route.path: route for route in _api_routes() if "GET" in route.methods}
+    for path in ("/health", "/onboarding/readiness"):
+        assert path in routes
+        assert not _requires_session_token(routes[path]), (
+            f"{path} must issue/bootstrap the dashboard session before JS can echo it"
+        )
 
 
 # ---------------------------------------------------------------------------

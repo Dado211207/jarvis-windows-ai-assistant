@@ -64,7 +64,10 @@ def _run_isolated(func: Callable, *args: Any) -> Tuple[bool, Any]:
         future = executor.submit(func, *args)
         return True, future.result(timeout=TIMEOUT_SECONDS)
     except BaseException as exc:
-        logger.warning("OS credential store call failed: %s", type(exc).__name__, exc_info=True)
+        # A backend exception may quote the value it was asked to store.
+        # Log only its class: neither str(exc) nor a traceback belongs in a
+        # file whose contract says credential values never reach logs.
+        logger.warning("OS credential store call failed: %s", type(exc).__name__)
         return False, None
     finally:
         executor.shutdown(wait=False)
