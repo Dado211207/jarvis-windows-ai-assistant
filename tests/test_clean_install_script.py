@@ -405,3 +405,71 @@ def test_no_secrets_referenced():
     content = _read()
     assert "ANTHROPIC_API_KEY" not in content
     assert "sk-" not in content
+
+
+# ---------------------------------------------------------------------------
+# The Coding Workspace acceptance phase
+# ---------------------------------------------------------------------------
+
+def _acceptance_source() -> str:
+    return (Path(__file__).resolve().parents[1]
+            / "scripts" / "installed_coding_acceptance.py").read_text(encoding="utf-8")
+
+
+def test_the_acceptance_phase_derives_the_base_url_rather_than_hardcoding_one():
+    """A hardcoded `http://127.0.0.1:8000` sent every request in this phase
+    to a port nothing was listening on, while the installed application was
+    perfectly healthy on the port `app.config.settings` names.
+
+    The failure read as "the app died immediately after reporting ready",
+    which is a much more alarming thing than it was — and cost two Windows
+    installer runs to diagnose. There is one source for the address, and
+    this is the test that keeps it that way.
+    """
+    import ast
+
+    source = _acceptance_source()
+    tree = ast.parse(source)
+    base = [
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "BASE_URL" for t in node.targets)
+    ]
+    assert len(base) == 1, "BASE_URL must be assigned exactly once"
+    rendered = ast.unparse(base[0].value)
+    assert "settings.jarvis_host" in rendered, rendered
+    assert "settings.jarvis_port" in rendered, rendered
+
+    # Structural, not textual: a grep for the offending port matched the
+    # comment explaining why the port must not be written here — the same
+    # self-matching-grep class this repository has fixed twice before. Only
+    # actual string literals are inspected.
+    import re
+
+    literals = [
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    hardcoded = [text for text in literals
+                 if re.search(r"https?://[^\s\"]*:\d+", text)]
+    assert hardcoded == [], f"a URL with a hardcoded port appears in {hardcoded}"
+
+
+def test_the_acceptance_phase_asserts_on_real_counts_not_a_bare_total():
+    """A check that found the two <h1>s and nothing else would satisfy
+    `problem_count > 0` while missing the console error, the broken image
+    and the overflow entirely."""
+    source = _acceptance_source()
+    for expected in ('"http_status": 200', '"h1_count": 2',
+                     '"console_errors": 1', '"broken_images": 1'):
+        assert expected in source, f"the defective-fixture assertion lost {expected}"
+    assert "problem_count > 0" not in source
+
+
+def test_the_acceptance_phase_fails_when_no_browser_ran():
+    """It must fail if the engine is unavailable, if the check was skipped,
+    or if Playwright turns out to be inside the packaged application."""
+    source = _acceptance_source()
+    assert "engine_unavailable" in source
+    assert 'findings.get("opened")' in source
+    assert "playwright" in source.lower()

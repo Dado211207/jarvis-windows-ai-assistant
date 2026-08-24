@@ -45,7 +45,16 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-BASE_URL = "http://127.0.0.1:8000"
+sys.path.insert(0, str(REPO_ROOT))
+
+# Derived, never duplicated. A hardcoded `http://127.0.0.1:8000` here sent
+# every request in this phase to a port nothing was listening on, while
+# the app itself was healthy on 5555 — the failure read as "the installed
+# application died immediately after reporting ready", which is a much
+# more alarming thing than it was.
+from app.config import settings  # noqa: E402
+
+BASE_URL = f"http://{settings.jarvis_host}:{settings.jarvis_port}"
 
 #: A real 1x1 PNG, so an image that is *supposed* to load does.
 _TINY_PNG = base64.b64decode(
