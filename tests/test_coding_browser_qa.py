@@ -642,9 +642,21 @@ def test_the_on_device_model_component_is_disabled():
 
     for required in ("OptimizationGuideOnDeviceModel", "OptimizationGuideModelDownloading"):
         assert required in disabled, (
-            f"{required} is no longer disabled; the browser will crash on any "
-            f"machine where that component is enabled. Disabled: {disabled}"
+            f"{required} is no longer disabled, so a machine-learning model "
+            f"could be downloaded. Disabled: {disabled}"
         )
     # The neighbours that make the same promise.
     assert "--disable-component-update" in argv
     assert "--disable-background-networking" in argv
+
+    # And the one that must NOT be there.
+    assert "OptimizationHints" not in disabled, (
+        "OptimizationHints crashes Chromium. Disabling it leaves the "
+        "optimisation guide half initialised; its on-device model component "
+        "update then fails and the failure path dereferences null. Bisected "
+        "against Chrome 151: the flag alone crashes, removing it alone fixes "
+        "it, and all six remaining entries are innocent. It is why ci.yml was "
+        "red on every commit from 5f4cdd4 onward. Nothing is lost by leaving "
+        "it enabled — host-resolver-rules makes every host unresolvable "
+        "anyway."
+    )

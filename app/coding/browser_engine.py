@@ -163,8 +163,23 @@ def _chromium_for_ci() -> Optional[Engine]:
         try:
             if not root.is_dir():
                 continue
-            for entry in sorted(root.glob("chromium-*"), reverse=True):
-                for relative in ("chrome-linux/chrome", "chrome-linux/headless_shell"):
+            entries = sorted(root.glob("chromium*"), reverse=True)
+            # Layout first, version second. `chrome-linux64` is what
+            # current Playwright builds unpack into, and only looking for
+            # `chrome-linux` meant a freshly installed Chromium was
+            # invisible and discovery fell through to whatever
+            # `google-chrome` the machine happened to have — which is not
+            # the browser anybody chose.
+            #
+            # The full browser is preferred over the headless shell even
+            # though both pass, because Windows drives Edge, a full
+            # browser, and the two platforms should be running the same
+            # kind of thing.
+            for relative in ("chrome-linux/chrome",
+                             "chrome-linux64/chrome",
+                             "chrome-linux/headless_shell",
+                             "chrome-headless-shell-linux64/chrome-headless-shell"):
+                for entry in entries:
                     candidate = entry / relative
                     if candidate.is_file():
                         return Engine("chromium", "Chromium", str(candidate))
@@ -264,29 +279,32 @@ def launch_argv(engine: Engine, *, debug_port: int, profile_dir: str,
         "--no-service-autorun",
         "--password-store=basic",
         "--use-mock-keychain",
-        # The last two are not a preference — without them the browser
-        # crashes.
+        # `OptimizationHints` is deliberately NOT in this list, and that
+        # is load-bearing.
         #
-        # Chromium's optimisation-guide component tries to fetch an
-        # on-device ML model on startup. `--host-resolver-rules` below
-        # makes that impossible by design, and on the Ubuntu CI runners
-        # the failure path dereferences null: ten crashes in one run, each
-        # preceded one line earlier by
+        # Disabling it leaves Chromium's optimisation guide half
+        # initialised: its on-device model component update then fails and
+        # the failure path dereferences null. Ten crashes in one CI run,
+        # each preceded one line earlier by
         #
         #     Failed to update on-device model component with error 5
         #     Received signal 11 SEGV_MAPERR 000000000000
         #
-        # a perfect one-to-one. It reproduced with the runner image's
-        # google-chrome and with Playwright's Chromium, and not with the
-        # older Chromium in this repository's dev container, which is why
-        # every local run passed while CI had been red since 5f4cdd4.
+        # one to one. Bisected against Chrome 151: the flag alone crashes,
+        # removing it alone fixes it, and all six remaining entries are
+        # innocent both alone and together. It had been in this list since
+        # the browser checks were written, which is why ci.yml was red on
+        # every commit from 5f4cdd4 onward while every local run passed —
+        # the container here had an older Chromium without that component.
         #
-        # Disabling it is the opposite of a compromise: an on-device model
-        # is a background download of a machine-learning component, which
-        # is precisely what `--disable-component-update` and
-        # `--disable-background-networking` two lines up already refuse.
-        # Its absence from this list was the gap, not its presence.
-        "--disable-features=Translate,OptimizationHints,MediaRouter,"
+        # Nothing is lost by leaving it enabled. `--host-resolver-rules`
+        # below makes every host except the preview unresolvable, and
+        # `--disable-background-networking` and `--disable-component-update`
+        # are two lines up, so no hint can be fetched regardless. The two
+        # OptimizationGuide entries that remain are the targeted ones: they
+        # stop a machine-learning model being downloaded, which is the part
+        # that actually mattered.
+        "--disable-features=Translate,MediaRouter,"
         "InterestFeedContentSuggestions,CalculateNativeWinOcclusion,"
         "OptimizationGuideOnDeviceModel,OptimizationGuideModelDownloading",
 

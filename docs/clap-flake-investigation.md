@@ -332,3 +332,52 @@ Guessing at `--proxy-server=http://127.0.0.1:0` was the tempting shortcut
 after #156 and would have been wrong: the proxy had nothing to do with
 it, and changing a security flag on a hunch is how a boundary quietly
 stops being one.
+
+
+## Correction: the on-device model was the symptom, not the cause
+
+The section above concluded that `OptimizationGuideOnDeviceModel` and
+`OptimizationGuideModelDownloading` were missing from `--disable-features`
+and added them. **CI #158 proved that wrong** — same message, same ten
+crashes. The reasoning was plausible and the evidence did not support it.
+
+What made the difference was reproducing it locally. This container has
+two Chromium builds, and `_chromium_for_ci()` only globbed
+`chrome-linux/`, so the newer one — which unpacks into `chrome-linux64/`
+— was invisible and the older one was used instead. Pointing discovery at
+Chrome 151 reproduced the crash in fifteen seconds, and a leave-one-out
+sweep over the launch flags took another two minutes:
+
+| | result |
+|---|---|
+| `OptimizationHints` alone | **crash** |
+| each of the other six entries alone | ok |
+| all seven together | **crash** |
+| all seven except `OptimizationHints` | **ok** |
+
+**`OptimizationHints` is the cause.** Disabling it leaves Chromium's
+optimisation guide half initialised; the on-device model component update
+then fails and the failure path dereferences null. The "Failed to update
+on-device model component" line was the symptom of the half-initialised
+state, not an independent fetch that needed disabling.
+
+That flag had been in the list since the browser checks were written,
+which is why `ci.yml` was red from `5f4cdd4` onward while every local run
+passed: the older Chromium in this container has no such component.
+
+Nothing is lost by leaving it enabled. `--host-resolver-rules` makes
+every host except the preview unresolvable, and
+`--disable-background-networking` and `--disable-component-update` are
+two lines above, so no hint can be fetched regardless. The two
+OptimizationGuide entries stay: they stop a machine-learning model being
+downloaded, which is the part that actually mattered, and they are proven
+innocent of the crash.
+
+Verified against both builds: **88 passed** on Chrome 151, **88 passed**
+on Chromium 1194.
+
+The discovery bug is fixed too — `chrome-linux64` and
+`chrome-headless-shell-linux64` are recognised, and the full browser is
+preferred over the headless shell so Linux and Windows drive the same
+kind of thing. Without that, `ci.yml`'s new `playwright install` step was
+installing a browser nothing then used.
