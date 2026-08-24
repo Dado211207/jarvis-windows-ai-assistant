@@ -117,6 +117,13 @@ MAX_STDERR_BYTES = 16384
 #: A profile directory and an executable path both carry the account name.
 _PATHISH = re.compile(r"(?:[A-Za-z]:\\|/)[^\s\"\']{2,}")
 
+#: Lines worth keeping ahead of a raw tail: what signal, what check
+#: failed, what could not be loaded, and the first few stack frames.
+_DIAGNOSTIC = re.compile(
+    r"(Received signal|SIGSEGV|SIGILL|SIGABRT|SEGV_|Check failed|FATAL|"
+    r"error while loading|cannot open|not found|Failed to |denied|"
+    r"^#\d+\s|\bCHECK\b|DCHECK|assert)", re.IGNORECASE)
+
 #: Chromium says these on every healthy Linux CI start.
 _STDERR_NOISE = (
     "Fontconfig", "dbus", "DBus", "GPU process", "gpu_memory",
@@ -186,15 +193,23 @@ class _OwnedBrowser:
         except (OSError, ValueError):
             return ""
         text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
-        lines = []
+        kept, interesting = [], []
         for line in text.splitlines():
             line = _PATHISH.sub("<path>", line).strip()
             # Chromium is chatty about fonts, dbus and GPU probing on any
             # Linux CI machine; those lines are noise on a healthy run.
             if not line or any(noise in line for noise in _STDERR_NOISE):
                 continue
-            lines.append(line[:200])
-        return " | ".join(lines[-4:])
+            line = line[:200]
+            kept.append(line)
+            if _DIAGNOSTIC.search(line):
+                interesting.append(line)
+        # A crash dump ends with a register dump, which says only *that* it
+        # crashed. The signal line and the first symbolised frames say
+        # *where*, and they come first — so a plain tail of the output threw
+        # away the only part worth having.
+        chosen = interesting[:6] if interesting else kept[-4:]
+        return " | ".join(chosen)
 
     def recapture(self) -> None:
         """Chromium starts its renderer and GPU children lazily. One born
