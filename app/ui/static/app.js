@@ -4,10 +4,9 @@ const $ = id => document.getElementById(id);
 
 // v0.2 CSRF/mutation session token (see app/api/session.py). The server
 // sets a non-HttpOnly "jarvis_session" cookie specifically so this page's
-// own JS can read it and echo it back as a header — the classic
-// double-submit-cookie pattern. A foreign page cannot read our cookie to
-// forge a matching header, even if it could otherwise get a request to
-// the API to fire at all.
+// own JS can echo it on protected reads and mutations. The server also
+// rejects non-canonical Host headers before issuing the cookie, closing
+// the DNS-rebinding case where URL same-origin rules alone are insufficient.
 function getSessionCookie() {
   const match = document.cookie.match(/(?:^|;\s*)jarvis_session=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : null;
@@ -27,7 +26,10 @@ async function errorFromResponse(r) {
 
 const API = {
   async get(path) {
-    const r = await fetch(path);
+    const token = getSessionCookie();
+    const r = await fetch(path, {
+      headers: token ? { "X-JARVIS-Session-Token": token } : {},
+    });
     if (!r.ok) throw await errorFromResponse(r);
     return r.json();
   },
