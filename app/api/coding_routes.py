@@ -1,14 +1,11 @@
 """Coding Workspace HTTP surface.
 
-Every mutating endpoint carries `Depends(require_session_token)`, which
-is not a convention here but an enforced one:
-`tests/test_security_invariants.py::test_every_mutating_endpoint_requires_the_session_token`
-walks the assembled application and fails the build for any that does
-not.
-
-Read endpoints are deliberately readable without a token, matching the
-rest of the API — they expose project names, paths relative to the
-project, and state, never file contents or secrets.
+Every browser-facing endpoint is session-token protected. Coding reads
+expose project paths, diffs, task output, screenshots and live preview
+state, so every GET carries the same local-dashboard dependency as ordinary
+mutations. The native folder-dialog callback keeps its separate inherited
+desktop-secret gate. Structural invariants fail if a future Coding or Voice
+integration GET loses authentication.
 """
 
 from __future__ import annotations
@@ -112,7 +109,7 @@ def _safe_failure(exc: Exception, context: str) -> HTTPException:
 # Status and projects
 # --------------------------------------------------------------------------
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(require_session_token)])
 async def coding_status() -> dict:
     """Whether Coding Workspace is usable at all, and why not if it is not.
 
@@ -178,7 +175,7 @@ def _project_payload(project: projects.Project) -> dict:
     return payload
 
 
-@router.get("/projects")
+@router.get("/projects", dependencies=[Depends(require_session_token)])
 async def list_coding_projects() -> dict:
     return {"projects": [_project_payload(p) for p in projects.list_projects()]}
 
@@ -309,7 +306,7 @@ async def create_coding_project(body: CreateProjectRequest) -> dict:
 # endpoint rather than through the page.
 # --------------------------------------------------------------------------
 
-@router.get("/folder-dialog")
+@router.get("/folder-dialog", dependencies=[Depends(require_session_token)])
 async def folder_dialog_availability() -> dict:
     """Whether a native folder dialog can be opened right now.
 
@@ -394,7 +391,7 @@ async def report_folder_dialog(
     return {"request": request.as_dict(include_path=False)}
 
 
-@router.get("/templates")
+@router.get("/templates", dependencies=[Depends(require_session_token)])
 async def list_templates() -> dict:
     from app.coding import templates
     return {"templates": templates.describe_all()}
@@ -404,7 +401,7 @@ async def list_templates() -> dict:
 # Project inspection
 # --------------------------------------------------------------------------
 
-@router.get("/projects/{project_id}/git")
+@router.get("/projects/{project_id}/git", dependencies=[Depends(require_session_token)])
 async def project_git(project_id: str) -> dict:
     try:
         root = projects.resolve_root(project_id)
@@ -422,7 +419,7 @@ async def project_git(project_id: str) -> dict:
     }
 
 
-@router.get("/projects/{project_id}/diff")
+@router.get("/projects/{project_id}/diff", dependencies=[Depends(require_session_token)])
 async def project_diff(project_id: str, staged: bool = False) -> dict:
     """The working-tree diff, labelled by who made it.
 
@@ -457,7 +454,7 @@ async def project_diff(project_id: str, staged: bool = False) -> dict:
 # Tasks
 # --------------------------------------------------------------------------
 
-@router.get("/tasks")
+@router.get("/tasks", dependencies=[Depends(require_session_token)])
 async def list_coding_tasks(project_id: str = "") -> dict:
     return {
         "tasks": [
@@ -472,7 +469,7 @@ async def list_coding_tasks(project_id: str = "") -> dict:
     }
 
 
-@router.get("/tasks/{task_id}")
+@router.get("/tasks/{task_id}", dependencies=[Depends(require_session_token)])
 async def get_coding_task(task_id: str) -> dict:
     record = tasks.get(task_id)
     if record is None:
@@ -480,7 +477,7 @@ async def get_coding_task(task_id: str) -> dict:
     return {"task": record.as_dict()}
 
 
-@router.get("/tasks/{task_id}/report")
+@router.get("/tasks/{task_id}/report", dependencies=[Depends(require_session_token)])
 async def export_coding_task(task_id: str) -> dict:
     record = tasks.get(task_id)
     if record is None:
@@ -700,7 +697,7 @@ async def stop_preview(body: PreviewStartRequest) -> dict:
     return session.stop("stopped from the Preview panel")
 
 
-@router.get("/preview/{project_id}")
+@router.get("/preview/{project_id}", dependencies=[Depends(require_session_token)])
 async def read_preview(project_id: str) -> dict:
     session = _previews.get(project_id)
     if session is None:
@@ -778,7 +775,7 @@ async def decide_coding_approval(body: ApprovalDecisionRequest) -> dict:
         raise _safe_failure(exc, "record a coding approval") from None
 
 
-@router.get("/tasks/{task_id}/live")
+@router.get("/tasks/{task_id}/live", dependencies=[Depends(require_session_token)])
 async def coding_task_live(task_id: str) -> dict:
     """What is happening right now — from the live session, not the record.
 
@@ -875,7 +872,7 @@ async def undo_task_changes(body: UndoRequest) -> dict:
     }
 
 
-@router.get("/screenshots/{name}")
+@router.get("/screenshots/{name}", dependencies=[Depends(require_session_token)])
 async def coding_screenshot(name: str):
     """Serve one browser-check screenshot.
 
@@ -896,7 +893,7 @@ async def coding_screenshot(name: str):
     raise HTTPException(status_code=404, detail="No such screenshot.")
 
 
-@router.get("/toolchain")
+@router.get("/toolchain", dependencies=[Depends(require_session_token)])
 async def coding_toolchain(project_id: str = "") -> dict:
     """What is installed on this machine, and what cannot run without it.
 
@@ -916,7 +913,7 @@ async def coding_toolchain(project_id: str = "") -> dict:
     return toolchain.diagnose(root)
 
 
-@router.get("/browser-check")
+@router.get("/browser-check", dependencies=[Depends(require_session_token)])
 async def browser_check_availability() -> dict:
     """Whether real browser checks can run in this build."""
     from app.coding import browser_qa

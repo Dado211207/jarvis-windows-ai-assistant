@@ -56,6 +56,13 @@ from typing import Optional
 
 _SECRET_PATTERNS = (
     ("an Anthropic API key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{6,}")),
+    # Current OpenAI project/service-account keys contain a named prefix
+    # and URL-safe separators. Keep this separate from the narrower legacy
+    # pattern so ordinary prose such as "sk-proj plan" is not masked.
+    (
+        "an OpenAI API key",
+        re.compile(r"\bsk-(?:proj|svcacct)-[A-Za-z0-9_\-]{16,}"),
+    ),
     ("an OpenAI-style API key", re.compile(r"\bsk-[A-Za-z0-9]{20,}")),
     # ElevenLabs keys are `sk_` followed by a long token. Distinct from
     # OpenAI's `sk-` (underscore, not hyphen), so the two never collide.
@@ -73,6 +80,15 @@ _SECRET_PATTERNS = (
     ("a GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
     ("a GitHub fine-grained token", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}")),
     ("a Netlify token", re.compile(r"\bnfp_[A-Za-z0-9]{20,}")),
+    ("a GitLab token", re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}")),
+    ("a Hugging Face token", re.compile(r"\bhf_[A-Za-z0-9]{20,}")),
+    ("an npm token", re.compile(r"\bnpm_[A-Za-z0-9]{20,}")),
+    ("a PyPI token", re.compile(r"\bpypi-[A-Za-z0-9_\-]{30,}")),
+    ("a Stripe secret key", re.compile(r"\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}")),
+    (
+        "a SendGrid API key",
+        re.compile(r"\bSG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}"),
+    ),
     ("an AWS access key id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("a Google API key", re.compile(r"\bAIza[0-9A-Za-z_\-]{20,}")),
     ("a Slack token", re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}")),
@@ -172,8 +188,8 @@ def refusal_message(label: str) -> str:
     return (
         f"That looks like {label}, so it was not saved. JARVIS never stores "
         "passwords, API keys or tokens in memory, where they would sit in "
-        "plain text. Your Anthropic key belongs in Settings, which puts it "
-        "in the Windows Credential Manager instead."
+        "plain text. API keys belong in the relevant Settings or Voice "
+        "provider control, which puts them in the Windows Credential Manager."
     )
 
 

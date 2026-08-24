@@ -168,8 +168,8 @@ def loopback_host(configured: str) -> str:
         return host
     logger.error(
         "Refusing to bind the JARVIS API to %r — it is not a loopback address. "
-        "Binding to 127.0.0.1 instead. The API is local-only by design and has "
-        "read endpoints that are not token-protected.",
+        "Binding to 127.0.0.1 instead. The API is local-only by design and contains "
+        "session-protected user-data endpoints.",
         host,
     )
     return "127.0.0.1"

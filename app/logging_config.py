@@ -53,19 +53,36 @@ class _RedactingFilter(logging.Filter):
             # With no args, `msg` is the complete message and may well
             # be an f-string somebody built from user input, so it is
             # checked.
-            if isinstance(record.msg, str) and not record.args:
+            if isinstance(record.msg, BaseException):
+                record.msg = type(record.msg).__name__
+                record.args = ()
+            elif isinstance(record.msg, str) and not record.args:
                 record.msg = redact_message(record.msg)
+
+            def safe_arg(value):
+                if isinstance(value, BaseException):
+                    return type(value).__name__
+                return redact_message(value) if isinstance(value, str) else value
+
             if record.args:
                 if isinstance(record.args, dict):
                     record.args = {
-                        key: redact_message(value) if isinstance(value, str) else value
-                        for key, value in record.args.items()
+                        key: safe_arg(value) for key, value in record.args.items()
                     }
                 elif isinstance(record.args, tuple):
-                    record.args = tuple(
-                        redact_message(value) if isinstance(value, str) else value
-                        for value in record.args
-                    )
+                    record.args = tuple(safe_arg(value) for value in record.args)
+
+            if record.exc_info:
+                # Tracebacks include str(exc), which is handler-controlled
+                # text and may quote credentials or request fragments.
+                # Preserve the useful exception class, discard the message
+                # and traceback, and format only already-sanitised args.
+                exc_type = record.exc_info[0]
+                class_name = getattr(exc_type, "__name__", "Exception")
+                record.msg = f"{record.getMessage()} [{class_name}]"
+                record.args = ()
+                record.exc_info = None
+                record.exc_text = None
         except Exception:  # noqa: BLE001 — logging must never fail because of redaction
             pass
         return True

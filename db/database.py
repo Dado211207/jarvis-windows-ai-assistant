@@ -178,12 +178,14 @@ class Database:
         from app.core.redaction import redact_message
 
         safe_command = redact_message(str(command))
+        safe_tool_name = redact_message(str(tool_name))
+        safe_status = redact_message(str(status))
         safe_message = redact_message(str(message))
         conn = self._get_conn()
         cur = conn.execute(
             "INSERT INTO action_logs (command, tool_name, status, message) "
             "VALUES (?, ?, ?, ?)",
-            (safe_command, tool_name, status, safe_message),
+            (safe_command, safe_tool_name, safe_status, safe_message),
         )
         conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
@@ -215,14 +217,19 @@ class Database:
         ]
 
     # --- action lifecycle (v0.2 audit trail) ---
-    # Thin and mechanical like the sections above: no redaction, no policy
-    # decisions, no idempotency fallback logic here. That belongs to
-    # app/core/action_lifecycle.py, which is the only caller of these
-    # methods. A duplicate idempotency_key raises sqlite3.IntegrityError
-    # (enforced by the partial unique index in db/migrations.py) — the
-    # caller decides what to do with that, this layer just reports it.
+    # Policy and idempotency decisions stay in app/core/action_lifecycle.py,
+    # but redaction is repeated at this final SQLite boundary. A future
+    # caller that forgets caller-side sanitisation must still be unable to
+    # persist a credential. A duplicate idempotency_key still raises
+    # sqlite3.IntegrityError for the lifecycle layer to resolve.
 
     def create_action_lifecycle_record(self, record: ActionLifecycleRecord) -> None:
+        from app.core.redaction import redact_message, redact_params
+
+        def safe_text(value):
+            return redact_message(value) if isinstance(value, str) else value
+
+        safe_input_summary = redact_params(record.input_summary or {})
         conn = self._get_conn()
         conn.execute(
             """
@@ -235,22 +242,22 @@ class Database:
             """,
             (
                 record.id,
-                record.correlation_id,
-                record.tool_name,
+                safe_text(record.correlation_id),
+                safe_text(record.tool_name),
                 record.status.value,
-                json.dumps(record.input_summary),
-                record.risk,
-                record.policy_action,
-                record.policy_reason,
+                json.dumps(safe_input_summary),
+                safe_text(record.risk),
+                safe_text(record.policy_action),
+                safe_text(record.policy_reason),
                 record.created_at.isoformat(),
                 record.updated_at.isoformat(),
-                record.approved_by,
-                record.approval_source,
-                record.result_summary,
-                record.verification_result,
-                record.error_category,
+                safe_text(record.approved_by),
+                safe_text(record.approval_source),
+                safe_text(record.result_summary),
+                safe_text(record.verification_result),
+                safe_text(record.error_category),
                 record.duration_ms,
-                record.idempotency_key,
+                safe_text(record.idempotency_key),
             ),
         )
         conn.commit()
@@ -277,12 +284,28 @@ class Database:
         """Update arbitrary columns on an existing record and stamp
         updated_at. Returns the refreshed record, or None if *action_id*
         does not exist. A no-op (no fields) still refreshes updated_at."""
+        from app.core.redaction import redact_message, redact_params
+
+        allowed_fields = {
+            "correlation_id", "tool_name", "status", "input_summary", "risk",
+            "policy_action", "policy_reason", "approved_by", "approval_source",
+            "result_summary", "verification_result", "error_category",
+            "duration_ms", "idempotency_key",
+        }
+        unknown = set(fields) - allowed_fields
+        if unknown:
+            raise ValueError(f"Unknown action lifecycle field(s): {sorted(unknown)!r}")
+
         conn = self._get_conn()
         fields = dict(fields)
         fields["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         values = []
-        for value in fields.values():
+        for column, value in fields.items():
+            if column == "input_summary":
+                value = json.dumps(redact_params(value if isinstance(value, dict) else {}))
+            elif column != "status" and isinstance(value, str):
+                value = redact_message(value)
             values.append(value.value if hasattr(value, "value") else value)
 
         set_clause = ", ".join(f"{column} = ?" for column in fields)

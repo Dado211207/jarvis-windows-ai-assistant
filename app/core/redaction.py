@@ -97,11 +97,18 @@ def redact_value(key: str, value: Any, _depth: int = 0) -> Any:
         return value
 
     if _depth >= _MAX_DEPTH:
+        # Returning an unvisited container here would preserve any secret
+        # nested just beyond the recursion limit. Collapse it instead:
+        # bounded work must also mean bounded leakage.
+        if isinstance(value, (dict, list, tuple)):
+            return _REDACTED
         return value
 
     if isinstance(value, dict):
         return {
-            inner_key: redact_value(str(inner_key), inner_value, _depth + 1)
+            _redact_text(str(inner_key)): redact_value(
+                str(inner_key), inner_value, _depth + 1,
+            )
             for inner_key, inner_value in value.items()
         }
     if isinstance(value, (list, tuple)):
@@ -115,7 +122,10 @@ def redact_params(params: Dict[str, Any]) -> Dict[str, Any]:
     """Return a copy of *params* safe to persist, log, or send to a
     client — sensitive keys masked, credential-shaped values masked, long
     strings truncated."""
-    return {key: redact_value(key, value) for key, value in params.items()}
+    return {
+        _redact_text(str(key)): redact_value(str(key), value)
+        for key, value in params.items()
+    }
 
 
 def redact_message(text: str) -> str:

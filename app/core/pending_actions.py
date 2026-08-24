@@ -63,6 +63,16 @@ class PendingActionStore:
             self._actions[action.id] = action
         return action
 
+    @staticmethod
+    def _scrub_terminal(action: PendingAction) -> None:
+        """Remove or redact data no longer needed once approval is over."""
+        from app.core.redaction import redact_message, redact_params
+
+        action.command = redact_message(action.command)
+        action.parameters = redact_params(action.parameters)
+        action.result = None
+        action.error = None
+
     def get(self, action_id: str) -> Optional[PendingAction]:
         with self._lock:
             action = self._actions.get(action_id)
@@ -70,6 +80,7 @@ class PendingActionStore:
                 return None
             if action.status == "pending" and action.expires_at and datetime.utcnow() > action.expires_at:
                 action.status = "expired"
+                self._scrub_terminal(action)
             return action
 
     def list_pending(self) -> List[PendingAction]:
@@ -80,6 +91,7 @@ class PendingActionStore:
                 if action.status == "pending":
                     if action.expires_at and now > action.expires_at:
                         action.status = "expired"
+                        self._scrub_terminal(action)
                     else:
                         result.append(action)
         return result
@@ -96,6 +108,7 @@ class PendingActionStore:
                 return None
             if action.status == "pending" and action.expires_at and datetime.utcnow() > action.expires_at:
                 action.status = "expired"
+                self._scrub_terminal(action)
                 return None
             if action.status != "pending":
                 return None
@@ -110,10 +123,12 @@ class PendingActionStore:
                 return None
             if action.status == "pending" and action.expires_at and datetime.utcnow() > action.expires_at:
                 action.status = "expired"
+                self._scrub_terminal(action)
                 return None
             if action.status != "pending":
                 return None
             action.status = "cancelled"
+            self._scrub_terminal(action)
             return action
 
     def mark_executed(self, action_id: str, result: Any = None) -> None:
@@ -128,14 +143,20 @@ class PendingActionStore:
             action = self._actions.get(action_id)
             if action:
                 action.status = "executed"
-                action.result = None
+                self._scrub_terminal(action)
 
-    def mark_failed(self, action_id: str, error: str) -> None:
+    def mark_failed(self, action_id: str, error: str = "") -> None:
+        """Mark failure without retaining a handler-controlled payload.
+
+        The confirming response already returns the safe error once. Keeping
+        it on PendingAction would make clipboard-like or future sensitive
+        tool output readable again through the detail endpoint.
+        """
         with self._lock:
             action = self._actions.get(action_id)
             if action:
                 action.status = "failed"
-                action.error = error
+                self._scrub_terminal(action)
 
 
 # Module-level singleton

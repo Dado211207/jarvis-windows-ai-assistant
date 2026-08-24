@@ -238,6 +238,29 @@ def test_dns_rebinding_host_cannot_reach_a_sensitive_get_even_with_fabricated_to
     assert "set-cookie" not in response.headers
 
 
+def test_noncanonical_host_variants_never_receive_a_session_cookie():
+    from fastapi.testclient import TestClient
+
+    from app.api.server import app as jarvis_app
+    from app.config import settings
+
+    hostile_hosts = (
+        f"attacker.example:{settings.jarvis_port}",
+        f"localhost.attacker.example:{settings.jarvis_port}",
+        f"127.0.0.1:{settings.jarvis_port}@attacker.example",
+        f"127.0.0.1:{settings.jarvis_port + 1}",
+        "localhost",
+        "",
+    )
+    for host in hostile_hosts:
+        with TestClient(
+            jarvis_app, base_url=_canonical_base_url(), raise_server_exceptions=True,
+        ) as client:
+            response = client.get("/health", headers={"host": host})
+        assert response.status_code == 400, host
+        assert "set-cookie" not in response.headers, host
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
 def test_canonical_hosts_preserve_health_bootstrap(host):
     from fastapi.testclient import TestClient
