@@ -152,10 +152,27 @@ def unavailable_message(voice_key: str = assets.DEFAULT_VOICE_KEY) -> str:
 
 
 @dataclass
+class FallbackDisclosure:
+    provider: str
+    category: str
+    reason: str
+    local_engine: str = ""
+
+    def as_dict(self) -> dict:
+        return {
+            "provider": self.provider,
+            "category": self.category,
+            "reason": self.reason,
+            "local_engine": self.local_engine,
+        }
+
+
+@dataclass
 class SpeakOutcome:
     started: bool
     engine: str
     message: str
+    fallback: Optional[FallbackDisclosure] = None
 
 
 def speak(
@@ -172,18 +189,41 @@ def speak(
     """
     selected = selected_engine()
     if selected == OPENAI:
-        outcome = _speak_openai(text)
-        if outcome is not None:
-            return outcome
+        cloud = _speak_openai(text)
     elif selected == ELEVENLABS:
-        outcome = _speak_elevenlabs(text)
-        if outcome is not None:
-            return outcome
-        # None means "the cloud voice could not be used and falling back
-        # was allowed" — carry on into the local chain below, and say so.
+        cloud = _speak_elevenlabs(text)
+    else:
+        return speak_local(text, voice_key=voice_key, speed=speed)
 
-    if selected == AUTO:
-        _note_fallback("")
+    if cloud.fallback is None:
+        return cloud
+    local = speak_local(text, voice_key=voice_key, speed=speed)
+    if not local.started:
+        return SpeakOutcome(
+            False, local.engine,
+            f"{cloud.fallback.reason} The local fallback also could not speak.",
+            fallback=cloud.fallback,
+        )
+    disclosure = FallbackDisclosure(
+        provider=cloud.fallback.provider,
+        category=cloud.fallback.category,
+        reason=cloud.fallback.reason,
+        local_engine=local.engine,
+    )
+    return SpeakOutcome(
+        True,
+        local.engine,
+        f"{disclosure.reason} Using {DISPLAY_NAMES[local.engine]} instead.",
+        fallback=disclosure,
+    )
+
+
+def speak_local(
+    text: str,
+    voice_key: str = assets.DEFAULT_VOICE_KEY,
+    speed: float = 1.0,
+) -> SpeakOutcome:
+    """Speak through the local chain regardless of cloud selection."""
     chosen = active_engine(voice_key)
 
     if chosen == KOKORO:
@@ -194,40 +234,40 @@ def speak(
         outcome = _speak_sapi5(text)
     else:
         outcome = SpeakOutcome(started=False, engine=NONE, message=unavailable_message(voice_key))
-    reason = last_fallback_reason()
-    if reason and outcome.started:
-        return SpeakOutcome(
-            started=True,
-            engine=outcome.engine,
-            message=f"{reason} Using {DISPLAY_NAMES[outcome.engine]} instead.",
-        )
     return outcome
 
 
-def _speak_openai(text: str) -> Optional["SpeakOutcome"]:
+def _speak_openai(text: str) -> SpeakOutcome:
     """Use OpenAI Speech, or visibly fall through to the local chain."""
     from app.core.credentials import get_openai_key
     from app.core.privacy import privacy_mode
     from app.voice import openai_tts
 
-    def _refuse_or_fall_through(message: str) -> Optional[SpeakOutcome]:
+    def _refuse_or_fall_through(category: str, message: str) -> SpeakOutcome:
+        audio.player.abandon(cancel)
         if openai_fallback_allowed():
             logger.info("OpenAI voice unavailable; falling back to the local voice.")
-            _note_fallback(message)
-            return None
+            return SpeakOutcome(
+                False, OPENAI, message,
+                fallback=FallbackDisclosure(OPENAI, category, message),
+            )
         return SpeakOutcome(started=False, engine=OPENAI, message=message)
 
-    # This gate precedes both credential loading and creation of the HTTP client.
+    deadline = openai_tts.new_deadline()
+    cancel = audio.player.begin_utterance()
     if privacy_mode.active:
         return _refuse_or_fall_through(
+            openai_tts.PRIVACY,
             "Privacy mode is on, so nothing was sent to OpenAI Speech."
         )
 
     key = get_openai_key()
     if not key:
-        return _refuse_or_fall_through(openai_tts._MESSAGES[openai_tts.NOT_CONFIGURED])
+        return _refuse_or_fall_through(
+            openai_tts.NOT_CONFIGURED,
+            openai_tts._MESSAGES[openai_tts.NOT_CONFIGURED],
+        )
 
-    cancel = audio.player.begin_utterance()
     try:
         wav = openai_tts.synthesise_wav(
             text,
@@ -237,22 +277,38 @@ def _speak_openai(text: str) -> Optional["SpeakOutcome"]:
             speed=selected_openai_speed(),
             instructions=selected_openai_instructions(),
             cancel=cancel,
+            privacy_guard=lambda: not privacy_mode.active,
+            deadline=deadline,
         )
     except openai_tts.OpenAITTSError as exc:
         if exc.category == openai_tts.CANCELLED:
+            if privacy_mode.active:
+                return _refuse_or_fall_through(
+                    openai_tts.PRIVACY, openai_tts._MESSAGES[openai_tts.PRIVACY],
+                )
             return SpeakOutcome(False, OPENAI, exc.message)
-        return _refuse_or_fall_through(exc.message)
+        return _refuse_or_fall_through(exc.category, exc.message)
     except Exception:  # noqa: BLE001
         logger.warning("OpenAI speech failed unexpectedly.", exc_info=False)
-        return _refuse_or_fall_through(openai_tts._MESSAGES[openai_tts.PROVIDER_ERROR])
+        return _refuse_or_fall_through(
+            openai_tts.PROVIDER_ERROR,
+            openai_tts._MESSAGES[openai_tts.PROVIDER_ERROR],
+        )
 
     if not audio.player.play_wav_bytes_if_current(wav, cancel):
-        return SpeakOutcome(False, OPENAI, openai_tts._MESSAGES[openai_tts.CANCELLED])
-    _note_fallback("")
+        current = audio.player.is_current(cancel)
+        if current:
+            audio.player.abandon(cancel)
+        message = (
+            openai_tts._MESSAGES[openai_tts.CANCELLED]
+            if not current
+            else openai_tts._MESSAGES[openai_tts.BAD_RESPONSE]
+        )
+        return SpeakOutcome(False, OPENAI, message)
     return SpeakOutcome(True, OPENAI, "Speaking with the OpenAI cloud voice.")
 
 
-def _speak_elevenlabs(text: str) -> Optional["SpeakOutcome"]:
+def _speak_elevenlabs(text: str) -> SpeakOutcome:
     """Speak through the cloud, or explain why not.
 
     Returns an outcome when the answer is final, and None when the caller
@@ -266,18 +322,24 @@ def _speak_elevenlabs(text: str) -> Optional["SpeakOutcome"]:
     from app.core.credentials import get_elevenlabs_key
     from app.voice import elevenlabs
 
-    def _refuse_or_fall_through(message: str) -> Optional[SpeakOutcome]:
+    def _refuse_or_fall_through(category: str, message: str) -> SpeakOutcome:
+        audio.player.abandon(cancel)
         if fallback_allowed():
             logger.info("Cloud voice unavailable; falling back to the local voice.")
-            _note_fallback(message)
-            return None
+            return SpeakOutcome(
+                False, ELEVENLABS, message,
+                fallback=FallbackDisclosure(ELEVENLABS, category, message),
+            )
         return SpeakOutcome(started=False, engine=ELEVENLABS, message=message)
 
+    deadline = elevenlabs.new_deadline()
+    cancel = audio.player.begin_utterance()
     if privacy_mode.active:
         # Not a failure to fall back from — a rule. Privacy mode exists to
         # stop text leaving the machine, and quietly speaking it with a
         # local voice instead is the correct thing to do, said out loud.
         return _refuse_or_fall_through(
+            elevenlabs.PRIVACY,
             "Privacy mode is on, so nothing was sent to ElevenLabs. "
             "The local voice is unaffected."
         )
@@ -285,43 +347,47 @@ def _speak_elevenlabs(text: str) -> Optional["SpeakOutcome"]:
     voice_id = selected_cloud_voice_id()
     if not voice_id:
         return _refuse_or_fall_through(
+            elevenlabs.NOT_CONFIGURED,
             "No ElevenLabs voice is selected yet. Choose one on the Voice page."
         )
 
     key = get_elevenlabs_key()
     if not key:
-        return _refuse_or_fall_through(elevenlabs._MESSAGES[elevenlabs.NOT_CONFIGURED])
+        return _refuse_or_fall_through(
+            elevenlabs.NOT_CONFIGURED,
+            elevenlabs._MESSAGES[elevenlabs.NOT_CONFIGURED],
+        )
 
     try:
         wav = elevenlabs.synthesise_wav(
             text, voice_id=voice_id, api_key=key, settings=cloud_settings(),
+            cancel=cancel, privacy_guard=lambda: not privacy_mode.active,
+            deadline=deadline,
         )
     except elevenlabs.ElevenLabsError as exc:
-        return _refuse_or_fall_through(exc.message)
+        if exc.category == elevenlabs.CANCELLED and not privacy_mode.active:
+            return SpeakOutcome(False, ELEVENLABS, exc.message)
+        category = elevenlabs.PRIVACY if privacy_mode.active else exc.category
+        message = elevenlabs._MESSAGES[category] if privacy_mode.active else exc.message
+        return _refuse_or_fall_through(category, message)
     except Exception:  # noqa: BLE001 — a provider never raises past its own boundary
         logger.warning("Cloud speech failed unexpectedly.", exc_info=False)
-        return _refuse_or_fall_through(elevenlabs._MESSAGES[elevenlabs.PROVIDER_ERROR])
+        return _refuse_or_fall_through(
+            elevenlabs.PROVIDER_ERROR,
+            elevenlabs._MESSAGES[elevenlabs.PROVIDER_ERROR],
+        )
 
-    _note_fallback("")
-    audio.player.play_wav_bytes(wav)
+    if not audio.player.play_wav_bytes_if_current(wav, cancel):
+        current = audio.player.is_current(cancel)
+        if current:
+            audio.player.abandon(cancel)
+        message = (
+            elevenlabs._MESSAGES[elevenlabs.CANCELLED]
+            if not current
+            else elevenlabs._MESSAGES[elevenlabs.BAD_RESPONSE]
+        )
+        return SpeakOutcome(False, ELEVENLABS, message)
     return SpeakOutcome(started=True, engine=ELEVENLABS, message="Speaking with the cloud voice.")
-
-
-# The last fallback reason, so the UI can show that it happened rather
-# than leaving somebody to wonder why the voice changed. Deliberately
-# in-memory and single-slot: it is a transient notice, not a record.
-_last_fallback: str = ""
-
-
-def _note_fallback(reason: str) -> None:
-    global _last_fallback
-    _last_fallback = reason
-
-
-def last_fallback_reason() -> str:
-    """Why the local voice spoke when the cloud voice was selected, or ""
-    if the last utterance went out as configured."""
-    return _last_fallback
 
 
 def _speak_kokoro(text: str, voice_key: str, speed: float) -> SpeakOutcome:
@@ -352,7 +418,10 @@ def _speak_windows(text: str) -> SpeakOutcome:
     wav = winrt_voices.synthesise_wav(text)
     if not wav:
         return _speak_sapi5(text)
-    audio.player.play_wav_bytes(wav)
+    if not audio.player.play_wav_bytes(wav):
+        return SpeakOutcome(
+            False, WINDOWS, "Windows produced invalid audio, so nothing was played.",
+        )
     return SpeakOutcome(started=True, engine=WINDOWS, message="Speaking.")
 
 
@@ -452,12 +521,13 @@ def selected_engine() -> str:
     return value if value in (ELEVENLABS, OPENAI) else AUTO
 
 
-def set_selected_engine(key: str) -> str:
+def set_selected_engine(key: str) -> Optional[str]:
     from app.core.preferences import store
 
     requested = (key or "").strip().lower()
     value = requested if requested in (ELEVENLABS, OPENAI) else AUTO
-    store("tts_engine", value)
+    if not store("tts_engine", value):
+        return None
     return selected_engine()
 
 
@@ -542,10 +612,11 @@ def openai_key_configured() -> bool:
     return (get("openai_voice_key_configured") or "").strip().lower() == "true"
 
 
-def set_openai_key_configured(configured: bool) -> bool:
+def set_openai_key_configured(configured: bool) -> Optional[bool]:
     from app.core.preferences import store
 
-    store("openai_voice_key_configured", "true" if configured else "false")
+    if not store("openai_voice_key_configured", "true" if configured else "false"):
+        return None
     return openai_key_configured()
 
 
@@ -582,18 +653,23 @@ def selected_openai_instructions() -> str:
     return openai_tts.normalise_instructions(saved)
 
 
-def set_openai_settings(model: str, voice: str, speed: float, instructions: str) -> dict:
-    from app.core.preferences import store
+def set_openai_settings(
+    model: str, voice: str, speed: float, instructions: str,
+) -> Optional[dict]:
+    from app.core.preferences import store_many
     from app.voice import openai_tts
 
     model = openai_tts.validate_model(model)
     voice = openai_tts.validate_voice(voice)
     speed = openai_tts.clamp_speed(speed)
     instructions = openai_tts.normalise_instructions(instructions)
-    store("openai_tts_model", model)
-    store("openai_tts_voice", voice)
-    store("openai_tts_speed", f"{speed:.2f}")
-    store("openai_tts_instructions", instructions)
+    if not store_many({
+        "openai_tts_model": model,
+        "openai_tts_voice": voice,
+        "openai_tts_speed": f"{speed:.2f}",
+        "openai_tts_instructions": instructions,
+    }):
+        return None
     return openai_settings()
 
 
@@ -612,10 +688,11 @@ def openai_fallback_allowed() -> bool:
     return (get("openai_tts_fallback") or "").strip().lower() != "false"
 
 
-def set_openai_fallback_allowed(allowed: bool) -> bool:
+def set_openai_fallback_allowed(allowed: bool) -> Optional[bool]:
     from app.core.preferences import store
 
-    store("openai_tts_fallback", "true" if allowed else "false")
+    if not store("openai_tts_fallback", "true" if allowed else "false"):
+        return None
     return openai_fallback_allowed()
 
 
@@ -649,7 +726,9 @@ def openai_status() -> dict:
         "fallback_allowed": openai_fallback_allowed(),
         "blocked_by_privacy": privacy_mode.active,
         "detail": detail,
-        "last_fallback": last_fallback_reason(),
+        # Fallback disclosure is per utterance and returned by /voice/speak;
+        # there is deliberately no process-global "last" value to race.
+        "last_fallback": "",
         "test_phrase": openai_tts.TEST_PHRASE,
         "ai_generated": True,
         "internet_required": True,
@@ -687,7 +766,7 @@ def cloud_status() -> dict:
         "fallback_allowed": fallback_allowed(),
         "blocked_by_privacy": privacy_mode.active,
         "detail": detail,
-        "last_fallback": last_fallback_reason(),
+        "last_fallback": "",
         "test_phrase": elevenlabs.TEST_PHRASE,
         "max_text_chars": elevenlabs.MAX_TEXT_CHARS,
     }

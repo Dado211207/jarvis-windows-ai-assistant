@@ -224,7 +224,10 @@ class SetVoiceOutputRequest(BaseModel):
     enabled: bool
 
 
-@router.get("/voice/status", response_model=VoiceStatusResponse)
+@router.get(
+    "/voice/status", response_model=VoiceStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def voice_status() -> VoiceStatusResponse:
     """`tts_engine` is the engine actually speaking, not the configured
     one. It used to report `settings.jarvis_tts_engine`, a fixed string
@@ -274,7 +277,12 @@ def voice_speak(req: SpeakRequest) -> dict:
             "message": "Voice output is turned off. Turn it on from the Voice page.",
         }
     result = tts_service.speak(req.text)
-    return {"success": result.success, "message": result.message}
+    return {
+        "success": result.success,
+        "message": result.message,
+        "engine": result.engine,
+        "fallback": result.fallback,
+    }
 
 
 @router.post("/voice/speak-once", dependencies=[Depends(require_session_token)])
@@ -304,10 +312,15 @@ def voice_speak_once(req: SpeakRequest) -> dict:
             "message": engines.unavailable_message(tts_service.voice_key),
         }
     result = tts_service.speak(req.text)
-    return {"success": result.success, "message": result.message}
+    return {
+        "success": result.success,
+        "message": result.message,
+        "engine": result.engine,
+        "fallback": result.fallback,
+    }
 
 
-@router.get("/voice/speaking")
+@router.get("/voice/speaking", dependencies=[Depends(require_session_token)])
 def voice_speaking() -> dict:
     """Whether audio is playing right now.
 
@@ -387,14 +400,20 @@ class SetSTTEnabledRequest(BaseModel):
     enabled: bool
 
 
-@router.get("/voice/stt-status", response_model=STTStatusResponse)
+@router.get(
+    "/voice/stt-status", response_model=STTStatusResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def voice_stt_status() -> STTStatusResponse:
     from app.voice.stt import stt_service
     available, reason = stt_service.is_available()
     return STTStatusResponse(available=available, reason=reason)
 
 
-@router.get("/voice/diagnostics", response_model=STTDiagnosticsResponse)
+@router.get(
+    "/voice/diagnostics", response_model=STTDiagnosticsResponse,
+    dependencies=[Depends(require_session_token)],
+)
 def voice_diagnostics() -> STTDiagnosticsResponse:
     from app.voice import input_state
     from app.voice.stt import input_enabled, stt_service

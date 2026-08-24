@@ -3,7 +3,7 @@
 "Uninstall completely" is only a meaningful promise if there is a list.
 Without one it degrades into whichever paths somebody happened to
 remember, which is how an uninstalled application leaves a Startup
-shortcut pointing at a deleted executable and an API key in Windows
+shortcut pointing at a deleted executable and API keys in Windows
 Credential Manager.
 
 **The list is here, in code, and the installer is checked against it.**
@@ -94,6 +94,8 @@ CREATED_AT_RUNTIME = (
     # success — which is the exact failure this module exists to prevent.
     Owned("elevenlabs_credential", "Your ElevenLabs API key, in Windows Credential Manager",
           "Windows Credential Manager (JARVIS)", always=False),
+    Owned("openai_voice_credential", "Your OpenAI voice API key, in Windows Credential Manager",
+          "Windows Credential Manager (JARVIS)", always=False),
     Owned("data_dir", "Settings, chat history, logs, and any voice or speech model you downloaded",
           r"%LOCALAPPDATA%\JARVIS", always=False),
 )
@@ -163,7 +165,7 @@ def remove(purge_data: bool = False) -> RemovalReport:
         _remove_data_dir(report)
     else:
         report.kept.append("Your settings, history and downloaded models")
-        report.kept.append("Your API key in Windows Credential Manager")
+        report.kept.append("Your API keys in Windows Credential Manager")
 
     for item in NEVER_REMOVED:
         report.kept.append(item.what)
@@ -197,7 +199,7 @@ def _remove_startup_shortcut(report: RemovalReport) -> None:
 
 
 def _remove_credential(report: RemovalReport) -> None:
-    """Delete the API key through the app's own credential module.
+    """Delete JARVIS API keys through the app's own credential module.
 
     Done here rather than from the installer on purpose: only this code
     knows how the key was stored, and an installer guessing at a

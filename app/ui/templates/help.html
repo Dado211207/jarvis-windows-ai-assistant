@@ -110,9 +110,17 @@
         <li><span class="cmd-name">stop speaking</span><span class="cmd-desc">Stop current speech immediately</span></li>
       </ul>
       <p class="text-xs text-muted mt-3">
-        Push-to-talk voice <em>input</em> (v0.2) is a separate feature: use the mic button on the
+        Speech-to-text is local and push-to-talk. Voice output uses local speech by default.
+        OpenAI and ElevenLabs are optional AI-generated cloud voices: each requires explicit
+        selection and internet access, sends the spoken text to that provider, and may incur cost.
+        Use the mic button on the
         <a href="/ui/chat">Chat</a> page to speak a command, review the transcribed text, then send it
         like any typed command.
+      </p>
+      <p class="text-xs text-muted mt-2">
+        Double-clap activation is a separate opt-in background level monitor while JARVIS is
+        running. It measures loudness only, does not record or transcribe words, and stops when
+        switched off, Privacy mode is enabled, or JARVIS exits.
       </p>
     </div>
   </div>

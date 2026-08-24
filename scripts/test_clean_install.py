@@ -916,6 +916,25 @@ def phase_g_real_voice_through_the_installed_product(log_dir: Path) -> None:
                 f"ready: {diagnostics.get('state')} — {diagnostics.get('headline')}"
             )
         print(f"OK: {diagnostics.get('headline')}")
+
+        _step("Phase G.4b: Confirm cloud voice status and disclosure UI without network")
+        openai_status = client.get("/voice/openai").json()
+        if openai_status.get("model") != "gpt-4o-mini-tts":
+            _fail(f"Installed OpenAI voice status is incomplete: {openai_status!r}")
+        if openai_status.get("voice") != "cedar" or not openai_status.get("ai_generated"):
+            _fail(f"Installed OpenAI voice defaults/disclosure are wrong: {openai_status!r}")
+        if "api_key" in openai_status or openai_status.get("key"):
+            _fail("OpenAI voice status exposed a credential field.")
+        cloud_status = client.get("/voice/cloud").json()
+        if "key_configured" not in cloud_status:
+            _fail(f"Installed ElevenLabs status is incomplete: {cloud_status!r}")
+        voice_page = client.get("/ui/voice").text
+        for required_copy in (
+            "AI-generated voice", "requires internet access", "may incur cost",
+            "speech recognition stays local",
+        ):
+            if required_copy not in voice_page:
+                _fail(f"Installed Voice page is missing disclosure: {required_copy!r}")
         client.close()
     finally:
         subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)

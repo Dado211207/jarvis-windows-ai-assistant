@@ -7,9 +7,8 @@
   <div class="page-header">
     <h1 class="page-title">Voice</h1>
     <p class="page-subtitle">
-      Speaking and listening, both handled on this computer. The speech engine only ever
-      produces sound &mdash; it never captures audio. Listening happens only while you hold the
-      microphone button on the <a href="/ui/chat">Chat</a> page.
+      Speech recognition is local and push-to-talk. Speech output uses the best local voice by
+      default; OpenAI or ElevenLabs cloud TTS is used only after you explicitly select it.
     </p>
   </div>
 
@@ -80,8 +79,9 @@
   <div class="card mb-4" id="cloud-voice-card">
     <h2 class="card-title">Premium cloud voice (optional)</h2>
     <p class="text-xs text-muted mt-2">
-      ElevenLabs produces a more natural voice than anything that runs locally, using your own
-      ElevenLabs account. It is entirely optional. <strong>What changes if you turn it on:</strong>
+      ElevenLabs produces an <strong>AI-generated voice</strong> using your own account.
+      It is entirely optional, requires internet access, and API usage may incur cost.
+      <strong>What changes if you turn it on:</strong>
       the text of each spoken reply is sent to ElevenLabs&rsquo; servers to be turned into audio.
       Nothing else is sent &mdash; not your conversations, not your files, and never your microphone.
       Privacy mode switches it off completely.
@@ -357,7 +357,7 @@
     </p>
     <p class="text-xs text-muted mt-2">
       It works while the JARVIS window is open, including when it is minimised to the tray.
-      If you quit JARVIS, it stops.
+      This is opt-in background microphone-level monitoring; if you quit JARVIS, it stops.
     </p>
 
     <div class="status-row mt-3">

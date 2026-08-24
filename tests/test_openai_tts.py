@@ -9,7 +9,13 @@ import pytest
 
 from app.voice import openai_tts
 
-WAV = b"RIFF" + b"\x00" * 40
+WAV = (
+    b"RIFF" + (36).to_bytes(4, "little") + b"WAVEfmt "
+    + (16).to_bytes(4, "little") + (1).to_bytes(2, "little")
+    + (1).to_bytes(2, "little") + (24000).to_bytes(4, "little")
+    + (48000).to_bytes(4, "little") + (2).to_bytes(2, "little")
+    + (16).to_bytes(2, "little") + b"data" + (0).to_bytes(4, "little")
+)
 KEY = "unit-test-voice-key"
 
 
@@ -151,11 +157,12 @@ def test_privacy_mode_refuses_before_key_load_or_provider_call():
     from app.core.privacy import privacy_mode
     from app.voice import engines
 
-    with patch.object(privacy_mode, "active", True), \
-         patch("app.core.credentials.get_openai_key") as get_key, \
+    privacy_mode.set(True)
+    with patch("app.core.credentials.get_openai_key") as get_key, \
          patch("app.voice.openai_tts.synthesise_wav") as transport, \
          patch.object(engines, "openai_fallback_allowed", return_value=False):
         outcome = engines._speak_openai("private reply")
+    privacy_mode.set(False)
 
     assert outcome.started is False
     assert "Privacy mode" in outcome.message
@@ -170,6 +177,7 @@ def test_delayed_response_cannot_play_after_stop():
     player = MagicMock()
     player.begin_utterance.return_value = cancel
     player.play_wav_bytes_if_current.return_value = False
+    player.is_current.return_value = False
     with patch("app.core.credentials.get_openai_key", return_value=KEY), \
          patch("app.core.privacy.privacy_mode.active", False), \
          patch("app.voice.audio.player", player), \
@@ -190,12 +198,13 @@ def test_privacy_fallback_is_explicitly_disclosed():
     from app.voice import engines
 
     local = engines.SpeakOutcome(True, engines.WINDOWS, "Speaking.")
-    with patch.object(privacy_mode, "active", True), \
-         patch.object(engines, "selected_engine", return_value=engines.OPENAI), \
+    privacy_mode.set(True)
+    with patch.object(engines, "selected_engine", return_value=engines.OPENAI), \
          patch.object(engines, "openai_fallback_allowed", return_value=True), \
          patch.object(engines, "active_engine", return_value=engines.WINDOWS), \
          patch.object(engines, "_speak_windows", return_value=local):
         outcome = engines.speak("reply")
+    privacy_mode.set(False)
 
     assert outcome.started is True
     assert outcome.engine == engines.WINDOWS

@@ -27,7 +27,10 @@ async function errorFromResponse(r) {
 
 const API = {
   async get(path) {
-    const r = await fetch(path);
+    const token = getSessionCookie();
+    const r = await fetch(path, {
+      headers: token ? { "X-JARVIS-Session-Token": token } : {},
+    });
     if (!r.ok) throw await errorFromResponse(r);
     return r.json();
   },
@@ -291,6 +294,9 @@ const STOP_GLYPH  = "■";   // ■
 
 let speakingButton = null;
 let speakingPoll = null;
+let speechRequestPending = false;
+let speechRequestGeneration = 0;
+let speechClickPending = false;
 
 function paintSpeakButton(btn, speaking) {
   if (!btn) return;
@@ -358,6 +364,7 @@ function forgetSpeaking() {
   if (speakingPoll) { clearInterval(speakingPoll); speakingPoll = null; }
   if (speakingButton) paintSpeakButton(speakingButton, false);
   speakingButton = null;
+  speechRequestPending = false;
 }
 
 // Speech ends on its own and the server can only report that it *started*,
@@ -370,6 +377,7 @@ function watchSpeech(btn) {
   speakingPoll = setInterval(async () => {
     try {
       const r = await API.get("/voice/speaking");
+      if (speechRequestPending) return;
       if (!r || !r.speaking) forgetSpeaking();
     } catch (e) {
       forgetSpeaking();   // an unanswerable question must not leave a stuck button
@@ -378,7 +386,8 @@ function watchSpeech(btn) {
 }
 
 async function stopSpeech() {
-  const wasSpeaking = speakingButton !== null;
+  const wasSpeaking = speakingButton !== null || speechRequestPending;
+  speechRequestGeneration += 1;
   forgetSpeaking();
   releaseSpeechSuspension();
   if (!wasSpeaking) return;
@@ -389,26 +398,51 @@ async function stopSpeech() {
   }
 }
 
+function beginSpeechRequest(btn) {
+  forgetSpeaking();
+  speechRequestGeneration += 1;
+  speechRequestPending = true;
+  speakingButton = btn;
+  paintSpeakButton(btn, true);  // Stop is available while cloud synthesis waits
+  return speechRequestGeneration;
+}
+
 // The speaker button on one message.
 async function speakOnDemand(text, btn) {
-  if (speakingButton === btn) { await stopSpeech(); return; }
+  // Treat a rapid second click as Stop even if the first click is still
+  // yielding before its POST. This bounds a double-click to at most one
+  // billable cloud request (and commonly zero), rather than racing two.
+  if (speakingButton === btn || speechClickPending) {
+    speechClickPending = false;
+    await stopSpeech();
+    return;
+  }
+  speechClickPending = true;
   await stopSpeech();
+  if (!speechClickPending) return;
 
   const trimmed = (text || "").trim();
-  if (!trimmed) return;
+  if (!trimmed) { speechClickPending = false; return; }
   suspendForSpeech();
+  const generation = beginSpeechRequest(btn);
+  speechClickPending = false;
   try {
     const r = await API.post("/voice/speak-once", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
+    if (generation !== speechRequestGeneration) return;
+    speechRequestPending = false;
     if (r && r.success) {
       watchSpeech(btn);
-      setChatStatus("");
+      setChatStatus(r.fallback ? r.message : "");
     } else {
+      forgetSpeaking();
       releaseSpeechSuspension();
       // The engine's own reason and the step that fixes it — never a
       // suggestion to go and find another program.
       setChatStatus((r && r.message) || "JARVIS could not speak that.");
     }
   } catch (e) {
+    if (generation !== speechRequestGeneration) return;
+    forgetSpeaking();
     releaseSpeechSuspension();
     setChatStatus("Could not speak that: " + e.message);
   }
@@ -420,11 +454,21 @@ async function speakReply(text, btn) {
   if (!trimmed) return;
   await stopSpeech();
   suspendForSpeech();
+  const generation = beginSpeechRequest(btn);
   try {
     const r = await API.post("/voice/speak", { text: trimmed.slice(0, SPOKEN_REPLY_MAX_CHARS) });
-    if (r && r.success) watchSpeech(btn);
-    else releaseSpeechSuspension();
+    if (generation !== speechRequestGeneration) return;
+    speechRequestPending = false;
+    if (r && r.success) {
+      watchSpeech(btn);
+      if (r.fallback) setChatStatus(r.message);
+    } else {
+      forgetSpeaking();
+      releaseSpeechSuspension();
+    }
   } catch (e) {
+    if (generation !== speechRequestGeneration) return;
+    forgetSpeaking();
     releaseSpeechSuspension();
     // Speech is an enhancement; a failure here must never disturb the
     // conversation the user is reading.

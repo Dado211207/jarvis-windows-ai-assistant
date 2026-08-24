@@ -361,6 +361,14 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | `speak test` | Speak a test phrase aloud |
 | `stop speaking` | Stop current speech immediately |
 
+Speech-to-text is local, opt-in push-to-talk. TTS uses the local Kokoro/Windows
+chain by default. OpenAI and ElevenLabs are separate, explicitly selected
+AI-generated cloud voice providers: both require internet access, send only the
+text being spoken, and may incur API usage cost. Privacy mode blocks them.
+Double-clap activation is separately opt-in background microphone-level
+monitoring while JARVIS runs; it measures loudness without recording or
+transcribing words.
+
 ### Approval-required
 
 | Command | What it does |
@@ -415,7 +423,7 @@ JARVIS_AI_MODEL=            # Leave blank for default (claude-haiku-4-5-20251001
 JARVIS_AI_MAX_TOKENS=250
 JARVIS_AI_TIMEOUT_SECONDS=20
 
-# Phase 3 TTS / voice output (local/offline — no cloud API required)
+# Phase 3 TTS / voice output (local default; optional cloud providers are configured in-app)
 JARVIS_TTS_ENABLED=false    # Set to true to enable voice output
 JARVIS_TTS_ENGINE=pyttsx3
 JARVIS_TTS_RATE=175         # Words per minute
@@ -571,7 +579,7 @@ app/
     maintenance.py  — Log clearing (approval-required)
     clipboard.py     (v0.2) — read_clipboard (SENSITIVE, approval-required)
   voice/
-    tts.py          — Offline speech output (pyttsx3)
+    tts.py          — Local-default speech output plus explicitly selected cloud providers
     stt.py          — Push-to-talk speech recognition (local, opt-in)
   launcher/         — Desktop shell: tray, server child, native window child
   ui/
@@ -641,7 +649,7 @@ SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 |---|---|---|
 | 1 | Foundation: CLI, router, tools, API, SQLite | ✅ Done |
 | 2 | Claude AI integration (natural-language fallback, conversation memory) | ✅ Done |
-| 3 | TTS voice output (pyttsx3, local/offline, output-only — no microphone) | ✅ Done |
+| 3 | TTS voice output (local default; optional explicit OpenAI/ElevenLabs cloud voices) | ✅ Done |
 | 4 | Local browser dashboard (7 pages, dark UI, Jinja2 + vanilla JS) | ✅ Done |
 | 5 | Action approval system (pending / confirm / cancel, Actions UI) | ✅ Done |
 | 6 | Safe Windows actions expansion (URL opener, folders, notes, disk, network, battery) | ✅ Done |

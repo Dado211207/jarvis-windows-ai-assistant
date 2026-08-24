@@ -22,6 +22,7 @@ and this is still output only: nothing here opens a microphone.
 
 import threading
 from dataclasses import dataclass
+from typing import Optional
 
 from app.logging_config import get_logger
 
@@ -35,6 +36,8 @@ MAX_SPEAK_LENGTH = 1000
 class TTSResult:
     success: bool
     message: str
+    engine: str = ""
+    fallback: Optional[dict] = None
 
 
 class TextToSpeechService:
@@ -138,12 +141,24 @@ class TextToSpeechService:
 
         outcome = engines.speak(text, voice_key=self.voice_key, speed=self.speed)
         if not outcome.started:
-            return TTSResult(success=False, message=outcome.message)
+            return TTSResult(
+                success=False,
+                message=outcome.message,
+                engine=outcome.engine,
+                fallback=outcome.fallback.as_dict() if outcome.fallback else None,
+            )
 
         preview = text[:60] + ("…" if len(text) > 60 else "")
         if outcome.message != "Speaking.":
-            return TTSResult(success=True, message=f"{outcome.message} Speaking: {preview!r}")
-        return TTSResult(success=True, message=f"Speaking: {preview!r}")
+            return TTSResult(
+                success=True,
+                message=f"{outcome.message} Speaking: {preview!r}",
+                engine=outcome.engine,
+                fallback=outcome.fallback.as_dict() if outcome.fallback else None,
+            )
+        return TTSResult(
+            success=True, message=f"Speaking: {preview!r}", engine=outcome.engine,
+        )
 
     def stop(self) -> TTSResult:
         """Interrupt any speech in progress, whichever engine is making

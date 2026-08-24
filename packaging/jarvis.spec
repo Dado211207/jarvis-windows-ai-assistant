@@ -37,6 +37,11 @@ hidden_imports = [
     "comtypes",
     "comtypes.client",
     "keyring.backends.Windows",
+    # Cloud TTS is imported behind provider selection, and winsound is
+    # imported inside playback methods. Name both explicitly so the
+    # frozen build cannot silently lose the feature.
+    "app.voice.openai_tts",
+    "winsound",
 ]
 
 # Coding Workspace. Most of app/coding is reached through imports written
@@ -148,6 +153,9 @@ _REQUIRED_PACKAGES = (
     # anything still missing rather than leaving it to be discovered by
     # a user.
     "requests",
+    # Both optional cloud TTS providers use the existing bounded httpx
+    # transport. httpcore carries its socket/TLS backends.
+    "httpx", "httpcore",
 )
 # Genuinely optional: absence changes no capability the product claims.
 # Nothing whose absence breaks an advertised feature may live here — see
