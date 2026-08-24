@@ -3,7 +3,8 @@ installer cannot do.
 
 Inno Setup removes the files it installed. It has never heard of the
 sign-in shortcut the *application* writes when somebody switches that on
-in Settings, and it does not know how the API key was stored, because
+in Settings, and it does not know how saved credentials were stored,
+because
 only `app/core/credentials.py` knows that. An installer guessing at a
 Windows Credential Manager target name is how an uninstall leaves a
 secret behind while reporting success.

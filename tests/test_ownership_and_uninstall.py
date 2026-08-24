@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.core import ownership
+from app.core import credentials, ownership
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ISS_PATH = REPO_ROOT / "packaging" / "jarvis.iss"
@@ -43,9 +43,28 @@ def test_the_manifest_covers_both_halves():
     missed."""
     setup_keys = {item.key for item in ownership.INSTALLED_BY_SETUP}
     runtime_keys = {item.key for item in ownership.CREATED_AT_RUNTIME}
+    credential_keys = {item.key for item in credentials.OWNED_CREDENTIALS}
+    manifest_credentials = {
+        item.key for item in ownership.CREATED_AT_RUNTIME
+        if item.where == "Windows Credential Manager (JARVIS)"
+    }
 
     assert {"install_dir", "start_menu", "uninstall_entry"} <= setup_keys
-    assert {"runtime_startup_shortcut", "credential", "data_dir"} <= runtime_keys
+    assert {"runtime_startup_shortcut", "data_dir"} <= runtime_keys
+    assert credential_keys <= runtime_keys
+    assert manifest_credentials == credential_keys
+
+
+def test_the_credential_registry_is_unambiguous_and_truthful():
+    registry = credentials.OWNED_CREDENTIALS
+
+    assert registry, "a product with credential APIs needs an ownership registry"
+    assert len({item.key for item in registry}) == len(registry)
+    assert len({item.username for item in registry}) == len(registry)
+    for item in registry:
+        assert item.key.strip()
+        assert item.username.strip()
+        assert "Credential Manager" in item.what
 
 
 def test_every_entry_says_what_it_is_and_where():
@@ -66,8 +85,9 @@ def test_data_and_credentials_are_never_removed_by_an_ordinary_uninstall():
     """Somebody reinstalling next week wants their settings back. The
     difference between "uninstall" and "uninstall and forget me" is a
     choice, never an inference."""
+    credential_keys = {item.key for item in credentials.OWNED_CREDENTIALS}
     for item in ownership.CREATED_AT_RUNTIME:
-        if item.key in ("credential", "data_dir"):
+        if item.key in credential_keys | {"data_dir"}:
             assert item.always is False
 
 
@@ -84,53 +104,97 @@ def test_the_sign_in_shortcut_goes_on_every_uninstall():
 # What removal actually does
 # ---------------------------------------------------------------------------
 
-def test_an_ordinary_uninstall_keeps_the_data_and_the_key(tmp_path):
+def test_an_ordinary_uninstall_keeps_data_and_every_registered_credential(tmp_path):
     data = tmp_path / "JARVIS"
     data.mkdir()
     (data / "jarvis.db").write_text("rows")
 
     with patch.object(ownership, "data_dir", return_value=data), \
          patch.object(ownership, "startup_shortcut_path", return_value=None), \
-         patch("app.core.credentials.clear_stored_api_key") as clear:
+         patch.object(credentials, "owned_credential_status") as status, \
+         patch.object(credentials, "clear_owned_credential") as clear:
         report = ownership.remove(purge_data=False)
 
     assert data.exists(), "an ordinary uninstall must not delete user data"
+    status.assert_not_called()
     clear.assert_not_called()
     assert any("settings" in line for line in report.kept)
+    assert {item.what for item in credentials.OWNED_CREDENTIALS} <= set(report.kept)
 
 
-def test_a_complete_uninstall_removes_the_data_and_the_key(tmp_path):
+def test_a_complete_uninstall_removes_data_and_every_registered_credential(tmp_path):
     data = tmp_path / "JARVIS"
     (data / "data").mkdir(parents=True)
     (data / "data" / "jarvis.db").write_text("rows")
 
+    cleared = []
+
+    def clear(credential):
+        cleared.append(credential.key)
+        return True
+
     with patch.object(ownership, "data_dir", return_value=data), \
          patch.object(ownership, "startup_shortcut_path", return_value=None), \
-         patch("app.core.credentials.get_stored_api_key", return_value="sk-ant-something"), \
-         patch("app.core.credentials.clear_stored_api_key", return_value=True) as clear, \
-         patch("app.core.credentials.get_elevenlabs_key", return_value=""):
+         patch.object(credentials, "owned_credential_status", return_value=(True, True)), \
+         patch.object(credentials, "clear_owned_credential", side_effect=clear):
         report = ownership.remove(purge_data=True)
 
     assert not data.exists()
-    clear.assert_called_once()
-    assert any("API key" in line for line in report.removed)
+    assert cleared == [item.key for item in credentials.OWNED_CREDENTIALS]
+    assert {item.what for item in credentials.OWNED_CREDENTIALS} <= set(report.removed)
 
 
-def test_a_failed_credential_purge_keeps_the_data_as_recovery_evidence(tmp_path):
+@pytest.mark.parametrize(
+    "failed_key",
+    [item.key for item in credentials.OWNED_CREDENTIALS],
+    ids=[item.key for item in credentials.OWNED_CREDENTIALS],
+)
+def test_any_failed_credential_purge_keeps_data_as_recovery_evidence(
+    tmp_path, failed_key,
+):
     data = tmp_path / "JARVIS"
     data.mkdir()
     (data / "jarvis.log").write_text("cleanup evidence")
 
+    def clear(credential):
+        return credential.key != failed_key
+
     with patch.object(ownership, "data_dir", return_value=data), \
          patch.object(ownership, "startup_shortcut_path", return_value=None), \
-         patch("app.core.credentials.get_stored_api_key", return_value="sk-ant-something"), \
-         patch("app.core.credentials.clear_stored_api_key", return_value=False), \
-         patch("app.core.credentials.get_elevenlabs_key", return_value=""):
+         patch.object(credentials, "owned_credential_status", return_value=(True, True)), \
+         patch.object(credentials, "clear_owned_credential", side_effect=clear):
         report = ownership.remove(purge_data=True)
 
-    assert report.failed
+    failed = next(item for item in credentials.OWNED_CREDENTIALS if item.key == failed_key)
+    assert failed.what in report.failed
     assert data.exists(), "failed secret cleanup must not erase the recovery evidence"
     assert any("cleanup was incomplete" in line for line in report.kept)
+
+
+def test_an_unreachable_credential_store_is_not_mistaken_for_no_credentials(tmp_path):
+    data = tmp_path / "JARVIS"
+    data.mkdir()
+
+    with patch.object(ownership, "data_dir", return_value=data), \
+         patch.object(ownership, "startup_shortcut_path", return_value=None), \
+         patch.object(credentials, "owned_credential_status", return_value=(False, False)), \
+         patch.object(credentials, "clear_owned_credential") as clear:
+        report = ownership.remove(purge_data=True)
+
+    assert len(report.failed) == len(credentials.OWNED_CREDENTIALS)
+    assert data.exists()
+    clear.assert_not_called()
+
+
+def test_every_absent_registered_credential_is_reported_individually(tmp_path):
+    with patch.object(ownership, "data_dir", return_value=tmp_path / "JARVIS"), \
+         patch.object(ownership, "startup_shortcut_path", return_value=None), \
+         patch.object(credentials, "owned_credential_status", return_value=(True, False)), \
+         patch.object(credentials, "clear_owned_credential") as clear:
+        report = ownership.remove(purge_data=True)
+
+    assert {item.what for item in credentials.OWNED_CREDENTIALS} <= set(report.not_present)
+    clear.assert_not_called()
 
 
 def test_the_sign_in_shortcut_is_removed_either_way(tmp_path):
@@ -155,7 +219,7 @@ def test_it_refuses_to_delete_something_that_is_not_the_data_folder(tmp_path):
 
     with patch.object(ownership, "data_dir", return_value=not_ours), \
          patch.object(ownership, "startup_shortcut_path", return_value=None), \
-         patch("app.core.credentials.get_stored_api_key", return_value=""):
+         patch.object(credentials, "owned_credential_status", return_value=(True, False)):
         report = ownership.remove(purge_data=True)
 
     assert (not_ours / "important.txt").exists()
@@ -163,12 +227,10 @@ def test_it_refuses_to_delete_something_that_is_not_the_data_folder(tmp_path):
 
 
 def test_removal_never_raises(tmp_path):
-    """An uninstaller cannot usefully fail — the files are going
-    regardless — so the useful behaviour is to report accurately rather
-    than abort and leave a half-removed installation."""
+    """Provider and profile failures become a report, never an escape."""
     with patch.object(ownership, "startup_shortcut_path", side_effect=OSError("boom")), \
          patch.object(ownership, "data_dir", side_effect=OSError("boom")), \
-         patch("app.core.credentials.get_stored_api_key", side_effect=OSError("boom")):
+         patch.object(credentials, "owned_credential_status", side_effect=OSError("boom")):
         report = ownership.remove(purge_data=True)
 
     assert report.failed, "a failure must be reported, not swallowed"
@@ -178,7 +240,7 @@ def test_removal_never_raises(tmp_path):
 def test_shared_components_and_ollama_are_kept_in_both_modes(tmp_path, purge):
     with patch.object(ownership, "data_dir", return_value=tmp_path / "JARVIS"), \
          patch.object(ownership, "startup_shortcut_path", return_value=None), \
-         patch("app.core.credentials.get_stored_api_key", return_value=""):
+         patch.object(credentials, "owned_credential_status", return_value=(True, False)):
         report = ownership.remove(purge_data=purge)
 
     kept = " ".join(report.kept)
@@ -241,8 +303,9 @@ def test_cleanup_failure_has_a_nonzero_exit_and_a_durable_report(tmp_path):
     from app.launcher import uninstall
 
     report_path = tmp_path / "cleanup.json"
+    credential_label = credentials.OWNED_CREDENTIALS[0].what
     incomplete = RemovalReport(
-        failed=["Your API key could not be removed."],
+        failed=[credential_label],
         kept=["The JARVIS data folder for recovery"],
     )
     with patch("app.core.ownership.remove", return_value=incomplete):
@@ -255,7 +318,7 @@ def test_cleanup_failure_has_a_nonzero_exit_and_a_durable_report(tmp_path):
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["status"] == "incomplete"
     assert payload["purge_data"] is True
-    assert payload["failed"] == ["Your API key could not be removed."]
+    assert payload["failed"] == [credential_label]
 
 
 def test_cleanup_success_requires_and_writes_the_final_report(tmp_path):
@@ -317,6 +380,16 @@ def test_the_prompt_says_what_each_answer_means():
     assert "Choosing No" in content
     assert "Choosing Yes" in content
     assert "MB_DEFBUTTON2" in content, "the destructive answer must not be the default"
+
+
+def test_interactive_purge_is_offered_even_when_only_credentials_may_exist():
+    content = _iss()
+    uninstall = content.split("procedure CurUninstallStepChanged", 1)[1]
+
+    assert "else if DirExists(DataDir)" not in uninstall
+    assert "saved API keys" in uninstall
+    assert "all JARVIS" in uninstall
+    assert "API keys from Windows Credential Manager" in uninstall
 
 
 def test_the_prompt_names_what_is_never_removed():

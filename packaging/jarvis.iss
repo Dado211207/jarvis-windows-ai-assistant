@@ -386,15 +386,15 @@ begin
       // human never has to type by accident.
       ShouldDelete := (CompareText(ExpandConstant('{param:DELETEDATA|no}'), 'yes') = 0);
     end
-    else if DirExists(DataDir) then
+    else
     begin
       Answer := MsgBox(
         'Remove everything JARVIS owns?' + #13#10 + #13#10 +
-        'Choosing No uninstalls the application and keeps your settings, chat history, ' +
-        'saved API key and any voice or speech model you downloaded, at:' + #13#10 +
+        'Choosing No uninstalls the application and keeps any settings, chat history, ' +
+        'saved API keys and voice or speech models, at:' + #13#10 +
         DataDir + #13#10 + #13#10 +
-        'Choosing Yes also deletes all of that, permanently, and removes your API key ' +
-        'from Windows Credential Manager. This cannot be undone.' + #13#10 + #13#10 +
+        'Choosing Yes also deletes any data there, permanently, and removes all JARVIS ' +
+        'API keys from Windows Credential Manager. This cannot be undone.' + #13#10 + #13#10 +
         'Either way, JARVIS never removes shared Windows components such as WebView2 ' +
         'or the Visual C++ Runtime, never removes Ollama or its models, and never ' +
         'touches your notes in Documents\JARVIS_Notes.',
