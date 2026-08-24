@@ -60,7 +60,9 @@ def _to_preview(action: PendingAction) -> ActionPreview:
         status=action.status,
         created_at=action.created_at.isoformat(),
         expires_at=action.expires_at.isoformat() if action.expires_at else None,
-        result=action.result,
+        # Tool payloads may contain clipboard text or future sensitive
+        # output. They are returned once by confirm, never retained.
+        result=None,
         error=action.error,
     )
 
@@ -97,21 +99,20 @@ class ActionHistoryResponse(BaseModel):
     total: int
 
 
-@router.get("/pending", response_model=List[ActionPreview])
+@router.get("/pending", response_model=List[ActionPreview], dependencies=[Depends(require_session_token)])
 def list_pending_actions() -> List[ActionPreview]:
     return [_to_preview(a) for a in pending_store.list_pending()]
 
 
 # Declared before /{action_id} so "history" is read as this route and not
 # as an action ID — FastAPI matches in declaration order.
-@router.get("/history", response_model=ActionHistoryResponse)
+@router.get("/history", response_model=ActionHistoryResponse, dependencies=[Depends(require_session_token)])
 def action_history(limit: int = 50, status: Optional[str] = None) -> ActionHistoryResponse:
     """Everything JARVIS has been asked to do on this machine.
 
-    Read-only and unauthenticated for the same reason /logs is: it
-    mutates nothing, it is reachable only from loopback, and a user
-    checking what happened should not need a token to look. It contains
-    no credential — inputs were redacted before they were stored.
+    Read-only but session-protected: action history can reveal what the
+    user asked JARVIS to do. The dashboard sends the same double-submit
+    token used by mutations, and inputs were redacted before storage.
     """
     from app.core.action_lifecycle import count, list_recent
 
@@ -147,7 +148,7 @@ def action_history(limit: int = 50, status: Optional[str] = None) -> ActionHisto
     )
 
 
-@router.get("/{action_id}", response_model=ActionPreview)
+@router.get("/{action_id}", response_model=ActionPreview, dependencies=[Depends(require_session_token)])
 def get_action(action_id: str) -> ActionPreview:
     action = pending_store.get(action_id)
     if action is None:
@@ -229,7 +230,7 @@ def confirm_action(action_id: str) -> ActionResponse:
         pass
 
     if result.get("success"):
-        pending_store.mark_executed(action_id, result.get("data"))
+        pending_store.mark_executed(action_id)
         _sync_lifecycle(action_id, ActionLifecycleStatus.SUCCEEDED, result_summary=redact_message(str(result.get("message", "")))[:500])
         event_bus.publish(
             EventType.ACTION_RESULT,
