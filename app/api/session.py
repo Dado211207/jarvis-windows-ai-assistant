@@ -1,11 +1,10 @@
-"""CSRF / mutation session token.
+"""Local dashboard session and canonical-Host boundary.
 
-JARVIS is single-user and local-only; this is NOT an authentication or
-identity system — there is no login, no user accounts, nothing to prove
-about *who* is asking. Its only job is proving a mutating request
-actually originated from JARVIS's own dashboard page, not a foreign
-page's forged cross-origin request or an unrelated local script that
-merely knows the port number is 5555.
+JARVIS is single-user and local-only; this is not a user-account identity
+system. It proves that protected reads and mutations came through the
+local dashboard, and rejects a non-canonical Host before routing or
+issuing a token so DNS rebinding cannot turn an attacker origin into a
+same-origin request to loopback.
 
 Origin validation (app/api/origin.py) already blocks a foreign browser
 page's WebSocket handshake, and CORS blocks a foreign page's JSON fetch()
@@ -35,10 +34,44 @@ from typing import Optional
 
 from fastapi import Cookie, Header, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import PlainTextResponse
+
+from app.config import settings
 
 COOKIE_NAME = "jarvis_session"
 HEADER_NAME = "X-JARVIS-Session-Token"
 TOKEN_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+
+
+def allowed_hosts() -> set[str]:
+    """Exact Host headers the local dashboard is allowed to use.
+
+    Host is part of the browser origin but CORS does not reject a
+    same-origin DNS-rebinding request: JavaScript loaded from
+    attacker.example:5555 can keep that origin while DNS changes the
+    address to 127.0.0.1. Rejecting the non-canonical Host before routing
+    or issuing a session cookie closes that gap.
+    """
+    port = settings.jarvis_port
+    return {
+        f"127.0.0.1:{port}",
+        f"localhost:{port}",
+        f"[::1]:{port}",
+        f"[0:0:0:0:0:0:0:1]:{port}",
+    }
+
+
+def is_allowed_host(host: Optional[str], client_host: Optional[str] = None) -> bool:
+    if not host:
+        return False
+    candidate = host.strip().lower()
+    if candidate in {item.lower() for item in allowed_hosts()}:
+        return True
+
+    # Starlette's in-process TestClient uses a synthetic Host/client pair.
+    # It cannot arrive over a real socket, so accepting that exact pair
+    # preserves unit tests without widening the production allowlist.
+    return candidate == "testserver" and client_host == "testclient"
 
 
 class SessionTokenStore:
@@ -101,6 +134,13 @@ class SessionCookieMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):
+        client_host = request.client.host if request.client is not None else None
+        if not is_allowed_host(request.headers.get("host"), client_host):
+            # Deliberately return before call_next() and before current():
+            # a DNS-rebinding probe must receive neither application data
+            # nor a freshly minted token.
+            return PlainTextResponse("Invalid Host header.", status_code=400)
+
         response = await call_next(request)
         current = session_tokens.current()
         if request.cookies.get(COOKIE_NAME) != current:
@@ -119,7 +159,7 @@ def require_session_token(
     x_jarvis_session_token: Optional[str] = Header(None, alias=HEADER_NAME),
     jarvis_session: Optional[str] = Cookie(None, alias=COOKIE_NAME),
 ) -> None:
-    """FastAPI dependency for every state-changing route.
+    """FastAPI dependency for protected reads and every state-changing route.
 
     Requires a valid, unexpired token presented as *both* the header and
     the cookie (double-submit) — matching values from a client that could
