@@ -208,6 +208,12 @@ def test_main_calls_every_phase_in_the_only_order_that_works():
     The voice-chain phase downloads two models into the data directory,
     so it has to run before the phase that deletes that directory.
 
+    The Coding Workspace phase has the same dependency as the lifecycle
+    loop — it drives the installed executable — and runs before it so that
+    a browser or preview process it failed to clean up would be caught by
+    the ten start/quit cycles that follow, rather than after them where
+    nothing would look.
+
     The upgrade phase is last for the opposite reason: the v0.1 migration
     only fires on a machine with no JARVIS data, which is precisely the
     state phase C leaves behind.
@@ -223,6 +229,7 @@ def test_main_calls_every_phase_in_the_only_order_that_works():
         "phase_a_install_launch_and_stop",
         "phase_f_installed_runtime_selftest",
         "phase_g_real_voice_through_the_installed_product",
+        "phase_i_installed_coding_workspace",
         "phase_d_repeated_start_and_quit",
         "phase_e_repeated_restart",
         "phase_b_uninstall_preserves_data_by_default",
