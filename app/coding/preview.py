@@ -226,7 +226,16 @@ class PreviewSession:
         handle = CommandHandle(full_argv, root, root.name)
         try:
             handle.start(env)
-        except (OSError, FileNotFoundError) as exc:
+        except PermissionError as exc:
+            self._state = PreviewState(last_error=str(exc))
+            return self._state
+        except FileNotFoundError:
+            self._state = PreviewState(last_error=(
+                f"'{full_argv[0]}' is not installed, or is not on PATH, so the "
+                "preview could not start."
+            ))
+            return self._state
+        except OSError as exc:
             self._state = PreviewState(last_error=f"The preview could not start ({type(exc).__name__}).")
             return self._state
 

@@ -156,6 +156,47 @@ def test_a_preview_will_not_start_a_second_time(served):
     assert "already running" in (state.last_error or "").lower()
 
 
+def test_a_missing_dev_server_program_is_named(tmp_path):
+    """"The preview could not start (FileNotFoundError)" is the message the
+    packaged acceptance test hit at step 11, and it says nothing a user can
+    act on. Name the program that is missing."""
+    root = tmp_path / "site"
+    root.mkdir()
+    session = preview.PreviewSession()
+    try:
+        state = session.start(root, ["definitely-not-a-real-dev-server-xyz"], "dev")
+    finally:
+        session.stop("test")
+
+    assert state.running is False
+    assert "definitely-not-a-real-dev-server-xyz" in (state.last_error or "")
+    assert "not on PATH" in (state.last_error or "")
+    assert "FileNotFoundError" not in (state.last_error or "")
+
+
+def test_a_dev_server_the_project_supplied_is_refused_by_name(tmp_path, monkeypatch):
+    """A repository does not get to supply the program that serves it."""
+    import os
+    import stat
+
+    root = tmp_path / "site"
+    tools = root / "tools"
+    tools.mkdir(parents=True)
+    shim = tools / "vite"
+    shim.write_text("#!/bin/sh\nexit 0\n")
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ.get("PATH", ""))
+
+    session = preview.PreviewSession()
+    try:
+        state = session.start(root, ["vite"], "dev")
+    finally:
+        session.stop("test")
+
+    assert state.running is False
+    assert "repository supplied" in (state.last_error or "")
+
+
 # ---------------------------------------------------------------------------
 # HTTP and structure checks
 # ---------------------------------------------------------------------------

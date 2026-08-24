@@ -36,6 +36,7 @@ record or an event.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -211,6 +212,56 @@ class CommandHandle:
     def cancelled(self) -> bool:
         return self._cancelled.is_set()
 
+    def _resolved_argv(self, env: Dict[str, str]) -> List[str]:
+        """The same argv, with the program resolved to an absolute path.
+
+        **This is a Windows correctness fix, not a tidiness one.** On
+        Windows `npm`, `npx`, `yarn` and `pnpm` are `.cmd` shims, and
+        `CreateProcess` — which is what `Popen(..., shell=False)` calls —
+        does **not** apply `PATHEXT`. So `["npm", "run", "dev"]` raises
+        `FileNotFoundError` on every Windows machine, and the packaged
+        acceptance test found exactly that: `app/coding/toolchain.py`
+        reported `npm=available` (it resolves through `shutil.which`,
+        which does apply PATHEXT) one line before the preview failed to
+        start. Every Node project's dev server, lint, test and build
+        command was unreachable on the platform this product ships for.
+
+        Resolution uses the **child's** PATH, not this process's, so what
+        is looked up is what the child would have looked up.
+
+        `shell=False` and argv-only are untouched: this makes the program
+        *more* explicit, never less. And a resolved path inside the
+        project is refused for the same reason
+        `toolchain._impersonation_refusal` refuses one — a repository does
+        not get to supply the program that runs against it, and here it
+        would actually be executed.
+        """
+        if not self.argv:
+            return list(self.argv)
+
+        program = self.argv[0]
+        if os.sep in program or (os.altsep and os.altsep in program):
+            return list(self.argv)          # already a path; nothing to look up
+
+        found = shutil.which(program, path=env.get("PATH"))
+        if not found:
+            # Left as-is so Popen raises the FileNotFoundError callers
+            # already turn into "'npm' is not installed, or is not on PATH".
+            return list(self.argv)
+
+        try:
+            resolved = Path(found).resolve()
+            root = self.cwd.resolve()
+        except (OSError, RuntimeError):
+            return [found, *self.argv[1:]]
+
+        if resolved == root or root in resolved.parents:
+            raise PermissionError(
+                f"'{program}' resolved to a program inside this project. JARVIS "
+                "will not run an executable a repository supplied."
+            )
+        return [str(resolved), *self.argv[1:]]
+
     def start(self, env: Dict[str, str]) -> None:
         creationflags = 0
         if os.name == "nt":
@@ -223,7 +274,7 @@ class CommandHandle:
             )
 
         self._process = subprocess.Popen(  # noqa: S603 — argv list, shell=False, see module docstring
-            self.argv,
+            self._resolved_argv(env),
             cwd=str(self.cwd),
             env=env,
             stdout=subprocess.PIPE,
@@ -373,6 +424,16 @@ def run(
             argv=list(argv), cwd=display_cwd, started_at=started, finished_at=time.time(),
             exit_code=None, stdout="",
             stderr=f"'{argv[0]}' is not installed, or is not on PATH.",
+            truncated=False, timed_out=False, cancelled=False,
+        )
+    except PermissionError as exc:
+        # A program the project supplied. Named rather than reduced to
+        # "could not be started": refusing to run a repository's own
+        # `npm.cmd` and failing to find npm at all call for entirely
+        # different responses from the user.
+        return CommandOutcome(
+            argv=list(argv), cwd=display_cwd, started_at=started, finished_at=time.time(),
+            exit_code=None, stdout="", stderr=str(exc),
             truncated=False, timed_out=False, cancelled=False,
         )
     except OSError as exc:
