@@ -168,6 +168,46 @@ def test_speak_returns_success_with_mocked_engine():
     assert "Speaking" in result.message
 
 
+def test_kokoro_speaks_through_player_with_a_live_cancel_event():
+    """Regression: the player must not cancel Kokoro before its first chunk.
+
+    This crosses the real _speak_kokoro -> Player boundary. The model and
+    Windows audio device are replaced, but the lazy generator, cancellation
+    ownership, worker thread and chunk accounting are the production path.
+    """
+    from app.voice import audio, engines
+    from app.voice.kokoro import engine as kokoro_engine
+
+    player = audio.Player()
+    cancel_events = []
+    played = []
+
+    def synthesise(_text, voice_key, speed, cancel):
+        cancel_events.append(cancel)
+        assert cancel.is_set() is False
+        yield kokoro_engine.SynthesisChunk(
+            samples=[0.0, 0.1, -0.1],
+            text="Hello.",
+            phonemes="həlˈəʊ",
+            seconds=0.01,
+        )
+
+    with patch.object(audio, "player", player), \
+         patch.object(kokoro_engine.engine, "synthesise", side_effect=synthesise), \
+         patch.object(audio, "encode_wav", return_value=b"RIFF-test"), \
+         patch.object(player, "_play_one", side_effect=played.append):
+        outcome = engines._speak_kokoro("Hello.", "bm_george", 1.0)
+        assert player.wait(timeout=2.0)
+
+    assert outcome.started is True
+    assert outcome.engine == engines.KOKORO
+    assert len(cancel_events) == 1
+    assert cancel_events[0].is_set() is False
+    assert cancel_events[0] is player.cancel_event()
+    assert played == [b"RIFF-test"]
+    assert player.state().chunks_played == 1
+
+
 def test_speak_empty_text_returns_failure():
     from app.voice.tts import TextToSpeechService
     svc = TextToSpeechService()

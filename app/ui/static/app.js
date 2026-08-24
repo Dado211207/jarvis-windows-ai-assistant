@@ -878,11 +878,15 @@ async function initSpeakRepliesToggle() {
 // captured continuously or in the background.
 
 const PTT_STATE = { IDLE: "idle", REQUESTING: "requesting", LISTENING: "listening", TRANSCRIBING: "transcribing", ERROR: "error" };
+const PTT_MAX_RECORDING_MS = 60 * 1000;
 let pttState = PTT_STATE.IDLE;
 let pttRecorder = null;
 let pttChunks = [];
 let pttStream = null;
 let pttUploadController = null;
+let pttRecordingTimer = null;
+let pttRequestGeneration = 0;
+let pttStopMessage = "";
 // Sticky, independent of pttState: true once /voice/stt-status reports
 // unavailable. setPttState() must keep respecting this on every call —
 // it previously recomputed `disabled` from pttState alone and silently
@@ -912,10 +916,21 @@ function setPttState(state, message) {
     btn.className = "btn " + (state === PTT_STATE.LISTENING ? "btn-danger" : "btn-ghost");
   }
   if (cancelBtn) {
-    cancelBtn.hidden = !(state === PTT_STATE.LISTENING || state === PTT_STATE.TRANSCRIBING);
+    cancelBtn.hidden = !(
+      state === PTT_STATE.REQUESTING
+      || state === PTT_STATE.LISTENING
+      || state === PTT_STATE.TRANSCRIBING
+    );
   }
   if (status) {
     status.textContent = message || "";
+  }
+}
+
+function pttClearRecordingTimer() {
+  if (pttRecordingTimer) {
+    clearTimeout(pttRecordingTimer);
+    pttRecordingTimer = null;
   }
 }
 
@@ -932,12 +947,22 @@ async function pttStart() {
     return;
   }
 
+  const requestGeneration = ++pttRequestGeneration;
   setPttState(PTT_STATE.REQUESTING, "Requesting microphone permission…");
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
+    if (requestGeneration !== pttRequestGeneration) return;
     setPttState(PTT_STATE.ERROR, "Microphone unavailable or permission denied. Text input still works.");
+    return;
+  }
+
+  // getUserMedia cannot itself be aborted. If Cancel or pagehide happened
+  // while its permission prompt was open, stop the late stream immediately
+  // instead of reviving a recording the user already ended.
+  if (requestGeneration !== pttRequestGeneration || pttState !== PTT_STATE.REQUESTING) {
+    stream.getTracks().forEach(track => track.stop());
     return;
   }
 
@@ -955,42 +980,80 @@ async function pttStart() {
     if (e.data && e.data.size > 0) pttChunks.push(e.data);
   });
   pttRecorder.addEventListener("stop", pttOnRecordingStopped);
+  pttRecorder.addEventListener("error", pttOnRecorderError);
 
-  pttRecorder.start();
+  try {
+    pttRecorder.start();
+  } catch (e) {
+    pttOnRecorderError();
+    return;
+  }
   setPttState(PTT_STATE.LISTENING, "Listening… click again or press Alt+M to stop.");
+  pttRecordingTimer = setTimeout(() => {
+    if (pttState === PTT_STATE.LISTENING) {
+      pttStop("Maximum recording length reached. Transcribing…");
+    }
+  }, PTT_MAX_RECORDING_MS);
 }
 
-function pttStop() {
+function pttStop(message = "") {
+  pttClearRecordingTimer();
+  pttStopMessage = message;
   if (pttRecorder && pttRecorder.state !== "inactive") {
     pttRecorder.stop(); // triggers pttOnRecordingStopped via the "stop" event
   }
 }
 
 function pttCancel() {
+  ++pttRequestGeneration;
+  pttClearRecordingTimer();
+  pttStopMessage = "";
   if (pttUploadController) {
     pttUploadController.abort();
     pttUploadController = null;
   }
-  if (pttRecorder && pttRecorder.state !== "inactive") {
+  if (pttRecorder) {
     pttRecorder.removeEventListener("stop", pttOnRecordingStopped);
-    pttRecorder.stop();
+    pttRecorder.removeEventListener("error", pttOnRecorderError);
+    if (pttRecorder.state !== "inactive") pttRecorder.stop();
+    pttRecorder = null;
   }
   pttReleaseMicrophone();
   pttChunks = [];
   setPttState(PTT_STATE.IDLE, "Cancelled.");
 }
 
+function pttOnRecorderError() {
+  ++pttRequestGeneration;
+  pttClearRecordingTimer();
+  pttStopMessage = "";
+  if (pttRecorder) {
+    pttRecorder.removeEventListener("stop", pttOnRecordingStopped);
+    pttRecorder.removeEventListener("error", pttOnRecorderError);
+  }
+  pttRecorder = null;
+  pttReleaseMicrophone();
+  pttChunks = [];
+  setPttState(PTT_STATE.ERROR, "Recording stopped unexpectedly. Text input still works.");
+}
+
 async function pttOnRecordingStopped() {
+  pttClearRecordingTimer();
+  if (pttRecorder) pttRecorder.removeEventListener("error", pttOnRecorderError);
+  pttRecorder = null;
   pttReleaseMicrophone();
   const blob = new Blob(pttChunks, { type: "audio/webm" });
   pttChunks = [];
 
   if (blob.size === 0) {
+    pttStopMessage = "";
     setPttState(PTT_STATE.IDLE, "No audio captured.");
     return;
   }
 
-  setPttState(PTT_STATE.TRANSCRIBING, "Transcribing…");
+  const stopMessage = pttStopMessage;
+  pttStopMessage = "";
+  setPttState(PTT_STATE.TRANSCRIBING, stopMessage || "Transcribing…");
 
   const token = getSessionCookie();
   const formData = new FormData();
@@ -4343,6 +4406,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Navigating away, closing the tab and quitting all end the same way:
   // every track stopped and every context closed before this page goes.
   window.addEventListener("pagehide", () => {
+    pttCancel();
     if (window.ClapController) ClapController.setQuitting();
     // The heartbeat stops with the page, which is what makes the
     // server's staleness window mean something.
