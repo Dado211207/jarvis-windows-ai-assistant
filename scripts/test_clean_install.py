@@ -1350,6 +1350,7 @@ def phase_i_installed_coding_workspace(log_dir: Path) -> None:
         wait_for_health=wait_for_health,
         wait_for_health_to_stop=wait_for_health_to_stop,
         wait_for_pid_exit=wait_for_pid_exit,
+        wait_for_desktop_ready=wait_for_desktop_ready,
     )
 
 

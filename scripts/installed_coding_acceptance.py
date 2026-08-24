@@ -98,15 +98,30 @@ def _fail(text: str) -> None:
     raise SystemExit(1)
 
 
-def _client():
+def _client(attempts: int = 20):
+    """A session-authenticated client, waiting out a startup refusal.
+
+    Bounded rather than immediate: the readiness signal above is the real
+    gate, and this is the belt to its braces. A single attempt turned a
+    two-second window into a failed acceptance run.
+    """
     import httpx
 
     client = httpx.Client(base_url=BASE_URL, timeout=180.0)
-    client.get("/health")                      # mints the session cookie
-    token = client.cookies.get("jarvis_session")
-    if not token:
-        _fail("The installed app issued no session token, so nothing can be driven.")
-    client.headers["X-JARVIS-Session-Token"] = token
+    last = ""
+    for _ in range(attempts):
+        try:
+            client.get("/health")              # mints the session cookie
+            token = client.cookies.get("jarvis_session")
+            if token:
+                client.headers["X-JARVIS-Session-Token"] = token
+                return client
+            last = "no session token was issued"
+        except Exception as exc:  # noqa: BLE001
+            last = f"{type(exc).__name__}"
+        time.sleep(0.5)
+    _fail(f"The installed app never issued a session token ({last}), "
+          "so nothing could be driven.")
     return client
 
 
@@ -158,7 +173,7 @@ def _write_fixture(root: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def run(exe_path: Path, log_dir: Path, wait_for_health, wait_for_health_to_stop,
-        wait_for_pid_exit) -> None:
+        wait_for_pid_exit, wait_for_desktop_ready) -> None:
     """Steps 1-25 of §7, against the installed executable."""
     workspace = Path(tempfile.mkdtemp(prefix="jarvis-coding-acceptance-"))
     project_root = workspace / "corner-shop"
@@ -172,6 +187,15 @@ def run(exe_path: Path, log_dir: Path, wait_for_health, wait_for_health_to_stop,
     preview_pid = None
     try:
         wait_for_health(proc)
+        # And then the parent's own readiness signal. `/health` answers as
+        # soon as the *server child* is up, several seconds before the
+        # parent has finished starting — and a launch that arrives during
+        # that gap can still be handed off to a previous instance that is
+        # on its way out, leaving nothing listening. This phase learned
+        # that the same way the lifecycle phases did: health answered,
+        # and two seconds later the connection was refused.
+        ready = wait_for_desktop_ready()
+        print(f"  desktop ready (session {ready.get('session_id', '?')})")
 
         _step("Step 2: Authenticate through the normal session mechanism")
         client = _client()
