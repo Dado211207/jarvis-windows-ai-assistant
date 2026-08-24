@@ -76,8 +76,9 @@ _declare(CodingCapability(
     "depends on the command — see app/coding/commands.py.",
     RiskLevel.SENSITIVE, False))
 _declare(CodingCapability(
-    "start_preview", "Start the project's own dev server, bound to 127.0.0.1.",
-    RiskLevel.REVERSIBLE, False))
+    "start_preview", "Start the project's own dev server, bound to 127.0.0.1. "
+    "This executes project-declared code and always needs approval.",
+    RiskLevel.SENSITIVE, True))
 _declare(CodingCapability(
     "stop_preview", "Stop the preview JARVIS started.", RiskLevel.READ_ONLY, False))
 _declare(CodingCapability(

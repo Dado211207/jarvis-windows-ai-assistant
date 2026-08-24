@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from app.coding import agent, limits, loop, schema, tasks
+from app.coding import agent, limits, loop, schema, tasks, undo
 from app.coding.loop import LoopState
 from tests import coding_fixtures as fx
 
@@ -95,6 +95,7 @@ def no_real_installs(monkeypatch):
 def task_env(tmp_path, monkeypatch):
     """A task context wired to a scratch history file."""
     monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "history.json")
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
 
     def build(root: Path, replies, request="do the thing", declared=None):
         record = tasks.create("p1", request)
@@ -255,6 +256,48 @@ def test_the_model_cannot_reach_a_path_outside_the_project(tmp_path, task_env):
     runner.run()
     assert victim.read_text(encoding="utf-8") == "the user's other file\n"
     assert not (tmp_path.parent / "new-outside.txt").exists()
+
+
+
+def test_an_update_without_the_hash_from_an_inspection_is_refused(tmp_path, task_env):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    target = root / "index.html"
+    before = target.read_bytes()
+    runner, context, provider = task_env(root, [
+        turn({
+            "action": "propose_patch",
+            "path": "index.html",
+            "new_content": "<h1>blind overwrite</h1>\n",
+        }),
+        turn({"action": "finish_task", "summary": "refused safely"}),
+    ])
+
+    result = runner.run()
+
+    assert result.state is LoopState.COMPLETED
+    assert target.read_bytes() == before
+    assert context.record.files_changed == []
+    assert "base_sha256" in provider.everything_ever_sent()
+
+
+def test_starting_a_declared_preview_script_requires_approval(tmp_path, task_env):
+    root = fx.vite_react_ts(tmp_path / "project")
+    declared = {
+        "dev": {
+            "argv": ["npm", "run", "dev"],
+            "source": 'package.json scripts."dev"',
+            "declared": "vite",
+        },
+    }
+    runner, context, provider = task_env(root, [
+        turn({"action": "start_preview", "script": "dev"}),
+    ], declared=declared)
+
+    result = runner.run()
+
+    assert result.state is LoopState.AWAITING_APPROVAL
+    assert result.approval["detail"]["argv"] == ["npm", "run", "dev"]
+    assert context.preview is None
 
 
 # ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from app.coding import commands as command_policy
-from app.coding import editing, gitsafe, limits, schema, tasks
+from app.coding import editing, gitsafe, limits, schema, tasks, undo
 from app.coding.workspace import (
     ResolvedPath, WorkspaceViolation, is_protected, iter_project_files, resolve,
     safe_metadata,
@@ -111,6 +111,7 @@ class TaskContext:
     budget: limits.TaskBudget = field(default_factory=limits.TaskBudget)
     approved_argvs: List[List[str]] = field(default_factory=list)
     approved_deletes: List[str] = field(default_factory=list)
+    approved_previews: List[str] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
     stop_requested: bool = False
     file_hashes: Dict[str, str] = field(default_factory=dict)   # path -> hash JARVIS last wrote
@@ -214,6 +215,10 @@ def execute_proposal(
         needs_approval = True
     if action == "run_command" and tier is command_policy.CommandTier.AUTO:
         needs_approval = False
+    if action == "start_preview" and proposal.script not in context.approved_previews:
+        # Starting a preview executes the project's declared dev script.
+        # A package.json entry is untrusted project content, not permission.
+        needs_approval = True
 
     if needs_approval:
         request = _approval_request_for(context, proposal, policy_reason, risk)
@@ -260,6 +265,27 @@ def _approval_request_for(
             kind="delete",
             summary=f"Delete {proposal.path}",
             detail={"path": proposal.path, "reason": reason, "risk": risk.value},
+        )
+    if action == "start_preview":
+        entry = (
+            context.declared_commands.get(proposal.script)
+            or context.declared_commands.get("dev")
+            or {}
+        )
+        argv = list(entry.get("argv") or [])
+        return ApprovalRequest(
+            kind="command",
+            summary=f"Start preview: {' '.join(argv) if argv else proposal.script}",
+            detail={
+                "argv": argv,
+                "declared_script": str(entry.get("declared") or "")[:400],
+                "source": str(entry.get("source") or ""),
+                "reason": (
+                    "Starting the preview executes project-declared code with your "
+                    "account's permissions."
+                ),
+                "risk": RiskLevel.SENSITIVE.value,
+            },
         )
     return ApprovalRequest(
         kind="generic", summary=f"Allow {action}?",
@@ -446,12 +472,32 @@ def _write_file(context: TaskContext, proposal) -> StepOutcome:
     base = None if is_create else getattr(proposal, "base_sha256", None)
 
     target = _validated_path(context, proposal.path)
+    snapshot = editing.read_snapshot(target)
+
+    if not is_create and not snapshot.existed:
+        message = (
+            f"'{target.display}' does not exist. Use create_file rather than an "
+            "update proposal."
+        )
+        return StepOutcome(False, message, "patch", model_text=f"REFUSED: {message}")
+
     if not is_create and base is None:
-        # A patch with no base hash cannot be checked for staleness, so
-        # the current hash is required first. Refusing is safer than
-        # writing blind.
-        snapshot = editing.read_snapshot(target)
-        base = snapshot.sha256
+        message = (
+            "The update has no base_sha256. Inspect the file first and propose the "
+            "change against the hash JARVIS returned; nothing was written."
+        )
+        return StepOutcome(False, message, "patch", model_text=f"REFUSED: {message}")
+
+    backup_id = ""
+    if not is_create:
+        try:
+            backup_id = undo.store_bytes(context.task_id, target.absolute.read_bytes())
+        except (OSError, undo.UndoBackupError) as exc:
+            message = str(exc) if isinstance(exc, undo.UndoBackupError) else (
+                f"JARVIS could not create the undo backup ({type(exc).__name__}), "
+                "so the file was not changed."
+            )
+            return StepOutcome(False, message, "patch", model_text=f"REFUSED: {message}")
 
     edit = editing.EditProposal(
         kind=kind, path=proposal.path, new_text=content,
@@ -464,15 +510,19 @@ def _write_file(context: TaskContext, proposal) -> StepOutcome:
         context.file_hashes[result.proposal.path] = result.after_sha256 or ""
         context.record.files_changed.append({
             "path": result.proposal.path,
+            "destination": "",
             "kind": kind.value,
             "lines_added": result.lines_added,
             "lines_removed": result.lines_removed,
             "before_sha256": result.before_sha256,
             "after_sha256": result.after_sha256,
+            "undo_backup": backup_id,
             "pre_existing": result.proposal.path in set(
                 context.record.pre_existing_changes.get("all_paths", [])
             ),
         })
+    else:
+        undo.discard(context.task_id, backup_id)
     tasks.append_step(
         context.record, "patch", result.message,
         {"path": result.proposal.path, "added": result.lines_added,
@@ -488,32 +538,77 @@ def _write_file(context: TaskContext, proposal) -> StepOutcome:
 
 def _delete_file(context: TaskContext, proposal) -> StepOutcome:
     target = _validated_path(context, proposal.path, must_exist=True)
+    snapshot = editing.read_snapshot(target)
+    try:
+        backup_id = undo.store_bytes(context.task_id, target.absolute.read_bytes())
+    except (OSError, undo.UndoBackupError) as exc:
+        message = str(exc) if isinstance(exc, undo.UndoBackupError) else (
+            f"JARVIS could not create the undo backup ({type(exc).__name__}), "
+            "so the file was not deleted."
+        )
+        return StepOutcome(False, message, "patch", model_text=f"REFUSED: {message}")
+
     edit = editing.EditProposal(
-        kind=editing.EditKind.DELETE, path=proposal.path, reason=proposal.reason
+        kind=editing.EditKind.DELETE, path=proposal.path,
+        base_sha256=snapshot.sha256, reason=proposal.reason,
     )
     result = editing.apply(context.root, edit, approved_delete=True)
     tasks.append_step(context.record, "patch", result.message,
                       {"path": target.display, "deleted": result.applied}, ok=result.applied)
     if result.applied:
         context.record.files_changed.append({
-            "path": target.display, "kind": "delete",
+            "path": target.display, "destination": "", "kind": "delete",
             "before_sha256": result.before_sha256, "after_sha256": None,
+            "undo_backup": backup_id,
             "lines_added": 0, "lines_removed": result.lines_removed,
         })
+    else:
+        undo.discard(context.task_id, backup_id)
     return StepOutcome(result.applied, result.message, "patch",
                        {"path": target.display},
                        model_text=("OK: " if result.applied else "REFUSED: ") + result.message)
 
 
 def _rename_file(context: TaskContext, proposal) -> StepOutcome:
+    source = _validated_path(context, proposal.path, must_exist=True)
+    destination = _validated_path(context, proposal.destination)
+    snapshot = editing.read_snapshot(source)
+    try:
+        backup_id = undo.store_bytes(context.task_id, source.absolute.read_bytes())
+    except (OSError, undo.UndoBackupError) as exc:
+        message = str(exc) if isinstance(exc, undo.UndoBackupError) else (
+            f"JARVIS could not create the undo backup ({type(exc).__name__}), "
+            "so the file was not renamed."
+        )
+        return StepOutcome(False, message, "patch", model_text=f"REFUSED: {message}")
+
     edit = editing.EditProposal(
         kind=editing.EditKind.RENAME, path=proposal.path,
-        destination=proposal.destination, reason=proposal.reason,
+        destination=destination.display, base_sha256=snapshot.sha256,
+        reason=proposal.reason,
     )
     result = editing.apply(context.root, edit)
-    tasks.append_step(context.record, "patch", result.message, {}, ok=result.applied)
-    return StepOutcome(result.applied, result.message, "patch", {},
-                       model_text=("OK: " if result.applied else "REFUSED: ") + result.message)
+    tasks.append_step(context.record, "patch", result.message, {
+        "path": source.display,
+        "destination": destination.display,
+    }, ok=result.applied)
+    if result.applied:
+        context.record.files_changed.append({
+            "path": source.display,
+            "destination": destination.display,
+            "kind": "rename",
+            "before_sha256": result.before_sha256,
+            "after_sha256": result.after_sha256,
+            "undo_backup": backup_id,
+            "lines_added": 0,
+            "lines_removed": 0,
+        })
+    else:
+        undo.discard(context.task_id, backup_id)
+    return StepOutcome(result.applied, result.message, "patch", {
+        "path": source.display,
+        "destination": destination.display,
+    }, model_text=("OK: " if result.applied else "REFUSED: ") + result.message)
 
 
 def _run_command(context: TaskContext, proposal, *, on_event=None) -> StepOutcome:

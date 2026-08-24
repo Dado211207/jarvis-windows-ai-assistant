@@ -82,6 +82,7 @@ def start_task(task_id: str, *, allow_in_place: bool = False) -> dict:
     working_root = project_root
     isolation = plan.as_dict()
 
+    worktree_created = False
     if plan.possible:
         created, message = gitsafe.create_worktree(project_root, plan)
         if not created:
@@ -92,6 +93,7 @@ def start_task(task_id: str, *, allow_in_place: bool = False) -> dict:
                 "edit your working copy directly.",
                 {"isolation": isolation},
             )
+        worktree_created = True
         working_root = Path(plan.worktree_path or project_root)
         isolation["active"] = True
         isolation["message"] = message
@@ -116,36 +118,60 @@ def start_task(task_id: str, *, allow_in_place: bool = False) -> dict:
             "is touched."
         )
 
-    detected = stacks.detect(working_root)
-    declared = stacks.project_commands(detected)
+    try:
+        detected = stacks.detect(working_root)
+        declared = stacks.project_commands(detected)
 
-    context = agent.TaskContext(
-        task_id=task_id,
-        project_id=record.project_id,
-        root=working_root,
-        project_root=project_root,
-        record=record,
-        declared_commands=declared,
-        budget=limits.TaskBudget(),
-    )
+        context = agent.TaskContext(
+            task_id=task_id,
+            project_id=record.project_id,
+            root=working_root,
+            project_root=project_root,
+            record=record,
+            declared_commands=declared,
+            budget=limits.TaskBudget(),
+        )
 
-    runner = loop.TaskRunner(
-        context,
-        provider=provider,
-        choice=choice,
-        system_prompt=loop.build_coding_prompt(detected.label, project_root.name),
-    )
-    runner.seed(_opening_message(record, detected, isolation))
+        runner = loop.TaskRunner(
+            context,
+            provider=provider,
+            choice=choice,
+            system_prompt=loop.build_coding_prompt(detected.label, project_root.name),
+        )
+        runner.seed(_opening_message(record, detected, declared, isolation))
 
-    record.isolation = isolation
-    record.provider = choice.as_dict()
-    tasks.set_state(record, tasks.TaskState.RUNNING)
+        record.isolation = isolation
+        record.provider = choice.as_dict()
+        tasks.set_state(record, tasks.TaskState.RUNNING)
 
-    sessions.register(runner)
-    thread = threading.Thread(
-        target=_run_and_report, args=(runner,), name=f"coding-{task_id[:8]}", daemon=True
-    )
-    thread.start()
+        sessions.register(runner)
+        thread = threading.Thread(
+            target=_run_and_report, args=(runner,), name=f"coding-{task_id[:8]}", daemon=True
+        )
+        thread.start()
+    except Exception as exc:
+        sessions.unregister(task_id)
+        cleanup_ok, cleanup_message = True, "No worktree had been created."
+        if worktree_created:
+            cleanup_ok, cleanup_message = gitsafe.cleanup_failed_isolation(project_root, plan)
+        message = (
+            "JARVIS could not start the coding task. "
+            + (
+                "The temporary worktree and branch were removed."
+                if cleanup_ok else
+                f"The temporary isolation could not be removed safely: {cleanup_message}"
+            )
+        )
+        tasks.append_step(
+            record, "error", message,
+            {"setup_error": type(exc).__name__, "cleanup_ok": cleanup_ok},
+            ok=False,
+        )
+        tasks.set_state(record, tasks.TaskState.FAILED, {"summary": message})
+        raise StartRefused(
+            message,
+            {"isolation": isolation, "cleanup_ok": cleanup_ok},
+        ) from None
 
     return {
         "started": True,
@@ -156,7 +182,7 @@ def start_task(task_id: str, *, allow_in_place: bool = False) -> dict:
     }
 
 
-def _opening_message(record, detected, isolation: dict) -> str:
+def _opening_message(record, detected, declared: dict, isolation: dict) -> str:
     """The only text in the conversation that carries authority.
 
     Everything else the model reads arrives inside an untrusted-content
@@ -167,7 +193,7 @@ def _opening_message(record, detected, isolation: dict) -> str:
         f"TASK FROM THE USER: {record.request}\n\n"
         f"Project stack: {detected.label}\n"
         f"Package manager: {detected.package_manager or 'not detected'}\n"
-        f"Declared commands: {', '.join(sorted(detected.commands)) or 'none'}\n"
+        f"Declared commands: {', '.join(sorted(declared)) or 'none'}\n"
         f"Working location: {isolation.get('message', 'the project folder')}\n\n"
         "Start by looking at the project before changing anything. "
         "Reply with the JSON described in your instructions."
