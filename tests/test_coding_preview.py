@@ -182,7 +182,10 @@ def test_a_dev_server_the_project_supplied_is_refused_by_name(tmp_path, monkeypa
     root = tmp_path / "site"
     tools = root / "tools"
     tools.mkdir(parents=True)
-    shim = tools / "vite"
+    # `.cmd` on Windows: `shutil.which` looks for the name plus each
+    # PATHEXT entry and never for an extensionless file, so a bare `vite`
+    # there would not be found and the test would prove nothing.
+    shim = tools / ("vite.cmd" if os.name == "nt" else "vite")
     shim.write_text("#!/bin/sh\nexit 0\n")
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ.get("PATH", ""))

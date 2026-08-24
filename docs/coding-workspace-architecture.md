@@ -224,3 +224,18 @@ Stated because a security document that lists only its strengths is marketing.
   not matter, because the model cannot name a tool that does not exist, cannot
   reach a path outside the root, and cannot self-approve. Tests assert the
   structural property, not the model's judgement.
+* **A Linux test suite cannot see a Windows process-creation defect, and
+  this one shipped.** `subprocess.Popen(argv, shell=False)` calls
+  `CreateProcess`, which appends `.exe` to an extensionless program but does
+  **not** apply `PATHEXT`. `git`, `node` and `python` therefore start;
+  `npm`, `npx`, `yarn` and `pnpm` — `.cmd` shims — did not, so every Node
+  project's dev, test, lint, format and build command raised
+  `FileNotFoundError` on the only platform this product ships for, while
+  `toolchain.py` truthfully reported them available because `shutil.which`
+  *does* apply `PATHEXT`. Nothing on Linux could have caught it: there,
+  `npm` really is a file called `npm`. It was found by the acceptance phase
+  that drives the *installed* executable, which is the reason that phase
+  exists. `runner.CommandHandle._resolved_argv()` now resolves a bare
+  program name against the child's own PATH before `Popen` sees it, and
+  refuses a result inside the project. The general lesson stands: a
+  guarantee only holds on a platform something actually exercised it on.

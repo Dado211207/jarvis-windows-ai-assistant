@@ -110,6 +110,19 @@ was deliberately left out.
   report licence and size as unknown rather than querying the registry to
   find out — that would be a network request made because the user is
   being asked whether to permit one.
+- **The program is resolved before it is started, against the child's own
+  PATH.** `CreateProcess` appends `.exe` but does not apply `PATHEXT`, so
+  `["npm", "run", "dev"]` — `npm` is `npm.cmd` — raised
+  `FileNotFoundError` on every Windows machine while
+  `app/coding/toolchain.py` truthfully reported `npm=available`, because
+  `shutil.which` *does* apply it. Every Node dev, test, lint, format and
+  build command in the product was unreachable, and every test passed on
+  Linux, where `npm` really is a file called `npm`.
+  `runner.CommandHandle._resolved_argv()` is the only place this happens;
+  a resolved path inside the project is refused, as
+  `toolchain._impersonation_refusal` refuses one. argv-only and
+  `shell=False` are untouched — resolving makes the program *more*
+  explicit, never less.
 - **Every child gets an allowlisted environment**, so no `npm install`
   postinstall script ever sees `ANTHROPIC_API_KEY`. A key that is dropped
   is logged, never silently discarded.

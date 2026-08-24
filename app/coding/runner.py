@@ -235,6 +235,15 @@ class CommandHandle:
         `toolchain._impersonation_refusal` refuses one — a repository does
         not get to supply the program that runs against it, and here it
         would actually be executed.
+
+        That refusal is not decoration. `shutil.which` on Windows inserts
+        `os.curdir` at the *front* of the search path — "the current
+        directory takes precedence on Windows", in CPython's own words —
+        so it resolves against this process's working directory before
+        PATH. Nothing under `app/` calls `os.chdir` today, which is the
+        only reason that directory is never the user's project; the
+        containment check is what keeps this correct if that ever stops
+        being true.
         """
         if not self.argv:
             return list(self.argv)
@@ -243,7 +252,10 @@ class CommandHandle:
         if os.sep in program or (os.altsep and os.altsep in program):
             return list(self.argv)          # already a path; nothing to look up
 
-        found = shutil.which(program, path=env.get("PATH"))
+        # `path=""` rather than `path=None`: `shutil.which(cmd, path=None)`
+        # falls back to *this* process's PATH, which would quietly resolve a
+        # tool the child cannot see and contradict the paragraph above.
+        found = shutil.which(program, path=env.get("PATH", ""))
         if not found:
             # Left as-is so Popen raises the FileNotFoundError callers
             # already turn into "'npm' is not installed, or is not on PATH".

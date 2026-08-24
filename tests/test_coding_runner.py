@@ -33,8 +33,19 @@ from tests import coding_fixtures as fx
 
 
 def make_program(directory: Path, name: str, body: str = "#!/bin/sh\nexit 0\n") -> Path:
-    """A real executable file, so `shutil.which` genuinely finds it."""
+    """A real executable file, so `shutil.which` genuinely finds it.
+
+    On Windows an extensionless file is not a program: `shutil.which`
+    looks for `name` + each `PATHEXT` entry and never for `name` itself.
+    A test creating a bare `faketool` there would prove the opposite of
+    what it means to — `which` would find nothing, `_resolved_argv` would
+    correctly leave the name alone, and the assertion would fail for a
+    reason that has nothing to do with the code under test. `.cmd` is
+    also exactly the shape of the shim this whole section exists for.
+    """
     directory.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt" and not Path(name).suffix:
+        name += ".cmd"
     path = directory / name
     path.write_text(body)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -370,7 +381,7 @@ def test_a_symlink_into_the_project_is_refused_too(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     try:
-        (bindir / "vite").symlink_to(real)
+        (bindir / real.name).symlink_to(real)
     except (OSError, NotImplementedError):  # pragma: no cover — no symlink privilege
         pytest.skip("this platform/account cannot create symlinks")
 
@@ -431,10 +442,18 @@ def test_a_missing_program_keeps_the_message_the_user_already_reads(tmp_path):
     assert "is not installed, or is not on PATH" in outcome.stderr
 
 
-def test_an_env_with_no_path_at_all_does_not_raise(tmp_path):
+def test_an_env_with_no_path_does_not_fall_back_to_this_processs_path(tmp_path, monkeypatch):
+    """`shutil.which(cmd, path=None)` reads *this* process's PATH. A child
+    given no PATH can find nothing, and saying otherwise would contradict
+    the whole point of resolving against the child's environment."""
+    bindir = tmp_path / "bin"
+    make_program(bindir, "parentonly")
     project = tmp_path / "project"
     project.mkdir()
-    assert handle_for(project, ["anything"])._resolved_argv({}) == ["anything"]
+    monkeypatch.setenv("PATH", str(bindir))
+
+    assert handle_for(project, ["parentonly"])._resolved_argv({}) == ["parentonly"]
+    assert handle_for(project, ["parentonly"])._resolved_argv({"PATH": ""}) == ["parentonly"]
 
 
 def test_empty_argv_is_returned_unchanged(tmp_path):
@@ -473,6 +492,38 @@ def test_resolving_never_produces_a_command_line(tmp_path):
     assert isinstance(resolved, list)
     assert all(isinstance(part, str) for part in resolved)
     assert resolved[1:] == argv[1:], "an argument was quoted, escaped or merged"
+
+
+def test_nothing_in_the_product_changes_this_processs_working_directory():
+    """A structural assumption `_resolved_argv` depends on.
+
+    `shutil.which` on Windows inserts `os.curdir` at the *front* of the
+    search path, so it resolves against this process's working directory
+    before PATH. That is harmless only while that directory is never a
+    user's project — which holds because nothing under `app/` chdirs.
+    A future `os.chdir` would silently change what program a coding
+    command runs, so it fails here rather than there.
+    """
+    import ast
+
+    app_root = Path(__file__).resolve().parent.parent / "app"
+    offenders = []
+    for path in sorted(app_root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = getattr(func, "attr", None) or getattr(func, "id", None)
+            if name == "chdir":
+                offenders.append(f"{path}:{node.lineno}")
+
+    assert offenders == [], (
+        "os.chdir appeared in the product: "
+        + ", ".join(offenders)
+        + ". `_resolved_argv`'s project-containment check now carries this "
+          "on its own — read its docstring before allowing this."
+    )
 
 
 def test_a_tool_the_toolchain_calls_available_can_actually_be_started(tmp_path):
