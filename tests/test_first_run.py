@@ -167,10 +167,36 @@ def test_finishing_and_skipping_both_complete_onboarding():
     assert "/onboarding/complete" in js
 
 
+def test_setup_has_an_assertive_place_for_persistence_failures():
+    html = _html()
+    assert 'id="setup-finish-message"' in html
+    assert 'role="alert"' in html
+    assert 'aria-live="assertive"' in html
+
+
 def test_the_name_is_saved_before_leaving_the_page():
     js = _js()
     init_setup = js[js.index("function initSetup()"):]
     assert 'savePreferredName("setup-name-input")' in init_setup
+
+
+def test_a_name_save_failure_stays_on_setup_and_says_why():
+    js = _js()
+    init_setup = js[js.index("function initSetup()"):js.index("function initVoice()")]
+    assert "const nameSaved = await savePreferredName" in init_setup
+    assert "if (!nameSaved)" in init_setup
+    assert "could not save your name" in init_setup
+    assert init_setup.index("if (!nameSaved)") < init_setup.index("await finishSetup()")
+
+
+def test_a_completion_failure_does_not_redirect_or_claim_success():
+    js = _js()
+    finish = js[js.index("async function finishSetup()"):js.index("function initSetup()")]
+    assert "if (!result.success)" in finish
+    assert "could not finish setup" in finish
+    assert 'window.location.href = "/ui/"' in finish
+    assert finish.index('window.location.href = "/ui/"') < finish.index("} catch (e)")
+    assert "return false" in finish
 
 
 def test_a_rejected_key_keeps_the_user_on_the_page_to_fix_it():

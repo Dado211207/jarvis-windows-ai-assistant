@@ -139,3 +139,16 @@ def test_post_complete_marks_it_done(api_client):
     assert r.status_code == 200
     assert r.json() == {"success": True}
     mock_mark.assert_called_once()
+
+
+def test_post_complete_reports_marker_write_failure(api_client):
+    """A failed marker write must not become a false successful first run."""
+    with patch(
+        "app.core.onboarding.mark_onboarding_complete",
+        side_effect=OSError("profile is read-only"),
+    ):
+        r = api_client.post("/onboarding/complete")
+
+    assert r.status_code == 503
+    assert r.json()["detail"] == "Onboarding could not be completed on this machine."
+    assert "profile is read-only" not in r.text

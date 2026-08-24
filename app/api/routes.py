@@ -814,7 +814,11 @@ def set_preferred_name(req: SetPreferredNameRequest) -> PreferredNameResponse:
     from app.core.system_prompt import _sanitise_name
 
     cleaned = _sanitise_name(req.name)[:MAX_PREFERRED_NAME_LENGTH]
-    store("preferred_name", cleaned)
+    if not store("preferred_name", cleaned):
+        # A 200 here would make first-run leave the page while the name
+        # was never persisted. The UI owns the user-facing recovery
+        # sentence; this status is the unambiguous machine-readable fact.
+        raise HTTPException(status_code=503, detail="The preferred name could not be saved.")
     return PreferredNameResponse(name=cleaned)
 
 
@@ -1240,7 +1244,14 @@ def onboarding_complete_status() -> OnboardingCompleteResponse:
 )
 def mark_onboarding_complete() -> OnboardingCompleteResponse:
     from app.core.onboarding import mark_onboarding_complete as _mark
-    _mark()
+    try:
+        _mark()
+    except Exception:  # noqa: BLE001 — profile/path failures are recoverable here
+        logger.warning("Onboarding completion marker could not be written.", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="Onboarding could not be completed on this machine.",
+        )
     return OnboardingCompleteResponse(success=True)
 
 

@@ -10,6 +10,8 @@ nothing, backed by an environment variable a packaged-app user does not
 have.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from app.core import preferences
@@ -125,6 +127,15 @@ def test_preferred_name_round_trips_through_the_api(api_client):
     assert saved.status_code == 200
     assert saved.json() == {"name": "Dado"}
     assert api_client.get("/settings/preferred-name").json() == {"name": "Dado"}
+
+
+def test_preferred_name_write_failure_is_not_reported_as_saved(api_client):
+    """First run must stay put when AppData could not be written."""
+    with patch("app.core.preferences.store", return_value=False):
+        saved = api_client.post("/settings/preferred-name", json={"name": "Dado"})
+
+    assert saved.status_code == 503
+    assert "could not be saved" in saved.json()["detail"]
 
 
 def test_saving_a_name_requires_the_session_token():

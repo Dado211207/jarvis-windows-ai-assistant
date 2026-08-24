@@ -160,7 +160,18 @@ def remove(purge_data: bool = False) -> RemovalReport:
     _remove_startup_shortcut(report)
     if purge_data:
         _remove_credential(report)
-        _remove_data_dir(report)
+        if report.failed:
+            # Fail closed. The log and preferences under this directory
+            # are the only durable evidence the uninstaller can leave
+            # when Credential Manager or shortcut cleanup failed. A
+            # partial purge that deletes that evidence and then reports
+            # success is worse than retaining the folder with an honest
+            # recovery instruction.
+            report.kept.append(
+                "The JARVIS data folder because uninstall cleanup was incomplete"
+            )
+        else:
+            _remove_data_dir(report)
     else:
         report.kept.append("Your settings, history and downloaded models")
         report.kept.append("Your API key in Windows Credential Manager")
