@@ -1,4 +1,4 @@
-"""Secure storage for the Anthropic API key via the OS credential store
+"""Secure storage for JARVIS API credentials via the OS credential store
 (Windows Credential Manager, through the `keyring` package) instead of a
 plaintext .env file or SQLite.
 
@@ -33,6 +33,7 @@ that may not even exist in that context.
 """
 
 import concurrent.futures
+from dataclasses import dataclass
 from typing import Any, Callable, Tuple
 
 from app.logging_config import get_logger
@@ -43,14 +44,40 @@ SERVICE_NAME = "JARVIS"
 USERNAME = "anthropic_api_key"
 TIMEOUT_SECONDS = 5.0
 
-# A second, separately named entry — not a second field in the first one.
+# Separately named entries — never extra fields in one shared secret.
 #
-# Two credentials for two different services belong in two Credential
-# Manager entries: they are granted, replaced and revoked independently,
-# and somebody clearing their ElevenLabs key must not disturb the key
-# that makes chat work. It also means app/core/ownership.py can name both
-# individually when an uninstall removes them.
+# Credentials for different services belong in different Credential
+# Manager entries: they are granted, replaced and revoked independently.
+# The ownership registry below makes that rule executable at uninstall.
 ELEVENLABS_USERNAME = "elevenlabs_api_key"
+
+
+@dataclass(frozen=True)
+class OwnedCredential:
+    """One independently granted secret owned by JARVIS.
+
+    This registry is the single source for full-uninstall discovery,
+    cleanup and reporting. A new provider adds one entry here; ownership
+    and its parametrized regression tests consume it automatically.
+    """
+
+    key: str
+    username: str
+    what: str
+
+
+OWNED_CREDENTIALS = (
+    OwnedCredential(
+        "credential",
+        USERNAME,
+        "Your Anthropic API key in Windows Credential Manager",
+    ),
+    OwnedCredential(
+        "elevenlabs_credential",
+        ELEVENLABS_USERNAME,
+        "Your ElevenLabs API key in Windows Credential Manager",
+    ),
+)
 
 
 def _run_isolated(func: Callable, *args: Any) -> Tuple[bool, Any]:
@@ -73,13 +100,18 @@ def _run_isolated(func: Callable, *args: Any) -> Tuple[bool, Any]:
         executor.shutdown(wait=False)
 
 
-def _get(username: str) -> str:
+def _read(username: str) -> Tuple[bool, str]:
     try:
         import keyring
     except ImportError:
-        return ""
+        return False, ""
     ok, value = _run_isolated(keyring.get_password, SERVICE_NAME, username)
-    return (value or "") if ok else ""
+    return ok, (value or "") if ok else ""
+
+
+def _get(username: str) -> str:
+    _ok, value = _read(username)
+    return value
 
 
 def _set(username: str, value: str) -> bool:
@@ -106,6 +138,23 @@ def _clear(username: str) -> bool:
 
     ok, _ = _run_isolated(_delete)
     return ok
+
+
+def owned_credential_status(credential: OwnedCredential) -> Tuple[bool, bool]:
+    """Return ``(store_reached, credential_present)`` for uninstall.
+
+    Ordinary callers deliberately receive only an empty string when the
+    store is unavailable. Full uninstall cannot collapse "unreachable"
+    into "absent": doing so would erase the data folder and report a
+    successful purge while a secret may still exist.
+    """
+    reached, value = _read(credential.username)
+    return reached, bool(value)
+
+
+def clear_owned_credential(credential: OwnedCredential) -> bool:
+    """Remove one registry entry through the same bounded keyring path."""
+    return _clear(credential.username)
 
 
 def get_stored_api_key() -> str:

@@ -3,7 +3,7 @@
 "Uninstall completely" is only a meaningful promise if there is a list.
 Without one it degrades into whichever paths somebody happened to
 remember, which is how an uninstalled application leaves a Startup
-shortcut pointing at a deleted executable and an API key in Windows
+shortcut pointing at a deleted executable and credentials in Windows
 Credential Manager.
 
 **The list is here, in code, and the installer is checked against it.**
@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from app.core import credentials
 from app.logging_config import get_logger
 
 logger = get_logger("core.ownership")
@@ -86,14 +87,13 @@ INSTALLED_BY_SETUP = (
 CREATED_AT_RUNTIME = (
     Owned("runtime_startup_shortcut", "The sign-in shortcut, if you switched it on in Settings",
           r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\JARVIS.lnk", always=True),
-    Owned("credential", "Your Anthropic API key, in Windows Credential Manager",
-          "Windows Credential Manager (JARVIS)", always=False),
-    # Its own entry, because it is its own credential. Two keys for two
-    # services are granted and revoked independently, and a manifest that
-    # named only one would leave the other behind while reporting
-    # success — which is the exact failure this module exists to prevent.
-    Owned("elevenlabs_credential", "Your ElevenLabs API key, in Windows Credential Manager",
-          "Windows Credential Manager (JARVIS)", always=False),
+    # Generated from credentials.OWNED_CREDENTIALS: manifest, cleanup and
+    # tests must have one source of truth. A provider cannot be added to
+    # the cleanup registry without appearing here and in every report.
+    *(
+        Owned(item.key, item.what, "Windows Credential Manager (JARVIS)", always=False)
+        for item in credentials.OWNED_CREDENTIALS
+    ),
     Owned("data_dir", "Settings, chat history, logs, and any voice or speech model you downloaded",
           r"%LOCALAPPDATA%\JARVIS", always=False),
 )
@@ -117,8 +117,8 @@ NEVER_REMOVED = (
 @dataclass
 class RemovalReport:
     """What actually happened, item by item. Never a summary — an
-    uninstaller that says "done" while a step failed silently is how a
-    key stays in Credential Manager."""
+    uninstaller that says "done" while a step failed silently is how
+    credentials stay in Credential Manager."""
 
     removed: List[str] = field(default_factory=list)
     not_present: List[str] = field(default_factory=list)
@@ -159,7 +159,7 @@ def remove(purge_data: bool = False) -> RemovalReport:
 
     _remove_startup_shortcut(report)
     if purge_data:
-        _remove_credential(report)
+        _remove_credentials(report)
         if report.failed:
             # Fail closed. The log and preferences under this directory
             # are the only durable evidence the uninstaller can leave
@@ -174,7 +174,8 @@ def remove(purge_data: bool = False) -> RemovalReport:
             _remove_data_dir(report)
     else:
         report.kept.append("Your settings, history and downloaded models")
-        report.kept.append("Your API key in Windows Credential Manager")
+        for credential in credentials.OWNED_CREDENTIALS:
+            report.kept.append(credential.what)
 
     for item in NEVER_REMOVED:
         report.kept.append(item.what)
@@ -207,27 +208,25 @@ def _remove_startup_shortcut(report: RemovalReport) -> None:
         report.failed.append(f"The sign-in shortcut ({exc})")
 
 
-def _remove_credential(report: RemovalReport) -> None:
-    """Delete the API key through the app's own credential module.
+def _remove_credentials(report: RemovalReport) -> None:
+    """Delete every registered secret through the credential module.
 
     Done here rather than from the installer on purpose: only this code
     knows how the key was stored, and an installer guessing at a
     Credential Manager target name is how an uninstall leaves a secret
     behind while reporting success.
     """
-    from app.core import credentials
-
-    for label, read, clear in (
-        ("Your Anthropic API key in Windows Credential Manager",
-         credentials.get_stored_api_key, credentials.clear_stored_api_key),
-        ("Your ElevenLabs API key in Windows Credential Manager",
-         credentials.get_elevenlabs_key, credentials.clear_elevenlabs_key),
-    ):
+    for credential in credentials.OWNED_CREDENTIALS:
+        label = credential.what
         try:
-            if not read():
+            reached, present = credentials.owned_credential_status(credential)
+            if not reached:
+                report.failed.append(f"{label} could not be checked")
+                continue
+            if not present:
                 report.not_present.append(label)
                 continue
-            if clear():
+            if credentials.clear_owned_credential(credential):
                 report.removed.append(label)
             else:
                 report.failed.append(label)

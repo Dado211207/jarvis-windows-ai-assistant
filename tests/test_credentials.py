@@ -201,6 +201,30 @@ def test_clear_stored_api_key_false_when_package_not_installed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# The uninstall ownership registry
+# ---------------------------------------------------------------------------
+
+def test_every_registered_credential_roundtrips_through_generic_cleanup(monkeypatch):
+    """Adding a provider to the registry automatically exercises it here."""
+    from app.core import credentials
+
+    _install_fake_keyring(monkeypatch)
+    for credential in credentials.OWNED_CREDENTIALS:
+        assert credentials._set(credential.username, f"{credential.key}-secret")
+        assert credentials.owned_credential_status(credential) == (True, True)
+        assert credentials.clear_owned_credential(credential) is True
+        assert credentials.owned_credential_status(credential) == (True, False)
+
+
+def test_generic_cleanup_distinguishes_unreachable_store_from_absent_key(monkeypatch):
+    from app.core import credentials
+
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    for credential in credentials.OWNED_CREDENTIALS:
+        assert credentials.owned_credential_status(credential) == (False, False)
+
+
+# ---------------------------------------------------------------------------
 # _run_isolated
 # ---------------------------------------------------------------------------
 
