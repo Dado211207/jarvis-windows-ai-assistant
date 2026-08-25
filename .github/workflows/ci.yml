@@ -90,11 +90,21 @@ jobs:
         # suspension, and bounded calibration. A mocked version of any of
         # it would have passed against the build that left the microphone
         # running.
+        #
+        # tests/test_coding_preview.py carries three `browser` tests of its
+        # own — a real browser check finding real defects, the screenshot
+        # that must name neither the user nor a path, and the check running
+        # from a thread that already has an event loop. They were deselected
+        # from the default job by the marker and absent from this list, so
+        # they ran in no CI job at all. The file's other tests are not
+        # marked and keep running in the default job; `-m browser` picks
+        # only the three here.
         run: >
           pytest -m browser -v
           tests/test_playwright_e2e.py
           tests/test_clap_detection.py
           tests/test_clap_controller.py
+          tests/test_coding_preview.py
         env:
           JARVIS_DB_PATH: /tmp/ci_jarvis_browser_test.db
           JARVIS_LOG_LEVEL: WARNING

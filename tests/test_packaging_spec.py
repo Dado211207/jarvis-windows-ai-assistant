@@ -385,3 +385,73 @@ def test_every_required_package_is_declared_in_a_requirements_file():
     assert not missing, (
         f"required by the spec but not declared in any requirements file: {missing}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The "Hidden import tzdata not found" build warning
+# ---------------------------------------------------------------------------
+
+def test_no_module_needs_the_iana_timezone_database():
+    """PyInstaller warns `Hidden import 'tzdata' not found`. It is harmless
+    *because of this test*, not by luck.
+
+    JARVIS touches timezones in exactly one place —
+    `app/desktop/system.py`'s get_time, which calls
+    `datetime.now().astimezone()`. That reads the **operating system's**
+    local timezone (on Windows, the registry and the C runtime) and never
+    the IANA database. `datetime.timezone.utc` is a fixed offset and needs
+    nothing either. Proof that the two work without the package: this
+    repository's own container has no `tzdata` installed and the whole
+    suite passes.
+
+    What *would* need it is a named zone — `ZoneInfo("Europe/London")` —
+    which on Windows has no system database to fall back on and raises
+    `ZoneInfoNotFoundError` only in the frozen application, where nobody
+    would see it until a user did.
+
+    So the warning is fine today and this test is what keeps it fine: add
+    a named-zone lookup and this fails, telling you to bundle `tzdata`
+    rather than shipping a build that cannot tell the time in Berlin.
+    """
+    import ast
+
+    offenders = []
+    for path in sorted((REPO_ROOT / "app").rglob("*.py")) + \
+            sorted((REPO_ROOT / "db").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in ("zoneinfo", "pytz", "tzdata"):
+                        offenders.append(f"{path.relative_to(REPO_ROOT)}: import {alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                root = (node.module or "").split(".")[0]
+                if root in ("zoneinfo", "pytz", "tzdata"):
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}: from {node.module}")
+                if root == "dateutil" and "tz" in (node.module or ""):
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}: from {node.module}")
+
+    assert not offenders, (
+        "A timezone database is now required, so PyInstaller's "
+        "\"Hidden import 'tzdata' not found\" warning has stopped being "
+        "harmless: add tzdata to packaging/jarvis.spec's hiddenimports and "
+        "confirm the frozen build resolves a named zone.\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_only_timezone_call_is_the_platform_local_one():
+    """`astimezone()` with no argument is the one form that needs no
+    database. If a second timezone call appears, it is worth a look."""
+    import re
+
+    source = (REPO_ROOT / "app" / "desktop" / "system.py").read_text(encoding="utf-8")
+    assert "datetime.now().astimezone()" in source, (
+        "get_time no longer uses the platform-local conversion; re-check "
+        "whether the frozen Windows build still needs no tzdata"
+    )
+    everything = "\n".join(
+        p.read_text(encoding="utf-8") for p in sorted((REPO_ROOT / "app").rglob("*.py"))
+    )
+    named = re.findall(r"astimezone\(\s*[^)\s]", everything)
+    assert not named, f"astimezone() was given an explicit zone: {named}"
