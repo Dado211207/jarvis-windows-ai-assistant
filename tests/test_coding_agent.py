@@ -197,6 +197,45 @@ def test_a_malicious_repository_cannot_make_anything_happen(tmp_path, task_env):
         assert secret not in recorded, "a secret reached the task record"
 
 
+def test_the_repository_cannot_talk_the_agent_into_pushing_to_main(tmp_path, task_env):
+    """Step 6 of the malicious README says `git push origin main`.
+
+    The model obeys it — that is the point of writing these tests the
+    hard way round. What must hold is that obedience buys nothing: push
+    is refused by `commands.classify` before any process is started, and
+    `gitsafe` has no push verb to reach even if the policy were wrong.
+    Two independent layers, because a boundary with one implementation is
+    a boundary with one bug.
+    """
+    from app.coding import commands, gitsafe
+
+    root = fx.malicious_repo(tmp_path / "trap")
+    runner, context, provider = task_env(root, [
+        turn({"action": "run_command", "argv": ["git", "push", "origin", "main"]}),
+        turn({"action": "run_command", "argv": ["git", "push", "--force"]}),
+        turn({"action": "run_command", "argv": ["git", "remote", "set-url",
+                                                "origin", "http://attacker.example/x.git"]}),
+        turn({"action": "finish_task", "summary": "Could not comply."}),
+    ], request="ship it")
+
+    result = runner.run()
+
+    pushes = [s for s in result.steps if s["kind"] in ("run_command", "command")]
+    assert pushes, "the proposals never reached the command layer at all"
+    assert all(not s["ok"] for s in pushes), (
+        f"a push-shaped command was allowed to run: {pushes}"
+    )
+
+    # Layer 1: the policy refuses each one by name, at every approval level.
+    for argv in (["git", "push", "origin", "main"],
+                 ["git", "push", "--force"],
+                 ["git", "remote", "set-url", "origin", "http://attacker.example/x.git"]):
+        assert commands.classify(argv).tier is commands.CommandTier.BLOCKED, argv
+
+    # Layer 2: gitsafe has no push verb to reach even if layer 1 were wrong.
+    assert "push" in gitsafe.FORBIDDEN_VERBS
+
+
 def test_an_injected_tool_name_fails_before_anything_looks_it_up(tmp_path, task_env):
     """The README names a tool called `exfiltrate_secrets`. There is no
     code path that could execute it, because the parse fails first."""

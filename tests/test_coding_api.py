@@ -750,7 +750,19 @@ def test_isolated_task_diff_and_approved_export_are_downloadable(
 
 
 def test_screenshot_bytes_are_not_public(client):
-    response = client.request("GET", "/coding/screenshots/anything.png")
+    """The empty header is not decoration.
+
+    `client` is primed, and httpx merges the client's default headers
+    into `.request(...)` — so the original form of this test sent a
+    perfectly valid token and got 404 ("no such screenshot") from *behind*
+    the gate. It would have passed just as happily against a route with no
+    authentication at all, which is the one thing it exists to rule out.
+    Overriding the header is what makes the request genuinely anonymous.
+    """
+    response = client.get(
+        "/coding/screenshots/anything.png",
+        headers={"X-JARVIS-Session-Token": ""},
+    )
     assert response.status_code in (401, 403)
 
 
