@@ -157,21 +157,26 @@ def test_test_voice_speaks_even_when_spoken_replies_are_off(client):
     from app.voice.tts import tts_service
 
     tts_service.set_output_enabled(False)
+    # `speak_local`, not `speak`: Test Voice compares the *local* voice, so
+    # the cloud pass routed it past provider selection deliberately — a
+    # button labelled Test Voice must never become a billable cloud
+    # request. Patching `speak` as well proves that is what happens.
     with patch.object(
-        engines, "speak",
+        engines, "speak_local",
         return_value=engines.SpeakOutcome(started=True, engine="kokoro", message="Speaking."),
-    ) as spoken:
+    ) as spoken, patch.object(engines, "speak") as cloud_capable:
         body = client.post("/voice/test", json={}).json()
 
     assert body["success"] is True
     assert spoken.called
+    cloud_capable.assert_not_called()
 
 
 def test_test_voice_reports_the_engine_it_used(client):
     from app.voice import engines
 
     with patch.object(
-        engines, "speak",
+        engines, "speak_local",
         return_value=engines.SpeakOutcome(started=True, engine="sapi5", message="Speaking."),
     ):
         assert client.post("/voice/test", json={}).json()["engine"] == "sapi5"
@@ -181,7 +186,7 @@ def test_a_failed_test_explains_itself(client):
     from app.voice import engines
 
     with patch.object(
-        engines, "speak",
+        engines, "speak_local",
         return_value=engines.SpeakOutcome(started=False, engine="none", message="Not installed."),
     ):
         body = client.post("/voice/test", json={}).json()

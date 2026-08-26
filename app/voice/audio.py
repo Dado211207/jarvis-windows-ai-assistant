@@ -131,8 +131,27 @@ class Player:
             return PlaybackState(**vars(self._state))
 
     def is_playing(self) -> bool:
+        """True only while a worker is genuinely still running.
+
+        `_state.playing` alone is not enough, and the difference is a real
+        defect rather than a nicety. It is set before the worker starts and
+        cleared only in that worker's `finally`, so a worker that never
+        started — or died before reaching it — leaves the flag stuck True
+        for the life of the process. JARVIS then believes it is speaking
+        while silent: `is_speaking()` never goes False again, and every
+        Stop answers "Speech stopped." instead of "TTS is not active."
+
+        This was measured, not imagined: after one mocked utterance the
+        state read `playing=True, chunks_played=0` with no live thread.
+        The previous implementation checked thread liveness and was
+        self-correcting for exactly this reason; the state object is worth
+        keeping for the counters, so both are consulted.
+        """
         with self._lock:
-            return self._state.playing
+            if not self._state.playing:
+                return False
+            thread = self._thread
+        return thread is not None and thread.is_alive()
 
     def _set(self, **fields) -> None:
         with self._lock:

@@ -103,9 +103,20 @@ def test_stt_status_reflects_unavailable_adapter(api_client, fake_stt_adapter):
     assert r.json()["reason"]
 
 
-def test_stt_status_requires_no_token_read_only():
+def test_stt_status_requires_a_session_token():
+    """This replaces an assertion that a read-only status needed no token.
+
+    /voice/stt-status reports the speech model's path under
+    %LOCALAPPDATA%, and on Windows a full user path contains the account
+    name — so it is a personal read like the rest of them. Every GET in
+    app.api.voice_routes is protected by one structural invariant
+    (test_optional_voice_and_coding_integration_gets_are_protected_when_present),
+    which exists so a route added later cannot quietly ship without
+    authentication. The dashboard sends the header; nothing a real user
+    does changes.
+    """
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
     with TestClient(jarvis_app, raise_server_exceptions=True) as fresh_client:
         r = fresh_client.get("/voice/stt-status")
-    assert r.status_code == 200
+    assert r.status_code == 403

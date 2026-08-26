@@ -19,4 +19,9 @@ onnxruntime>=1.17.0
 pyttsx3>=2.90
 pytest>=7.4.0
 httpx>=0.25.0
+# Named explicitly rather than left to httpx's own dependency tree.
+# packaging/jarvis.spec lists httpcore as a hidden import for the cloud
+# voice transport, and a package the frozen build requires must be one
+# this project declares — tests/test_packaging_spec.py fails otherwise.
+httpcore>=1.0.0
 python-multipart>=0.0.9

@@ -88,17 +88,43 @@ def _fail(category: str) -> OpenAITTSError:
     return OpenAITTSError(category, _MESSAGES[category])
 
 
+#: The only settings-rejection sentences that may reach a response.
+#:
+#: `str(exc)` must never be returned to a caller — tests/test_security_
+#: invariants.py::test_no_endpoint_returns_raw_exception_text enforces
+#: that, and it caught this route doing it. These messages are curated
+#: and echo nothing the caller submitted, so the route can look one up
+#: instead of forwarding whatever an exception happened to carry.
+UNSUPPORTED_MODEL = "Unsupported OpenAI speech model."
+UNSUPPORTED_VOICE = "Unsupported OpenAI built-in voice."
+SETTINGS_REJECTED = "Those OpenAI voice settings were rejected."
+
+_SAFE_SETTINGS_ERRORS = frozenset({UNSUPPORTED_MODEL, UNSUPPORTED_VOICE})
+
+
+def safe_settings_error(exc: BaseException) -> str:
+    """One of our own sentences, never the exception's own text.
+
+    A ValueError raised somewhere new — inside a preference store, a
+    library, a future validator — would otherwise start leaking its
+    message through this route the day it appears, with nothing failing
+    to say so.
+    """
+    message = str(exc)
+    return message if message in _SAFE_SETTINGS_ERRORS else SETTINGS_REJECTED
+
+
 def validate_model(value: str) -> str:
     cleaned = (value or "").strip()
     if cleaned not in ALLOWED_MODELS:
-        raise ValueError("Unsupported OpenAI speech model.")
+        raise ValueError(UNSUPPORTED_MODEL)
     return cleaned
 
 
 def validate_voice(value: str) -> str:
     cleaned = (value or "").strip().lower()
     if cleaned not in VOICES:
-        raise ValueError("Unsupported OpenAI built-in voice.")
+        raise ValueError(UNSUPPORTED_VOICE)
     return cleaned
 
 

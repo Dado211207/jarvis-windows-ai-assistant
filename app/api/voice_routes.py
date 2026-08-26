@@ -809,7 +809,7 @@ def save_openai_settings(req: OpenAISettingsRequest) -> OpenAIActionResponse:
             req.model, req.voice, req.speed, req.instructions,
         )
     except ValueError as exc:
-        return _openai_response(False, str(exc))
+        return _openai_response(False, openai_tts.safe_settings_error(exc))
     if saved is None:
         return _openai_response(False, "OpenAI voice settings could not be saved.")
     return _openai_response(True, "OpenAI voice settings saved.")

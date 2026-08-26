@@ -207,7 +207,16 @@ def test_pressing_the_button_again_stops_rather_than_restarting():
     js = _read(REPO_APP_JS)
     speak_on_demand = js.split("async function speakOnDemand", 1)[1].split("\n}", 1)[0]
 
-    assert "if (speakingButton === btn) { await stopSpeech(); return; }" in speak_on_demand
+    # Asserted as behaviour rather than as one exact line: the cloud pass
+    # widened this guard to treat a rapid second click as Stop even while
+    # the first click's POST is still in flight, which bounds a
+    # double-click to at most one billable request. The requirement — a
+    # second press stops instead of starting again — is unchanged.
+    assert "speakingButton === btn" in speak_on_demand
+    assert "speechClickPending" in speak_on_demand
+    guard = speak_on_demand.index("speakingButton === btn")
+    assert speak_on_demand.index("await stopSpeech();") > guard
+    assert speak_on_demand.index("/voice/speak-once") > guard
 
 
 def test_the_stop_button_puts_itself_back_when_the_sound_finishes():

@@ -233,11 +233,20 @@ def test_cloud_fallback_notice_survives_engine_service_and_api(client):
         "ElevenLabs could not be reached. "
         "Using the Windows natural voice instead."
     )
+    # The prose `fallback_message` became a structured FallbackDisclosure
+    # in the cloud pass — same requirement, better shape: a caller no
+    # longer has to parse a sentence to learn the cloud voice did not
+    # speak, and the object names which local engine covered for it.
     outcome = engines.SpeakOutcome(
         started=True,
         engine=engines.WINDOWS,
         message=notice,
-        fallback_message=notice,
+        fallback=engines.FallbackDisclosure(
+            provider="elevenlabs",
+            category="unreachable",
+            reason="ElevenLabs could not be reached.",
+            local_engine=engines.WINDOWS,
+        ),
     )
     with patch("app.voice.engines.speak", return_value=outcome), \
          patch.object(tts_service, "is_available", return_value=True):
@@ -245,14 +254,20 @@ def test_cloud_fallback_notice_survives_engine_service_and_api(client):
 
     assert body["success"] is True
     assert body["engine"] == engines.WINDOWS
-    assert body["fallback_message"] == notice
+    assert body["fallback"]["provider"] == "elevenlabs"
+    assert body["fallback"]["local_engine"] == engines.WINDOWS
+    assert "could not be reached" in body["fallback"]["reason"]
+    # The notice still reaches the user, now alongside what is being
+    # spoken — the service prefixes the engine's own words to the preview
+    # rather than replacing one with the other.
+    assert notice in body["message"]
 
 
 def test_chat_keeps_a_successful_fallback_notice_visible():
     js = _js()
     seam = js[js.index("function handleSpeechResponse"):js.index("// The speaker button")]
-    assert "fallback_message" in seam
-    assert "setChatStatus(fallback)" in seam
+    assert "result.fallback" in seam
+    assert "setChatStatus(result.message" in seam
     assert "Never erase this" in seam
     assert "handleSpeechResponse(r, btn, true)" in js
     assert "handleSpeechResponse(r, btn, false)" in js

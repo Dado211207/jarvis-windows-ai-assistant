@@ -169,8 +169,14 @@ def test_privacy_activation_during_credential_read_causes_zero_http_calls():
     cancel = threading.Event()
     player = MagicMock()
     player.begin_utterance.return_value = cancel
-    player.stop.side_effect = cancel.set
-    player.abandon.side_effect = cancel.set
+    # `side_effect` is called with the call's own arguments, and the
+    # product calls `abandon(cancel)` — so a bare `cancel.set` became
+    # `Event.set(cancel)` and raised TypeError inside the worker thread.
+    # The thread swallowed it, `result` stayed empty, and this test failed
+    # on an empty list rather than on the privacy behaviour it exists to
+    # prove. Present on codex/voice-hardening too.
+    player.stop.side_effect = lambda *_a, **_k: cancel.set()
+    player.abandon.side_effect = lambda *_a, **_k: cancel.set()
 
     def delayed_key():
         credential_read.set()
@@ -340,8 +346,13 @@ def test_chat_exposes_stop_during_pending_cloud_and_discloses_fallback():
     assert "paintSpeakButton(btn, true)" in source
     assert "speechRequestGeneration" in source
     assert "if (generation !== speechRequestGeneration) return;" in source
-    assert "r.fallback ? r.message" in source
-    assert "if (r.fallback) setChatStatus(r.message);" in source
+    # The rendering moved into the one shared handler, which is the chat
+    # pass's requirement; the generation guard above it is this pass's.
+    # Both are asserted, rather than the two inline branches that used to
+    # duplicate the rendering in each caller.
+    assert "function handleSpeechResponse(result, btn, clearOrdinaryStatus)" in source
+    assert "if (result.fallback)" in source
+    assert source.count("handleSpeechResponse(r, btn,") == 2
 
 
 @pytest.mark.parametrize("path", [
@@ -404,14 +415,22 @@ def test_packaging_selftest_and_clean_install_cover_cloud_voice():
 def test_openai_credential_is_owned_and_cleanup_failure_is_fail_closed_marker():
     from app.core import ownership
 
-    keys = {item.key for item in ownership.RUNTIME_OWNED}
-    assert "openai_voice_credential" in keys
+    # `ownership.RUNTIME_OWNED` has never existed under that name; the
+    # tuple is CREATED_AT_RUNTIME, so this raised AttributeError instead of
+    # checking anything. Present on codex/voice-hardening too.
+    keys = {item.key for item in ownership.CREATED_AT_RUNTIME}
+    # `openai_credential` here, not `openai_voice_credential`: the release
+    # pass made this manifest generate from credentials.OWNED_CREDENTIALS,
+    # and the voice branch (which predates that) added a second, hardcoded
+    # entry beside it. Two cleanup paths for one secret is how one of them
+    # stops matching the other, so there is one registry and this is its key.
+    assert "openai_credential" in keys
     report = ownership.RemovalReport()
     with patch("app.core.credentials.get_stored_api_key", return_value=""), \
          patch("app.core.credentials.get_elevenlabs_key", return_value=""), \
          patch("app.core.credentials.get_openai_key", return_value="voice-key"), \
          patch("app.core.credentials.clear_openai_key", return_value=False):
-        ownership._remove_credential(report)
+        ownership._remove_credentials(report)
     assert any("OpenAI voice API key" in item for item in report.failed)
 
 

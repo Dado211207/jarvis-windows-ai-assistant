@@ -171,6 +171,7 @@ def test_privacy_mode_refuses_before_key_load_or_provider_call():
 
 
 def test_delayed_response_cannot_play_after_stop():
+    from app.core.privacy import privacy_mode
     from app.voice import engines
 
     cancel = threading.Event()
@@ -179,7 +180,7 @@ def test_delayed_response_cannot_play_after_stop():
     player.play_wav_bytes_if_current.return_value = False
     player.is_current.return_value = False
     with patch("app.core.credentials.get_openai_key", return_value=KEY), \
-         patch("app.core.privacy.privacy_mode.active", False), \
+         patch.object(type(privacy_mode), "active", property(lambda _self: False)), \
          patch("app.voice.audio.player", player), \
          patch("app.voice.openai_tts.synthesise_wav", return_value=WAV), \
          patch.object(engines, "selected_openai_model", return_value="gpt-4o-mini-tts"), \

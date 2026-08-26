@@ -153,6 +153,34 @@ def test_is_available_is_false_only_when_no_engine_at_all_can_run():
 
 
 # ---------------------------------------------------------------------------
+# Speaking leaves a worker running; the next test must not inherit it
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _silence_between_tests():
+    """Stop any playback a test started, before the next one looks.
+
+    Several tests here call `speak()`, which hands a chunk stream to the
+    audio player's worker thread and returns immediately — by design: a
+    request that blocked for the length of a spoken paragraph would have
+    timed out. The worker outlives the test that started it, so a later
+    test asking "is anything playing?" saw a *correct* True left over from
+    its predecessor and `stop()` truthfully answered "Speech stopped."
+    where the test expected "TTS is not active."
+
+    Order-dependence, not a product defect — I mis-diagnosed it as one
+    first, and the measurement that corrected me is that the leaked
+    thread was genuinely alive, not a stale flag.
+    """
+    yield
+    try:
+        from app.voice import engines
+        engines.stop()
+    except Exception:  # noqa: BLE001 - teardown must never fail a test
+        pass
+
+
+# ---------------------------------------------------------------------------
 # 3. TextToSpeechService — speak()
 # ---------------------------------------------------------------------------
 
@@ -680,3 +708,26 @@ def test_existing_system_status_command_still_works(api_client):
     r = api_client.post("/command", json={"command": "system status"})
     assert r.status_code == 200
     assert r.json()["success"] is True
+
+
+def test_a_worker_that_never_ran_does_not_leave_jarvis_believing_it_speaks():
+    """Regression: `is_playing()` must not be a flag only the worker clears.
+
+    The cloud-voice pass replaced a thread-liveness check with
+    `_state.playing`, set before the worker starts and cleared only in that
+    worker's `finally`. A worker that never started, or died first, left it
+    stuck True — so `is_speaking()` never returned False again and every
+    Stop answered "Speech stopped." while nothing was playing.
+
+    Reproduced exactly as it was found: set the flag with no live thread.
+    """
+    from app.voice.audio import Player
+
+    player = Player()
+    player._set(playing=True, stopped=False, chunks_played=0, seconds_played=0.0)
+    assert player._thread is None
+    assert player.is_playing() is False, (
+        "a playing flag with no live worker must not report playback"
+    )
+    # And the counters the state object exists for are still readable.
+    assert player.state().playing is True
