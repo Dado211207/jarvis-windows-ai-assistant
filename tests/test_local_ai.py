@@ -353,7 +353,11 @@ def test_the_installer_never_claims_to_include_local_ai():
 
     repo = Path(__file__).resolve().parent.parent
     installer = (repo / "packaging" / "jarvis.iss").read_text(encoding="utf-8").lower()
-    install_time = installer.split("procedure runapplicationcleanup", 1)[0]
+    # Anchored on the *name*, not the declaration keyword: this was
+    # "procedure RunApplicationCleanup" until it had to start returning
+    # whether cleanup succeeded, and a guard that breaks when a routine
+    # changes shape is a guard that stops guarding at the worst moment.
+    install_time = installer.split("runapplicationcleanup", 1)[0]
 
     for claim in ("ollama", "local ai", "local llm", "language model"):
         assert claim not in install_time, (
@@ -370,7 +374,7 @@ def test_the_uninstaller_promises_not_to_remove_ollama():
 
     repo = Path(__file__).resolve().parent.parent
     installer = (repo / "packaging" / "jarvis.iss").read_text(encoding="utf-8")
-    uninstall_text = installer.split("procedure RunApplicationCleanup", 1)[1]
+    uninstall_text = installer.split("RunApplicationCleanup", 1)[1]
 
     assert "never removes Ollama or its models" in uninstall_text
 
