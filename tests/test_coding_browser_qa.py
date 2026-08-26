@@ -23,6 +23,7 @@ opposite direction — that the installed product does not skip.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -682,7 +683,12 @@ def test_the_on_device_model_component_is_disabled():
 # ---------------------------------------------------------------------------
 
 def _make_browser(root, directory: str, relative: str, executable: bool = True):
-    """Plant a fake Playwright browser under a synthetic cache root."""
+    """Plant a fake Playwright browser under a synthetic cache root.
+
+    Nothing here is ever launched — selection only stats these paths — so
+    the contents are a placeholder. `executable=False` is meaningful only
+    where an execute bit exists; see `_expect_selected` below.
+    """
     import stat
 
     path = root / directory / relative
@@ -704,6 +710,26 @@ def cache_root(tmp_path, monkeypatch):
     return root
 
 
+def _selected() -> str:
+    """The path selection would choose, on any platform.
+
+    These tests deliberately drive `select_chromium`, not
+    `_chromium_for_ci`. The latter answers a second question — *should* we
+    look for a Playwright Chromium at all — and answers "no" on Windows,
+    which is correct product behaviour and is asserted on its own below.
+    The first version of these six called the gated entry point, so on
+    Windows CI it returned `None` before reading a single directory and
+    all six failed while passing on Linux: ordering rules that ship to
+    Windows, tested only on Linux. That is the same defect `_stub_browser`
+    exists to prevent, in this same file, one commit earlier.
+    """
+    from app.coding import browser_engine
+
+    chosen = browser_engine.select_chromium(browser_engine.chromium_search_roots())
+    assert chosen is not None, "selection found nothing under the synthetic root"
+    return chosen
+
+
 def test_a_newer_full_browser_beats_an_older_one_in_a_different_layout(cache_root):
     """The regression this ordering exists for.
 
@@ -712,90 +738,105 @@ def test_a_newer_full_browser_beats_an_older_one_in_a_different_layout(cache_roo
     browser won purely because of how it had been packaged. Asserting on
     the build number is what makes that impossible.
     """
-    from app.coding import browser_engine
-
     _make_browser(cache_root, "chromium-1094", "chrome-linux/chrome")
     _make_browser(cache_root, "chromium-1234", "chrome-linux64/chrome")
 
-    engine = browser_engine._chromium_for_ci()
-    assert engine is not None
-    assert "chromium-1234" in engine.path, (
-        f"picked the older build purely on layout order: {engine.path}"
+    chosen = _selected()
+    assert "chromium-1234" in chosen, (
+        f"picked the older build purely on layout order: {chosen}"
     )
 
 
 def test_a_full_browser_beats_a_newer_headless_shell(cache_root):
     """Windows drives Edge, a full browser. A shell is the fallback, and
     being newer does not promote it."""
-    from app.coding import browser_engine
-
     _make_browser(cache_root, "chromium-1094", "chrome-linux64/chrome")
     _make_browser(cache_root, "chromium_headless_shell-1234",
                   "chrome-headless-shell-linux64/chrome-headless-shell")
 
-    engine = browser_engine._chromium_for_ci()
-    assert engine is not None
-    assert engine.path.endswith("chrome"), engine.path
-    assert "headless" not in engine.path, engine.path
+    chosen = _selected()
+    assert chosen.endswith("chrome"), chosen
+    assert "headless" not in chosen, chosen
 
 
 def test_the_headless_shell_is_used_when_there_is_no_full_browser(cache_root):
-    from app.coding import browser_engine
-
     _make_browser(cache_root, "chromium_headless_shell-1234",
                   "chrome-headless-shell-linux64/chrome-headless-shell")
 
-    engine = browser_engine._chromium_for_ci()
-    assert engine is not None
-    assert "chrome-headless-shell" in engine.path
+    assert "chrome-headless-shell" in _selected()
 
 
-def test_an_incomplete_candidate_is_rejected_rather_than_reported(cache_root):
+def test_a_directory_where_the_binary_should_be_is_rejected(cache_root):
     """An interrupted `playwright install` leaves the tree without a
     working binary. Reporting that as the engine turns a missing browser
-    into a crash at launch instead of a clear refusal."""
-    from app.coding import browser_engine
+    into a crash at launch instead of a clear refusal.
 
-    # Present but not executable.
-    _make_browser(cache_root, "chromium-1300", "chrome-linux64/chrome", executable=False)
-    # A directory where the binary should be.
+    A directory standing where the executable belongs is the shape that
+    means the same thing on every platform, so this runs on every
+    platform.
+    """
     (cache_root / "chromium-1301" / "chrome-linux64" / "chrome").mkdir(parents=True)
-    # The only usable one is older.
+    # The only real one is older, so preferring the newer stub is visible.
     _make_browser(cache_root, "chromium-1094", "chrome-linux64/chrome")
 
-    engine = browser_engine._chromium_for_ci()
-    assert engine is not None
-    assert "chromium-1094" in engine.path, (
-        f"an unusable candidate was preferred: {engine.path}"
-    )
+    chosen = _selected()
+    assert "chromium-1094" in chosen, f"an unusable candidate was preferred: {chosen}"
 
 
-def test_the_explicit_override_is_what_is_searched(cache_root, tmp_path):
+@pytest.mark.skipif(os.name == "nt", reason=(
+    "Windows has no execute bit: os.access(X_OK) is true for any regular "
+    "file, so a present .exe genuinely is launchable and treating it as "
+    "usable is the correct answer there, not a gap. The cross-platform "
+    "half of this requirement is test_a_directory_where_the_binary_"
+    "should_be_is_rejected, which runs on Windows too."
+))
+def test_a_file_without_the_execute_bit_is_rejected(cache_root):
+    _make_browser(cache_root, "chromium-1300", "chrome-linux64/chrome", executable=False)
+    _make_browser(cache_root, "chromium-1094", "chrome-linux64/chrome")
+
+    chosen = _selected()
+    assert "chromium-1094" in chosen, f"an unusable candidate was preferred: {chosen}"
+
+
+def test_the_explicit_override_is_what_is_searched(cache_root, tmp_path, monkeypatch):
     """PLAYWRIGHT_BROWSERS_PATH is the override, and it is honoured over
     the default cache location."""
-    from app.coding import browser_engine
-
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     _make_browser(elsewhere, "chromium-1500", "chrome-linux64/chrome")
     _make_browser(cache_root, "chromium-1094", "chrome-linux64/chrome")
 
-    import os as _os
-    _os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(elsewhere)
-    engine = browser_engine._chromium_for_ci()
-    assert engine is not None
-    assert str(elsewhere) in engine.path, engine.path
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(elsewhere))
+    chosen = _selected()
+    assert str(elsewhere) in chosen, chosen
 
 
 def test_build_numbers_are_compared_as_numbers_not_text(cache_root):
     """`chromium-999` must not outrank `chromium-1234`. Sorting directory
     names as strings does exactly that the moment the counter gains a
     digit."""
-    from app.coding import browser_engine
-
     _make_browser(cache_root, "chromium-999", "chrome-linux64/chrome")
     _make_browser(cache_root, "chromium-1234", "chrome-linux64/chrome")
 
-    engine = browser_engine._chromium_for_ci()
-    assert engine is not None
-    assert "chromium-1234" in engine.path, engine.path
+    assert "chromium-1234" in _selected()
+
+
+def test_a_playwright_chromium_is_never_the_answer_on_windows(cache_root, monkeypatch):
+    """The gate `select_chromium` is deliberately separate from.
+
+    The product drives Edge or the WebView2 Runtime on Windows. A
+    developer's Playwright cache must never become the engine there, and
+    this asserts the guard directly rather than leaving it implied by six
+    ordering tests that could not run on Windows anyway.
+    """
+    from app.coding import browser_engine
+
+    _make_browser(cache_root, "chromium-1234", "chrome-linux64/chrome")
+    # Selection itself would happily find it...
+    assert browser_engine.select_chromium(browser_engine.chromium_search_roots())
+
+    # `_on_windows`, not `os.name`: pathlib reads that same attribute, so
+    # setting it to "nt" on Linux makes Path() raise NotImplementedError.
+    monkeypatch.setattr(browser_engine, "_on_windows", lambda: True)
+    # ...and the gate refuses it anyway.
+    assert browser_engine._chromium_for_ci() is None

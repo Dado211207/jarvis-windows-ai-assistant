@@ -787,12 +787,31 @@ def test_every_post_creation_start_failure_cleans_isolation(
             lambda runner: (_ for _ in ()).throw(RuntimeError("register failed")),
         )
     else:
-        class BrokenThread:
-            def __init__(self, *args, **kwargs):
-                pass
-            def start(self):
-                raise RuntimeError("thread start failed")
-        monkeypatch.setattr(service.threading, "Thread", BrokenThread)
+        # `service.threading` *is* the stdlib threading module, so replacing
+        # its Thread replaces it for the whole process — including code we
+        # are not testing. On Windows `subprocess` reads a child's pipes on
+        # reader threads, so the git commands inside the cleanup path this
+        # test exists to check tried to start a BrokenThread of their own.
+        # The RuntimeError escaped `start_task`'s except block, the route
+        # fell through to its generic handler, and the assertion read
+        # `400 == 409` on Windows CI while passing on Linux, where
+        # subprocess uses selectors and starts no thread at all.
+        #
+        # Only the task's own thread is broken now, matched on the name
+        # service.py gives it. Everything else gets a real Thread, so the
+        # cleanup being asserted below actually runs.
+        real_thread = service.threading.Thread
+        task_thread_name = f"coding-{plan['task_id'][:8]}"
+
+        def _thread(*args, **kwargs):
+            if kwargs.get("name") == task_thread_name:
+                class BrokenThread:
+                    def start(self):
+                        raise RuntimeError("thread start failed")
+                return BrokenThread()
+            return real_thread(*args, **kwargs)
+
+        monkeypatch.setattr(service.threading, "Thread", _thread)
     response = client.post(
         "/coding/tasks/start", json={"task_id": plan["task_id"]},
         headers=token_headers(client),

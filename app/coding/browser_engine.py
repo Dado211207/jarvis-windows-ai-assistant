@@ -44,7 +44,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 from app.logging_config import get_logger
 
@@ -145,15 +145,6 @@ def _edge() -> Optional[Engine]:
     return None
 
 
-def _chromium_for_ci() -> Optional[Engine]:
-    """A Chromium for Linux CI. Never the answer on Windows.
-
-    Kept deliberately separate so a reader can see that the product's
-    Windows behaviour does not depend on a developer tool being present.
-    """
-    if os.name == "nt":
-        return None
-
 #: Every Playwright layout we know, and whether it is a full browser.
 #: `chrome-linux64` is what current builds unpack into; `chrome-linux` is
 #: the older one. Only looking for the older layout once meant a freshly
@@ -185,6 +176,11 @@ def _usable(path: Path) -> bool:
     An interrupted `playwright install` leaves the directory tree behind
     without a working binary, and reporting that as the engine turns a
     missing browser into a crash at launch instead of a clear refusal.
+
+    Windows has no execute bit, so `os.access(X_OK)` there is true for any
+    regular file — which is the honest answer on that platform: a present
+    `.exe` is launchable. The `is_file()` half is what rejects a directory
+    standing where the binary should be, and that half works everywhere.
     """
     try:
         return path.is_file() and os.access(path, os.X_OK)
@@ -192,11 +188,23 @@ def _usable(path: Path) -> bool:
         return False
 
 
-def _chromium_for_ci() -> Optional[Engine]:
-    """A Chromium for Linux CI. Never the answer on Windows.
+def chromium_search_roots() -> List[Path]:
+    """Where a Playwright Chromium may live, most specific first.
 
-    Kept deliberately separate so a reader can see that the product's
-    Windows behaviour does not depend on a developer tool being present.
+    `PLAYWRIGHT_BROWSERS_PATH` is the documented override; `0` is its
+    documented "install next to the package instead" value and is not a
+    directory, so it is not treated as one.
+    """
+    configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    roots: List[Path] = []
+    if configured and configured != "0":
+        roots.append(Path(configured))
+    roots.append(Path.home() / ".cache" / "ms-playwright")
+    return roots
+
+
+def select_chromium(roots: Iterable[Path]) -> Optional[str]:
+    """The best Chromium under *roots*, or None if there is none.
 
     Selection is deterministic and ordered on two keys, in this order:
 
@@ -209,20 +217,20 @@ def _chromium_for_ci() -> Optional[Engine]:
          `chrome-linux` build beat a newer `chrome-linux64` one — the
          browser chosen depended on how it had been packaged rather than
          on what it was.
+
+    This is a pure function of a directory tree, deliberately separate
+    from `_chromium_for_ci`, which answers a different question — *should*
+    we look at all — and answers "no" on Windows. Folding the two together
+    made every ordering test above unrunnable on the only platform this
+    product ships for: they called the gated entry point, it returned None
+    before reading a single directory, and six of them failed on Windows
+    CI while passing on Linux. That is the same defect `_stub_browser`
+    exists to prevent, in the same file, one commit apart.
     """
-    if os.name == "nt":
-        return None
-
-    configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-    roots: List[Path] = []
-    if configured and configured != "0":
-        roots.append(Path(configured))
-    roots.append(Path.home() / ".cache" / "ms-playwright")
-
     # (full_browser, build, path) — sorted once, over everything found, so
     # the answer cannot depend on which root or layout happened to be
     # visited first.
-    found: List[tuple] = []
+    found: List[Tuple[bool, int, str]] = []
     for root in roots:
         try:
             if not root.is_dir():
@@ -236,8 +244,34 @@ def _chromium_for_ci() -> Optional[Engine]:
         except OSError:
             continue
 
-    if found:
-        is_full, _build, path = max(found, key=lambda item: (item[0], item[1]))
+    if not found:
+        return None
+    return max(found, key=lambda item: (item[0], item[1]))[2]
+
+
+def _on_windows() -> bool:
+    """The Windows guard, as one named predicate.
+
+    Extracted so a test can assert the guard without assigning to
+    `os.name`: `pathlib` reads that same attribute, so setting it to "nt"
+    on Linux makes every `Path(...)` try to build a `WindowsPath` and
+    raise `NotImplementedError`. A test that has to avoid touching the
+    thing it is testing is a test waiting to become flaky.
+    """
+    return os.name == "nt"
+
+
+def _chromium_for_ci() -> Optional[Engine]:
+    """A Chromium for Linux CI. Never the answer on Windows.
+
+    Kept deliberately separate so a reader can see that the product's
+    Windows behaviour does not depend on a developer tool being present.
+    """
+    if _on_windows():
+        return None
+
+    path = select_chromium(chromium_search_roots())
+    if path:
         return Engine("chromium", "Chromium", path)
 
     for name in ("chromium", "chromium-browser", "google-chrome", "chrome"):
