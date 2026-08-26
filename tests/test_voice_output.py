@@ -208,7 +208,15 @@ def test_the_voice_page_distinguishes_wake_words_from_opt_in_clap_monitoring(cli
 
 
 def test_the_voice_page_distinguishes_local_speech_from_elevenlabs(client):
-    body = client.get("/ui/voice").text
+    """Whitespace-normalised, because this is prose in HTML.
+
+    "Privacy Mode blocks every ElevenLabs request" is a single sentence
+    in the template but the source wraps between "blocks" and "every", so
+    an exact substring search fails on a page that says exactly the right
+    thing. Collapsing runs of whitespace tests the copy a user reads
+    rather than the column the author happened to wrap at.
+    """
+    body = " ".join(client.get("/ui/voice").text.split())
     assert "Speech is produced on this computer unless you explicitly select ElevenLabs" in body
     assert "AI-generated voice" in body
     assert "requires internet access" in body

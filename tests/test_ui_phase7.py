@@ -155,12 +155,42 @@ def test_voice_page_does_not_overclaim_always_listening(api_client):
     page correctly acknowledges it now rather than denying all microphone
     use — that's not an overclaim, it's honest. What must still never be
     claimed is wake-word / continuous / always-listening support, since
-    that remains genuinely unimplemented (CLAUDE.md's Phase 3 rule)."""
+    that remains genuinely unimplemented (CLAUDE.md's Phase 3 rule).
+
+    This used to require the literal phrase "always-listening", which the
+    page no longer uses. It said "No wake word or always-listening, ever"
+    — beside a double-clap feature that *does* hold the microphone open
+    while enabled. That is the same overclaim in the opposite direction,
+    and the copy was corrected to name what the microphone actually does.
+
+    So the requirement is asserted directly instead of through one word:
+    wake-word recognition is named and denied, no page text claims it
+    exists, and the microphone behaviour that *is* real is disclosed.
+    """
     r = api_client.get("/ui/voice")
-    html = r.text.lower()
+    html = " ".join(r.text.lower().split())
     assert "wake word" in html or "wake-word" in html
-    assert "no wake word" in html or "planned for a later phase" in html
-    assert "always-listening" in html or "always listening" in html
+    assert (
+        "no wake-word speech recognition" in html
+        or "wake-word speech recognition is not part of this build" in html
+        or "no wake word" in html
+        or "planned for a later phase" in html
+    ), "the page must deny wake-word support explicitly"
+    # The honest disclosure of what the microphone really does, which is
+    # what replaced the blanket "never listens" claim.
+    assert "microphone remains open to measure sound levels" in html
+    # Wake word and continuous listening must be marked as not built.
+    # Asserted positively rather than by hunting for the phrases: the page
+    # names both precisely *in order to deny them*, so a bare substring
+    # search cannot tell a claim from a denial — my first version of this
+    # assertion failed on "wake word / continuous listening - planned for
+    # a later phase", which is exactly the sentence it should want to see.
+    assert "wake word / continuous listening" in html
+    assert "planned for a later phase" in html
+    # Only unambiguously affirmative wording is forbidden outright.
+    for overclaim in ("supports wake word", "wake word detection is available",
+                      "always listening for your voice", "listens continuously"):
+        assert overclaim not in html, f"the page claims {overclaim!r}"
 
 
 def test_voice_planned_later_notice(api_client):
