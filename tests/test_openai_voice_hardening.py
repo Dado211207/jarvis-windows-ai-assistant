@@ -413,7 +413,7 @@ def test_packaging_selftest_and_clean_install_cover_cloud_voice():
 
 
 def test_openai_credential_is_owned_and_cleanup_failure_is_fail_closed_marker():
-    from app.core import ownership
+    from app.core import credentials, ownership
 
     # `ownership.RUNTIME_OWNED` has never existed under that name; the
     # tuple is CREATED_AT_RUNTIME, so this raised AttributeError instead of
@@ -425,13 +425,51 @@ def test_openai_credential_is_owned_and_cleanup_failure_is_fail_closed_marker():
     # entry beside it. Two cleanup paths for one secret is how one of them
     # stops matching the other, so there is one registry and this is its key.
     assert "openai_credential" in keys
+
+    # Patch what `_remove_credentials` *calls*. Its first version patched
+    # `get_openai_key`/`clear_openai_key`, which that function does not use
+    # — it goes through the registry pair below — so the patches were inert
+    # and the real credential store ran. On Linux the keyring backend panics
+    # (`_cffi_backend` is absent), `owned_credential_status` answers
+    # "not reached", and the resulting "… could not be checked" entry
+    # happens to contain the label the assertion looks for. So it passed
+    # here, and on the installer runner — where the store works and answers
+    # "absent" — the entry went to `not_present` and it failed. A test that
+    # passes because it never reached the code it names is the exact defect
+    # `test_screenshot_bytes_are_not_public` was corrected for earlier in
+    # this same pass.
+    openai = next(c for c in credentials.OWNED_CREDENTIALS if c.key == "openai_credential")
+
+    def _status(credential):
+        # Present only for OpenAI; the other two are absent, so the failure
+        # asserted below can only have come from this credential.
+        return (True, credential.key == "openai_credential")
+
     report = ownership.RemovalReport()
-    with patch("app.core.credentials.get_stored_api_key", return_value=""), \
-         patch("app.core.credentials.get_elevenlabs_key", return_value=""), \
-         patch("app.core.credentials.get_openai_key", return_value="voice-key"), \
-         patch("app.core.credentials.clear_openai_key", return_value=False):
+    with patch("app.core.credentials.owned_credential_status", side_effect=_status), \
+         patch("app.core.credentials.clear_owned_credential", return_value=False) as clear:
         ownership._remove_credentials(report)
-    assert any("OpenAI voice API key" in item for item in report.failed)
+
+    clear.assert_called_once_with(openai)
+    assert any("OpenAI voice API key" in item for item in report.failed), report.failed
+    assert not any("OpenAI voice API key" in item for item in report.removed)
+
+    # And the other half of the contract: a store that answers, a key that
+    # is there, and a clear that works is a *removal*, not a failure.
+    ok_report = ownership.RemovalReport()
+    with patch("app.core.credentials.owned_credential_status", side_effect=_status), \
+         patch("app.core.credentials.clear_owned_credential", return_value=True):
+        ownership._remove_credentials(ok_report)
+    assert any("OpenAI voice API key" in item for item in ok_report.removed), ok_report.removed
+    assert not ok_report.failed
+
+    # A store that cannot be reached is never reported as "absent" — that
+    # collapse is what would erase the data folder while a secret survives.
+    unreachable = ownership.RemovalReport()
+    with patch("app.core.credentials.owned_credential_status", return_value=(False, False)):
+        ownership._remove_credentials(unreachable)
+    assert any("could not be checked" in item for item in unreachable.failed)
+    assert not unreachable.not_present
 
 
 def test_voice_copy_and_approval_speech_boundary():

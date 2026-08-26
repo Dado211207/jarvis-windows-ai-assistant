@@ -170,11 +170,61 @@ def test_websocket_shows_reconnecting_then_live_after_network_drop(page):
 # 4 & 5. Text command; read-only automatic action
 # ---------------------------------------------------------------------------
 
+def _wait_for_stable_transcript(pg, quiet_ms: int = 300, timeout_ms: int = 5000) -> str:
+    """The transcript's text once it has stopped changing, and return it.
+
+    Deliberately generic — it waits for quiescence rather than for a named
+    label, so it cannot rot when a control's wording changes. Two equal
+    consecutive reads `quiet_ms` apart is the settled condition.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    previous = pg.inner_text("#chat-messages")
+    while time.monotonic() < deadline:
+        time.sleep(quiet_ms / 1000)
+        current = pg.inner_text("#chat-messages")
+        if current == previous:
+            return current
+        previous = current
+    return previous
+
+
+def _assistant_count(pg) -> int:
+    return pg.eval_on_selector_all(".msg-assistant", "els => els.length")
+
+
+def _send_and_wait_for_new_reply(pg, command: str, timeout: int = 8000) -> None:
+    """Send *command* and wait for the reply **to it**.
+
+    Waiting on `.msg-assistant` alone is not enough and the difference is a
+    real race, not a nicety: the chat page hydrates `/conversation?limit=50`
+    into `#chat-messages` on load, so by the time a test navigates there,
+    assistant bubbles from earlier tests against the same live server are
+    already in the DOM. `wait_for_selector` then returns immediately, having
+    matched an old message, and `inner_text` is read before the new reply
+    renders.
+
+    Measured, not guessed — the transcript captured at the failure ended:
+
+        …YOU / completely unknown query xyz / JARVIS / AI responses aren…
+        YOU / system status                              <- no reply yet
+
+    So the count is what has to grow. One failure in two full browser runs
+    at this commit; anchoring on the count removes the race rather than
+    hiding it behind a longer timeout.
+    """
+    before = _assistant_count(pg)
+    pg.fill("#chat-input", command)
+    pg.click("#chat-send")
+    pg.wait_for_function(
+        "n => document.querySelectorAll('.msg-assistant').length > n",
+        arg=before,
+        timeout=timeout,
+    )
+
+
 def test_text_command_read_only_action_executes_without_approval(page):
     page.goto(url("/ui/chat"), wait_until="networkidle")
-    page.fill("#chat-input", "system status")
-    page.click("#chat-send")
-    page.wait_for_selector(".msg-assistant, .msg[class*='assistant']", timeout=5000)
+    _send_and_wait_for_new_reply(page, "system status")
     messages = page.inner_text("#chat-messages")
     assert "System Status" in messages
     # .msg-approval-header is visually upper-cased via CSS text-transform;
@@ -388,7 +438,19 @@ def test_stop_button_halts_a_streaming_answer(page, live_server):
             "document.getElementById('chat-status').textContent === 'Stopped.'",
             timeout=10000,
         )
-        settled = page.inner_text("#chat-messages")
+        # `chat-status` flipping to "Stopped." is not the last DOM change the
+        # stop causes: the message's own control still has one transition
+        # left, from the streaming affordance to Listen. Capturing here and
+        # comparing a second later therefore compared a button label, not the
+        # answer, and failed with the two reads differing by exactly:
+        #
+        #     - ■ Stop        + ▶ Listen
+        #
+        # with the streamed text ("one ") identical on both sides. One failure
+        # in four full browser runs. The requirement — that no more of the
+        # answer arrives — is unchanged and still checked against the whole
+        # container; only the moment it starts checking from is now correct.
+        settled = _wait_for_stable_transcript(page)
 
     time.sleep(1.0)  # nothing more may arrive after the stop settled
     assert page.inner_text("#chat-messages") == settled
@@ -483,9 +545,25 @@ def _speak_once_requests(pg):
 
 
 def _send_and_wait(pg, command="status"):
-    pg.fill("#chat-input", command)
-    pg.click("#chat-send")
-    pg.wait_for_selector(".msg-assistant .msg-speak:not([hidden])", timeout=8000)
+    """Send, wait for the reply to *this* message, then for its Listen button.
+
+    Same hydration race as `_send_and_wait_for_new_reply` guards against: an
+    older assistant bubble already carries a `.msg-speak`, so waiting on the
+    selector alone can be satisfied by a message this call did not produce.
+    """
+    _send_and_wait_for_new_reply(pg, command)
+    # The newest bubble specifically. A CSS `:last-of-type` would mean "the
+    # last div that happens to be an assistant message", which is a different
+    # claim; indexing the matched list says what is meant.
+    pg.wait_for_function(
+        """() => {
+            const all = document.querySelectorAll('.msg-assistant');
+            const last = all[all.length - 1];
+            const speak = last && last.querySelector('.msg-speak');
+            return !!speak && !speak.hidden;
+        }""",
+        timeout=8000,
+    )
 
 
 def test_every_answer_carries_its_own_listen_button(page, live_server):
@@ -494,7 +572,7 @@ def test_every_answer_carries_its_own_listen_button(page, live_server):
     page.goto(url("/ui/chat"), wait_until="networkidle")
     _send_and_wait(page)
 
-    button = page.locator(".msg-assistant .msg-speak").first
+    button = page.locator(".msg-assistant .msg-speak").last
 
     assert button.get_attribute("aria-label") == "Read this answer aloud"
     assert button.get_attribute("aria-pressed") == "false"
@@ -521,7 +599,7 @@ def test_pressing_listen_asks_the_server_to_speak_that_message(page, live_server
     with patch("pyttsx3.init", return_value=MagicMock()):
         page.goto(url("/ui/chat"), wait_until="networkidle")
         _send_and_wait(page)
-        page.locator(".msg-assistant .msg-speak").first.click()
+        page.locator(".msg-assistant .msg-speak").last.click()
         page.wait_for_timeout(500)
 
     assert asked, "pressing Listen never reached /voice/speak-once"
@@ -531,7 +609,7 @@ def test_the_listen_button_is_keyboard_operable(page, live_server):
     page.goto(url("/ui/chat"), wait_until="networkidle")
     _send_and_wait(page)
 
-    button = page.locator(".msg-assistant .msg-speak").first
+    button = page.locator(".msg-assistant .msg-speak").last
     button.focus()
 
     assert page.evaluate("document.activeElement.classList.contains('msg-speak')") is True
@@ -550,7 +628,7 @@ def test_the_button_says_stop_while_it_is_speaking(page, live_server):
     with patch("pyttsx3.init", return_value=MagicMock()), \
          patch.object(engines, "speak", return_value=engines.SpeakOutcome(started=True, engine="kokoro", message="ok")), \
          patch.object(engines, "is_speaking", return_value=True):
-        page.locator(".msg-assistant .msg-speak").first.click()
+        page.locator(".msg-assistant .msg-speak").last.click()
         page.wait_for_selector('.msg-speak[aria-pressed="true"]', timeout=5000)
 
         button = page.locator('.msg-speak[aria-pressed="true"]').first
