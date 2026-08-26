@@ -19,10 +19,32 @@ is written by somebody who is not thinking about this file.
 
 import logging
 import logging.handlers
+import os
 import sys
 from pathlib import Path
 
 from app.config import settings
+
+
+def _raising_site(traceback_obj) -> str:
+    """`basename.py:lineno` of the innermost frame, or "" if unavailable.
+
+    Deliberately the basename only. A full path under %LOCALAPPDATA% or
+    C:\\Users\\ carries the account name, and these lines go into a log
+    file a user may attach to a bug report.
+
+    Never raises: this runs inside a logging filter.
+    """
+    try:
+        frame = traceback_obj
+        if frame is None:
+            return ""
+        while frame.tb_next is not None:
+            frame = frame.tb_next
+        name = os.path.basename(frame.tb_frame.f_code.co_filename)
+        return f"{name}:{frame.tb_lineno}"
+    except Exception:  # noqa: BLE001 - a filter must never break logging
+        return ""
 
 
 class _RedactingFilter(logging.Filter):
@@ -77,8 +99,19 @@ class _RedactingFilter(logging.Filter):
                 # text and may quote credentials or request fragments.
                 # Preserve the useful exception class, discard the message
                 # and traceback, and format only already-sanitised args.
+                #
+                # The class alone is not enough to find the cause, though,
+                # and losing that would undo the whole point of pairing a
+                # correlation_id with a server-side log line. So the raising
+                # site goes in too, as `basename.py:lineno` — that is code
+                # location, chosen by us, not text chosen by an exception,
+                # and the basename carries no directory and therefore no
+                # Windows account name.
                 exc_type = record.exc_info[0]
                 class_name = getattr(exc_type, "__name__", "Exception")
+                origin = _raising_site(record.exc_info[2])
+                if origin:
+                    class_name = f"{class_name} at {origin}"
                 record.msg = f"{record.getMessage()} [{class_name}]"
                 record.args = ()
                 record.exc_info = None

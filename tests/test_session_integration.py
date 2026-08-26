@@ -330,3 +330,55 @@ def test_onboarding_and_health_boot_without_a_session_header():
         # routes must stay usable before dashboard JavaScript is ready.
         assert client.get("/onboarding/readiness").status_code == 200
         assert client.get("/ui/setup").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# The Host allowlist must follow the port the server really bound
+# ---------------------------------------------------------------------------
+
+def test_a_loopback_host_on_the_real_bound_port_is_accepted():
+    """`allowed_hosts()` is built from the *configured* port, but the
+    server does not always serve on it: `start_server_in_background`
+    takes an explicit port, and the screenshot, smoke and diagnostic
+    scripts under scripts/ all bind an ephemeral one.
+
+    Pinning to the configured port alone rejected a perfectly ordinary
+    `Host: 127.0.0.1:50167` — sixteen tests and three errors, none of
+    them about security, because the server answered nothing at all.
+    """
+    from app.api.session import is_allowed_host
+    from app.config import settings
+
+    other = settings.jarvis_port + 4242
+    # Rejected when we are not actually listening there...
+    assert is_allowed_host(f"127.0.0.1:{other}", None, settings.jarvis_port) is False
+    # ...and accepted when we are.
+    for hostname in ("127.0.0.1", "localhost", "[::1]"):
+        assert is_allowed_host(f"{hostname}:{other}", None, other) is True
+
+
+def test_the_real_bound_port_does_not_admit_a_rebinding_hostname():
+    """The second rule keys on the *hostname* being a loopback literal.
+    A rebound attacker keeps their own hostname in Host, so knowing the
+    port buys them nothing."""
+    from app.api.session import is_allowed_host
+
+    port = 50167
+    for host in (
+        f"attacker.example:{port}",
+        f"localhost.attacker.example:{port}",
+        f"127.0.0.1.attacker.example:{port}",
+        f"127.0.0.1:{port}@attacker.example",
+        f"[::1].attacker.example:{port}",
+    ):
+        assert is_allowed_host(host, None, port) is False, host
+
+
+def test_without_a_known_server_port_only_the_configured_allowlist_applies():
+    """No `scope["server"]` (some ASGI transports omit it) must not open
+    the door — it falls back to exactly the previous behaviour."""
+    from app.api.session import is_allowed_host
+    from app.config import settings
+
+    assert is_allowed_host(f"127.0.0.1:{settings.jarvis_port}", None, None) is True
+    assert is_allowed_host("127.0.0.1:50167", None, None) is False

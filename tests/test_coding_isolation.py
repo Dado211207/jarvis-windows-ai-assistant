@@ -96,9 +96,16 @@ def test_the_ordinary_assistant_still_works_with_no_coding_project(tmp_path, mon
 
     from app.api.server import create_app
 
+    from tests.conftest import prime_session
+
     client = TestClient(create_app())
     assert client.get("/health").status_code == 200
     assert client.get("/ui/chat").status_code == 200
+    # /coding/status names the user's projects and what the mode may do,
+    # so it is a protected read now; the dashboard primes the session the
+    # same way. Health and the chat page stay open, which is the point of
+    # this test: the ordinary product needs no coding session at all.
+    prime_session(client)
     assert client.get("/coding/status").json()["enabled"] in (True, False)
 
 
@@ -232,7 +239,12 @@ def test_an_interrupted_task_is_offered_not_resumed(tmp_path, monkeypatch):
     tasks.set_state(record, tasks.TaskState.RUNNING)
 
     with TestClient(create_app()) as client:
-        client.get("/health")
+        # GET /coding/tasks lists the user's own projects and task history,
+        # so it now requires the session token like every other sensitive
+        # read. Priming the session is what the real dashboard does.
+        from tests.conftest import prime_session
+
+        prime_session(client)
         listed = client.get("/coding/tasks").json()
         assert record.id in listed["interrupted"]
         # Nothing is running: it was reported, not restarted.

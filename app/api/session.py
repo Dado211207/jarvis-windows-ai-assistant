@@ -43,6 +43,33 @@ HEADER_NAME = "X-JARVIS-Session-Token"
 TOKEN_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 
 
+#: The only hostnames a loopback Host header may name. A DNS-rebinding
+#: attack keeps the *attacker's* hostname in Host while the address
+#: re-resolves to 127.0.0.1, so a Host that is not one of these literals
+#: is exactly the signal that the origin is not ours.
+LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"})
+
+
+def _split_host_port(candidate: str) -> tuple[str, Optional[str]]:
+    """Hostname and port from a Host header, IPv6 brackets removed.
+
+    Returns the hostname lowercased and the port as written, or None when
+    the header carried no port at all.
+    """
+    if candidate.startswith("["):                     # [::1] or [::1]:8000
+        closing = candidate.find("]")
+        if closing == -1:
+            return candidate, None
+        hostname = candidate[1:closing]
+        rest = candidate[closing + 1 :]
+        port = rest[1:] if rest.startswith(":") else None
+        return hostname, port
+    if candidate.count(":") == 1:                      # host:port
+        hostname, _, port = candidate.partition(":")
+        return hostname, port
+    return candidate, None                             # bare host, or bare IPv6
+
+
 def allowed_hosts() -> set[str]:
     """Exact Host headers the local dashboard is allowed to use.
 
@@ -51,6 +78,10 @@ def allowed_hosts() -> set[str]:
     attacker.example:5555 can keep that origin while DNS changes the
     address to 127.0.0.1. Rejecting the non-canonical Host before routing
     or issuing a session cookie closes that gap.
+
+    This is the set for the *configured* port. `is_allowed_host` also
+    accepts the port the request actually arrived on — see there for why
+    that is necessary and why it is not a widening.
     """
     port = settings.jarvis_port
     return {
@@ -61,12 +92,39 @@ def allowed_hosts() -> set[str]:
     }
 
 
-def is_allowed_host(host: Optional[str], client_host: Optional[str] = None) -> bool:
+def is_allowed_host(
+    host: Optional[str],
+    client_host: Optional[str] = None,
+    server_port: Optional[int] = None,
+) -> bool:
+    """Whether this Host header may reach the application at all.
+
+    Two accepting rules, and the second one is load-bearing rather than a
+    convenience. Pinning the allowlist to `settings.jarvis_port` alone
+    assumes the port the server *is serving on* equals the port that was
+    configured, and that is not always true: `start_server_in_background`
+    takes an explicit port, and the screenshot, smoke and diagnostic
+    scripts under `scripts/` all bind an ephemeral one. Against those, a
+    perfectly ordinary `Host: 127.0.0.1:50167` was rejected and the
+    server answered nothing at all — sixteen tests and three errors, none
+    of them about security.
+
+    So the second rule accepts a Host whose *hostname* is a loopback
+    literal and whose port is the one this request genuinely arrived on
+    (`scope["server"]`, set by the ASGI server, not by the client). That
+    is not a widening: rebinding is defeated by the hostname check, which
+    is unchanged, and `server_port` cannot be forged from outside.
+    """
     if not host:
         return False
     candidate = host.strip().lower()
     if candidate in {item.lower() for item in allowed_hosts()}:
         return True
+
+    if server_port is not None:
+        hostname, port = _split_host_port(candidate)
+        if hostname in LOOPBACK_HOSTNAMES and port == str(server_port):
+            return True
 
     # Starlette's in-process TestClient uses a synthetic Host/client pair.
     # It cannot arrive over a real socket, so accepting that exact pair
@@ -135,7 +193,11 @@ class SessionCookieMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         client_host = request.client.host if request.client is not None else None
-        if not is_allowed_host(request.headers.get("host"), client_host):
+        # scope["server"] is (host, port) as the ASGI server bound it — the
+        # port we are really listening on, which a client cannot influence.
+        server = request.scope.get("server")
+        server_port = server[1] if isinstance(server, (tuple, list)) and len(server) > 1 else None
+        if not is_allowed_host(request.headers.get("host"), client_host, server_port):
             # Deliberately return before call_next() and before current():
             # a DNS-rebinding probe must receive neither application data
             # nor a freshly minted token.

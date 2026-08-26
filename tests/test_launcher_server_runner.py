@@ -96,7 +96,18 @@ def test_run_server_logs_and_swallows_a_crashing_server(caplog):
         server_runner._run_server(_CrashingServer())  # must not raise
 
     assert any("crashed" in record.message.lower() for record in caplog.records)
-    assert any(record.exc_info for record in caplog.records), "exception traceback must be logged, not just a bare message"
+    # The raw traceback is deliberately no longer kept: str(exc) is
+    # handler-controlled text that can quote a credential or a user path,
+    # and this line lands in a log file on the user's disk. What must
+    # survive is the diagnosis — the exception class and the exact line
+    # that raised — which is strictly more locating than "exc_info was
+    # truthy". See app/logging_config.py::_raising_site.
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert "RuntimeError" in logged, f"the exception class was lost: {logged!r}"
+    assert "test_launcher_server_runner.py:" in logged, (
+        f"the raising site was lost, so the crash is unfindable: {logged!r}"
+    )
+    assert "simulated frozen-build import failure" not in logged
 
 
 def test_server_starts_successfully_when_stdout_and_stderr_are_none():

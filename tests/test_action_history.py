@@ -166,16 +166,23 @@ def test_a_secret_shaped_tool_input_is_stored_already_masked(client):
     assert record.input_summary["harmless"] == "ok"
 
 
-def test_the_history_is_readable_without_a_session_token():
-    """Read-only, loopback-only, and containing no credential — the same
-    reasoning as /logs. Someone checking what happened should not need a
-    token to look."""
+def test_the_history_requires_a_session_token():
+    """This replaces an assertion that the history was readable without a
+    token, reasoned from "read-only, loopback-only, no credential".
+
+    Two of those three no longer carry the argument. The history is a
+    record of what this person asked their computer to do, with the
+    parameters they used — personal even when it holds no credential —
+    and /logs, the endpoint that reasoning was borrowed from, is
+    protected now for the same reason. Redaction keeps credentials out of
+    it (see the test above); the token keeps everything else in.
+    """
     from app.api.server import app
 
     with TestClient(app) as bare:
         bare.get("/health")
         bare.cookies.clear()
-        assert bare.get("/actions/history").status_code == 200
+        assert bare.get("/actions/history").status_code == 403
 
 
 def test_history_is_not_shadowed_by_the_action_id_route(client):

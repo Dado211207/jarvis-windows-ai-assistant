@@ -60,17 +60,47 @@ def test_to_safe_error_correlation_id_is_unique_per_call():
     assert len(ids) == 20
 
 
-def test_to_safe_error_logs_full_detail_server_side_only(caplog):
-    """The real exception text IS expected in the server-side log —
-    that's the point (a developer can find the real cause from a
-    correlation_id) — it just must never appear in the returned
-    SafeError itself."""
-    exc = RuntimeError("this detail belongs only in the server log")
-    with caplog.at_level(logging.ERROR):
-        safe = to_safe_error(exc, category=ErrorCategory.INTERNAL_ERROR)
+def test_to_safe_error_logs_a_findable_cause_but_not_the_exception_text(tmp_path, monkeypatch):
+    """This replaces an assertion that the exception's *text* reaches the
+    server log.
 
-    assert "this detail belongs only in the server log" in caplog.text
-    assert safe.correlation_id in caplog.text  # log line is findable by the id the client saw
+    It no longer does, deliberately: `str(exc)` is handler-controlled and
+    can quote a credential, a prompt fragment or a user path, and this log
+    file lives on the user's disk. What survives is what actually makes a
+    line findable and diagnosable — the correlation_id the client saw, the
+    exception class, and the raising site as `basename.py:lineno`.
+
+    That is not weaker than the old assertion. A file and a line number
+    locate the cause exactly; a message only describes it.
+
+    Asserted against the real log file rather than `caplog`, because the
+    redacting filter is attached to the *handlers* — caplog installs its
+    own handler and would show the unfiltered record, which is precisely
+    the surface this guarantee is not about.
+    """
+    import logging as _logging
+
+    from app.logging_config import setup_logging
+
+    log_file = tmp_path / "jarvis.log"
+    monkeypatch.setattr("app.config.settings.jarvis_log_file", str(log_file))
+    monkeypatch.setattr("app.config.settings.jarvis_log_level", "DEBUG")
+    setup_logging()
+    try:
+        try:
+            raise RuntimeError("this detail must not reach the log")
+        except RuntimeError as exc:
+            safe = to_safe_error(exc, category=ErrorCategory.INTERNAL_ERROR)
+        _logging.shutdown()
+        body = log_file.read_text(encoding="utf-8")
+    finally:
+        _logging.shutdown()
+
+    assert body.strip(), "nothing was written — this test would prove nothing"
+    assert "this detail must not reach the log" not in body
+    assert safe.correlation_id in body     # findable by the id the client saw
+    assert "RuntimeError" in body          # the class is still named
+    assert "test_errors.py:" in body       # and the exact raising line
 
 
 def test_to_safe_error_default_category_is_internal_error():

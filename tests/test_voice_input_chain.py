@@ -283,15 +283,18 @@ def test_diagnostics_reports_a_missing_engine_distinctly(api_client):
     assert body["model_path"] == ""
 
 
-def test_diagnostics_never_needs_a_session_token(api_client):
-    """Reading a status must not require a mutation token, or the
-    requirement stops meaning anything."""
+def test_diagnostics_requires_a_session_token(api_client):
+    """This replaces an earlier assertion that reading a status needs no
+    token. /voice/diagnostics reports the model path under %LOCALAPPDATA%
+    — a full Windows user path contains the account name — so it is a
+    personal read and is protected like the rest of them. The token is no
+    longer only a mutation token."""
     from fastapi.testclient import TestClient
 
     from app.api.server import app as jarvis_app
 
     with TestClient(jarvis_app, raise_server_exceptions=True) as unprimed:
-        assert unprimed.get("/voice/diagnostics").status_code == 200
+        assert unprimed.get("/voice/diagnostics").status_code == 403
 
 
 def test_diagnostics_leaks_no_secret(api_client, monkeypatch, fake_adapter):

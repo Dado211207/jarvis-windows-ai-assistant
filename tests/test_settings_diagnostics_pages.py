@@ -21,8 +21,17 @@ APP_JS = REPO_ROOT / "app" / "ui" / "static" / "app.js"
 
 @pytest.fixture
 def client():
+    """Primed with the session token, exactly as the dashboard's own JS
+    primes itself by reading the (deliberately non-HttpOnly) cookie.
+
+    /diagnostics is a *protected* read: its Locations section names
+    %LOCALAPPDATA% paths, and on Windows a full user path contains the
+    account name. See test_diagnostics_requires_a_session_token.
+    """
+    from tests.conftest import prime_session
+
     with TestClient(app) as test_client:
-        yield test_client
+        yield prime_session(test_client)
 
 
 # ---------------------------------------------------------------------------
@@ -60,9 +69,24 @@ def test_diagnostics_endpoint_returns_sections_and_text(client):
     assert "JARVIS diagnostic report" in body["text"]
 
 
-def test_diagnostics_is_readable_without_a_session_token(client):
-    """Read-only, so it must not require the mutation token."""
-    assert client.get("/diagnostics").status_code == 200
+def test_diagnostics_requires_a_session_token():
+    """This replaces an earlier assertion that /diagnostics was readable
+    *without* a token, on the reasoning that a read-only endpoint should
+    not need the mutation token.
+
+    That reasoning no longer holds, for a specific reason: the report's
+    Locations section names the application data, logs, configuration and
+    model directories, and on Windows a full user path contains the
+    account name. It is a personal read, not a public one — so it is
+    protected like /memory, /conversation and /logs, and the token is no
+    longer only a mutation token.
+
+    Nothing is lost for a real user: the dashboard sends the header on
+    protected reads, and when the session mechanism itself is broken the
+    log file on disk is the break-glass path, not this endpoint.
+    """
+    with TestClient(app) as unprimed:
+        assert unprimed.get("/diagnostics").status_code == 403
 
 
 def test_diagnostics_response_never_contains_an_api_key(client, monkeypatch):
