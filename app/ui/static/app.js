@@ -838,6 +838,14 @@ function initChat() {
 
   // Do not let a new message or reset race the history read. Failure still
   // unlocks every control and leaves a visible, actionable status.
+  //
+  // Whether the input held focus *before* we disabled it decides whether we
+  // give focus back afterwards. On a fresh page load it did not: the
+  // document does, and that is what lets the first Tab reach the skip link.
+  // Focusing unconditionally here put the caret in the chat box on every
+  // load, so the first Tab went to the push-to-talk button and the skip
+  // link — eleven nav links' worth of keyboard travel — became unreachable.
+  const inputHadFocus = !!input && document.activeElement === input;
   if (btn) btn.disabled = true;
   if (input) input.disabled = true;
   if (reset) reset.disabled = true;
@@ -867,7 +875,8 @@ function initChat() {
     if (list) list.setAttribute("aria-busy", "false");
     if (input) {
       input.disabled = false;
-      input.focus();
+      // Only give focus back if we took it. See inputHadFocus above.
+      if (inputHadFocus) input.focus();
     }
   });
   refreshChatProvider();

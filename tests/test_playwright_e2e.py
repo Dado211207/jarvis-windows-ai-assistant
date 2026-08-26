@@ -848,6 +848,26 @@ def test_the_first_tab_press_offers_a_way_past_the_sidebar(page):
     ) == "absolute"
 
 
+def test_the_chat_page_does_not_take_focus_on_load(page):
+    """Regression: the chat input must not hold focus when a page opens.
+
+    History hydration disables the input and re-enables it afterwards, and
+    the re-enable used to call `focus()` unconditionally. On a fresh load
+    nothing had focus to restore, so the caret landed in the chat box, the
+    first Tab went to the push-to-talk button, and the skip link — eleven
+    nav links' worth of keyboard travel — could not be reached at all.
+    Measured before the fix: activeElement was INPUT#chat-input on load.
+
+    Focus is given back only when this code is what took it away.
+    """
+    page.goto(url("/ui/chat"), wait_until="networkidle")
+
+    active = page.evaluate("document.activeElement.tagName")
+    assert active in ("BODY", "HTML"), (
+        f"something took focus on load: {page.evaluate('document.activeElement.id')!r}"
+    )
+
+
 def test_the_skip_link_actually_moves_focus_into_the_content(page):
     """Scrolling without moving focus is the common broken version: the
     next Tab press goes straight back into the nav."""
