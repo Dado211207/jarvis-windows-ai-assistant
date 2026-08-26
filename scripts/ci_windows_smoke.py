@@ -117,12 +117,38 @@ def check_fastapi_startup() -> None:
 def _walk_everything(httpx, base):
     """Every page, endpoint and asset over the live server. Collects all
     failures rather than stopping at the first, so one run reports the
-    whole picture instead of one symptom at a time."""
+    whole picture instead of one symptom at a time.
+
+    Runs inside a session, exactly as the dashboard does. The reads below
+    include the user's own logs, memory, conversation and diagnostics, and
+    those require the double-submit session token now; a client that walks
+    them anonymously gets nine 403s and reports them as failures — which
+    is what happened the first time this job met the security pass. The
+    token is not a workaround here: a real consumer of these endpoints has
+    to hold one, so a smoke check that did not would be testing a path no
+    supported client uses.
+    """
     failures = []
 
+    client = httpx.Client(timeout=10)
+    try:
+        # GET /health is the bootstrap that issues the cookie; echoing it
+        # back as a header is the double-submit the server requires.
+        client.get(f"{base}/health")
+        token = client.cookies.get("jarvis_session")
+        if token:
+            client.headers["X-JARVIS-Session-Token"] = token
+        else:
+            failures.append("/health: no session cookie was issued")
+        return _walk_with(client, base, failures)
+    finally:
+        client.close()
+
+
+def _walk_with(client, base, failures):
     for path in UI_PAGES:
         try:
-            response = httpx.get(f"{base}{path}", timeout=10)
+            response = client.get(f"{base}{path}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{path}: request failed ({type(exc).__name__})")
             continue
@@ -133,7 +159,7 @@ def _walk_everything(httpx, base):
 
     for path in READ_ENDPOINTS:
         try:
-            response = httpx.get(f"{base}{path}", timeout=10)
+            response = client.get(f"{base}{path}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{path}: request failed ({type(exc).__name__})")
             continue
@@ -142,18 +168,18 @@ def _walk_everything(httpx, base):
 
     for path in STATIC_ASSETS:
         try:
-            response = httpx.get(f"{base}{path}", timeout=10)
+            response = client.get(f"{base}{path}")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{path}: request failed ({type(exc).__name__})")
             continue
         if response.status_code != 200 or not response.text.strip():
             failures.append(f"{path}: not served (HTTP {response.status_code})")
 
-    failures.extend(_check_no_credentials_are_served(httpx, base))
+    failures.extend(_check_no_credentials_are_served(client, base))
     return failures
 
 
-def _check_no_credentials_are_served(httpx, base):
+def _check_no_credentials_are_served(client, base):
     """Plant a credential-shaped value where the app would read one, then
     walk every page and read-only endpoint asserting it never comes back.
 
@@ -170,7 +196,7 @@ def _check_no_credentials_are_served(httpx, base):
         type(settings).effective_api_key = property(lambda self: planted)
         for path in UI_PAGES + READ_ENDPOINTS:
             try:
-                body = httpx.get(f"{base}{path}", timeout=10).text
+                body = client.get(f"{base}{path}").text
             except Exception:  # noqa: BLE001 — already reported above
                 continue
             if planted in body or "sk-ant-" in body:
