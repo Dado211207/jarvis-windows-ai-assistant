@@ -543,6 +543,37 @@ def test_ownership_is_checked_before_anything_navigates(monkeypatch):
 # When the browser will not start, say what it said
 # ---------------------------------------------------------------------------
 
+def _stub_browser(tmp_path, name: str, stderr_lines, exit_code: int):
+    """A "browser" that prints to stderr and exits, on every platform.
+
+    The first version of this was a `#!/bin/sh` script, so both tests that
+    use it skipped on Windows — the only platform this product ships for.
+    A shebang is not a cross-platform mechanism and `.cmd` is not either;
+    the interpreter already running the suite is. `_OwnedBrowser` launches
+    an argv list with `shell=False`, so handing it
+    `[sys.executable, script]` exercises exactly the production path with
+    no shell anywhere and nothing to chmod.
+
+    Returns (engine, argv) ready for `_OwnedBrowser`.
+    """
+    import sys
+
+    from app.coding import browser_engine
+
+    script = tmp_path / f"{name}.py"
+    body = "import sys\n"
+    for line in stderr_lines:
+        body += f"sys.stderr.write({line!r} + chr(10))\n"
+    body += "sys.stderr.flush()\n"
+    body += f"sys.exit({exit_code})\n"
+    script.write_text(body, encoding="utf-8")
+
+    # The engine's display path is the stub too, so anything that echoes
+    # it back would be caught by the no-path assertion below.
+    engine = browser_engine.Engine("chromium", "Chromium", str(script))
+    return engine, [sys.executable, str(script)]
+
+
 def test_a_browser_that_will_not_start_reports_its_own_error(tmp_path):
     """"The browser connection closed." is not a diagnosis.
 
@@ -551,24 +582,15 @@ def test_a_browser_that_will_not_start_reports_its_own_error(tmp_path):
     says why — a missing shared library, a refused sandbox — and that
     sentence is the difference between a fixable report and a dead end.
     """
-    import os
-    import stat
+    from app.coding import browser_qa
 
-    from app.coding import browser_engine, browser_qa
-
-    stub = tmp_path / "not-really-a-browser.sh"
-    stub.write_text(
-        "#!/bin/sh\n"
-        "echo 'error while loading shared libraries: libnss3.so: "
-        "cannot open shared object file' >&2\n"
-        "exit 127\n"
+    engine, argv = _stub_browser(
+        tmp_path, "not-really-a-browser",
+        ["error while loading shared libraries: libnss3.so: "
+         "cannot open shared object file"],
+        exit_code=127,
     )
-    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    if os.name == "nt":                       # pragma: no cover - POSIX shim
-        pytest.skip("the stub is a shell script; the assertion is platform-neutral")
-
-    engine = browser_engine.Engine("chromium", "Chromium", str(stub))
-    owned = browser_qa._OwnedBrowser(engine, [str(stub)], str(tmp_path / "profile"))
+    owned = browser_qa._OwnedBrowser(engine, argv, str(tmp_path / "profile"))
     owned.start()
     owned._process.wait(timeout=15)
     try:
@@ -586,24 +608,17 @@ def test_the_reported_browser_error_carries_no_path(tmp_path):
     """These reasons reach a log file and the Coding Workspace page. A
     Windows profile directory and an executable path both contain the
     account name."""
-    import os
-    import stat
+    from app.coding import browser_qa
 
-    from app.coding import browser_engine, browser_qa
-
-    stub = tmp_path / "pathy.sh"
-    stub.write_text(
-        "#!/bin/sh\n"
-        "echo 'cannot create /home/somebody/.cache/profile-1234: denied' >&2\n"
-        "echo 'C:\\\\Users\\\\Somebody\\\\AppData\\\\Local\\\\Temp\\\\p refused' >&2\n"
-        "exit 1\n"
+    engine, argv = _stub_browser(
+        tmp_path, "pathy",
+        [
+            "cannot create /home/somebody/.cache/profile-1234: denied",
+            "C:\\Users\\Somebody\\AppData\\Local\\Temp\\p refused",
+        ],
+        exit_code=1,
     )
-    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    if os.name == "nt":                       # pragma: no cover - POSIX shim
-        pytest.skip("the stub is a shell script; the assertion is platform-neutral")
-
-    engine = browser_engine.Engine("chromium", "Chromium", str(stub))
-    owned = browser_qa._OwnedBrowser(engine, [str(stub)], str(tmp_path / "profile"))
+    owned = browser_qa._OwnedBrowser(engine, argv, str(tmp_path / "profile"))
     owned.start()
     owned._process.wait(timeout=15)
     try:
@@ -660,3 +675,127 @@ def test_the_on_device_model_component_is_disabled():
         "it enabled — host-resolver-rules makes every host unresolvable "
         "anyway."
     )
+
+
+# ---------------------------------------------------------------------------
+# Chromium selection is deterministic
+# ---------------------------------------------------------------------------
+
+def _make_browser(root, directory: str, relative: str, executable: bool = True):
+    """Plant a fake Playwright browser under a synthetic cache root."""
+    import stat
+
+    path = root / directory / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n")
+    if executable:
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+@pytest.fixture
+def cache_root(tmp_path, monkeypatch):
+    root = tmp_path / "ms-playwright"
+    root.mkdir()
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(root))
+    # Keep the real home cache out of it, so a machine that happens to
+    # have a browser installed cannot make these pass or fail by accident.
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path / "nohome"))
+    return root
+
+
+def test_a_newer_full_browser_beats_an_older_one_in_a_different_layout(cache_root):
+    """The regression this ordering exists for.
+
+    The previous implementation iterated layout-first, so `chrome-linux`
+    was searched before `chrome-linux64` across *every* build — an old
+    browser won purely because of how it had been packaged. Asserting on
+    the build number is what makes that impossible.
+    """
+    from app.coding import browser_engine
+
+    _make_browser(cache_root, "chromium-1094", "chrome-linux/chrome")
+    _make_browser(cache_root, "chromium-1234", "chrome-linux64/chrome")
+
+    engine = browser_engine._chromium_for_ci()
+    assert engine is not None
+    assert "chromium-1234" in engine.path, (
+        f"picked the older build purely on layout order: {engine.path}"
+    )
+
+
+def test_a_full_browser_beats_a_newer_headless_shell(cache_root):
+    """Windows drives Edge, a full browser. A shell is the fallback, and
+    being newer does not promote it."""
+    from app.coding import browser_engine
+
+    _make_browser(cache_root, "chromium-1094", "chrome-linux64/chrome")
+    _make_browser(cache_root, "chromium_headless_shell-1234",
+                  "chrome-headless-shell-linux64/chrome-headless-shell")
+
+    engine = browser_engine._chromium_for_ci()
+    assert engine is not None
+    assert engine.path.endswith("chrome"), engine.path
+    assert "headless" not in engine.path, engine.path
+
+
+def test_the_headless_shell_is_used_when_there_is_no_full_browser(cache_root):
+    from app.coding import browser_engine
+
+    _make_browser(cache_root, "chromium_headless_shell-1234",
+                  "chrome-headless-shell-linux64/chrome-headless-shell")
+
+    engine = browser_engine._chromium_for_ci()
+    assert engine is not None
+    assert "chrome-headless-shell" in engine.path
+
+
+def test_an_incomplete_candidate_is_rejected_rather_than_reported(cache_root):
+    """An interrupted `playwright install` leaves the tree without a
+    working binary. Reporting that as the engine turns a missing browser
+    into a crash at launch instead of a clear refusal."""
+    from app.coding import browser_engine
+
+    # Present but not executable.
+    _make_browser(cache_root, "chromium-1300", "chrome-linux64/chrome", executable=False)
+    # A directory where the binary should be.
+    (cache_root / "chromium-1301" / "chrome-linux64" / "chrome").mkdir(parents=True)
+    # The only usable one is older.
+    _make_browser(cache_root, "chromium-1094", "chrome-linux64/chrome")
+
+    engine = browser_engine._chromium_for_ci()
+    assert engine is not None
+    assert "chromium-1094" in engine.path, (
+        f"an unusable candidate was preferred: {engine.path}"
+    )
+
+
+def test_the_explicit_override_is_what_is_searched(cache_root, tmp_path):
+    """PLAYWRIGHT_BROWSERS_PATH is the override, and it is honoured over
+    the default cache location."""
+    from app.coding import browser_engine
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _make_browser(elsewhere, "chromium-1500", "chrome-linux64/chrome")
+    _make_browser(cache_root, "chromium-1094", "chrome-linux64/chrome")
+
+    import os as _os
+    _os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(elsewhere)
+    engine = browser_engine._chromium_for_ci()
+    assert engine is not None
+    assert str(elsewhere) in engine.path, engine.path
+
+
+def test_build_numbers_are_compared_as_numbers_not_text(cache_root):
+    """`chromium-999` must not outrank `chromium-1234`. Sorting directory
+    names as strings does exactly that the moment the counter gains a
+    digit."""
+    from app.coding import browser_engine
+
+    _make_browser(cache_root, "chromium-999", "chrome-linux64/chrome")
+    _make_browser(cache_root, "chromium-1234", "chrome-linux64/chrome")
+
+    engine = browser_engine._chromium_for_ci()
+    assert engine is not None
+    assert "chromium-1234" in engine.path, engine.path

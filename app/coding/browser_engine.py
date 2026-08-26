@@ -154,42 +154,96 @@ def _chromium_for_ci() -> Optional[Engine]:
     if os.name == "nt":
         return None
 
+#: Every Playwright layout we know, and whether it is a full browser.
+#: `chrome-linux64` is what current builds unpack into; `chrome-linux` is
+#: the older one. Only looking for the older layout once meant a freshly
+#: installed Chromium was invisible and discovery fell through to whatever
+#: `google-chrome` the machine happened to have — which is not the browser
+#: anybody chose.
+_CHROMIUM_LAYOUTS = (
+    ("chrome-linux64/chrome", True),
+    ("chrome-linux/chrome", True),
+    ("chrome-headless-shell-linux64/chrome-headless-shell", False),
+    ("chrome-linux/headless_shell", False),
+)
+
+
+def _build_number(directory_name: str) -> int:
+    """The trailing build number of `chromium-1234`, or -1 if absent.
+
+    Compared as an integer, never as a string: sorting names as text puts
+    `chromium-999` above `chromium-1234`, which would pick an older
+    browser the moment the counter gained a digit.
+    """
+    _, _, tail = directory_name.rpartition("-")
+    return int(tail) if tail.isdigit() else -1
+
+
+def _usable(path: Path) -> bool:
+    """A real, executable file — not a directory or a half-unpacked stub.
+
+    An interrupted `playwright install` leaves the directory tree behind
+    without a working binary, and reporting that as the engine turns a
+    missing browser into a crash at launch instead of a clear refusal.
+    """
+    try:
+        return path.is_file() and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def _chromium_for_ci() -> Optional[Engine]:
+    """A Chromium for Linux CI. Never the answer on Windows.
+
+    Kept deliberately separate so a reader can see that the product's
+    Windows behaviour does not depend on a developer tool being present.
+
+    Selection is deterministic and ordered on two keys, in this order:
+
+      1. **A full browser beats a headless shell.** Windows drives Edge,
+         a full browser, and the two platforms should be running the same
+         kind of thing. A shell is used only when there is no full
+         browser at all.
+      2. **Among equals, the newest build wins.** The earlier version of
+         this preferred whichever *layout* matched first, so an old
+         `chrome-linux` build beat a newer `chrome-linux64` one — the
+         browser chosen depended on how it had been packaged rather than
+         on what it was.
+    """
+    if os.name == "nt":
+        return None
+
     configured = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
     roots: List[Path] = []
     if configured and configured != "0":
         roots.append(Path(configured))
     roots.append(Path.home() / ".cache" / "ms-playwright")
+
+    # (full_browser, build, path) — sorted once, over everything found, so
+    # the answer cannot depend on which root or layout happened to be
+    # visited first.
+    found: List[tuple] = []
     for root in roots:
         try:
             if not root.is_dir():
                 continue
-            entries = sorted(root.glob("chromium*"), reverse=True)
-            # Layout first, version second. `chrome-linux64` is what
-            # current Playwright builds unpack into, and only looking for
-            # `chrome-linux` meant a freshly installed Chromium was
-            # invisible and discovery fell through to whatever
-            # `google-chrome` the machine happened to have — which is not
-            # the browser anybody chose.
-            #
-            # The full browser is preferred over the headless shell even
-            # though both pass, because Windows drives Edge, a full
-            # browser, and the two platforms should be running the same
-            # kind of thing.
-            for relative in ("chrome-linux/chrome",
-                             "chrome-linux64/chrome",
-                             "chrome-linux/headless_shell",
-                             "chrome-headless-shell-linux64/chrome-headless-shell"):
-                for entry in entries:
+            for entry in root.glob("chromium*"):
+                build = _build_number(entry.name)
+                for relative, is_full in _CHROMIUM_LAYOUTS:
                     candidate = entry / relative
-                    if candidate.is_file():
-                        return Engine("chromium", "Chromium", str(candidate))
+                    if _usable(candidate):
+                        found.append((is_full, build, str(candidate)))
         except OSError:
             continue
 
+    if found:
+        is_full, _build, path = max(found, key=lambda item: (item[0], item[1]))
+        return Engine("chromium", "Chromium", path)
+
     for name in ("chromium", "chromium-browser", "google-chrome", "chrome"):
-        found = shutil.which(name)
-        if found:
-            return Engine("chromium", "Chromium", found)
+        resolved = shutil.which(name)
+        if resolved:
+            return Engine("chromium", "Chromium", resolved)
     return None
 
 
