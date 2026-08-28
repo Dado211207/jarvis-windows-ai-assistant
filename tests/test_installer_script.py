@@ -49,6 +49,26 @@ def test_file_exists():
     assert ISS_PATH.exists()
 
 
+def test_pascal_character_codes_never_start_a_source_line():
+    """ISPP treats a leading ``#`` as a preprocessor directive.
+
+    Pascal Script character codes such as ``#13#10`` are valid inside an
+    expression, but placing one at the start of a physical line makes Inno
+    Setup parse ``#13`` as an (unknown) ISPP directive.  That exact layout
+    reached main and failed the real Windows installer compile, so keep the
+    inexpensive structural guard here as well as the authoritative ISCC job.
+    """
+    offenders = [
+        (line_number, line)
+        for line_number, line in enumerate(_read().splitlines(), start=1)
+        if re.match(r"^\s*#\d", line)
+    ]
+    assert not offenders, (
+        "Pascal character code starts a source line and will be parsed as an "
+        f"ISPP directive: {offenders}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # No admin/UAC requirement; per-user install
 # ---------------------------------------------------------------------------
