@@ -15,6 +15,19 @@ how Claude Code sessions should work on this codebase.
 - **Register, don't hard-code.** Add new tools via the `ToolRegistry`; do not add
   elif chains to `router.py` or `brain.py`.
 
+## UI design workflow
+
+- For any non-trivial interface design, redesign or visual-quality task, use
+  `/dado-ui-design:ui-ux-pro-max` when the marketplace plugin is available, or the
+  repository fallback `/ui-ux-pro-max` otherwise.
+- Detect the actual UI stack before applying stack guidance. For JARVIS, preserve
+  keyboard access, Windows scaling, focus visibility, reduced motion, loopback-only
+  boundaries and the existing release gates.
+- Design guidance is input, not proof. Verify the implemented result with the
+  repository's real browser, accessibility, responsive and installed-product gates.
+- Never overwrite an existing persisted design system with `--force` unless the
+  user explicitly approves that overwrite.
+
 ## AI provider rules (non-negotiable)
 
 - **One provider contract.** All generation goes through `app/core/ai/`.

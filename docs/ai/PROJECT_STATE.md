@@ -66,5 +66,6 @@ python -m compileall app db
 
 - Source and provenance: `.claude/TOOLKIT.md`.
 - External plugins are declared in `.claude/settings.json`.
-- Repository fallbacks: 18 skills and nine agents under `.claude/`.
+- Repository fallbacks: 19 skills and nine agents under `.claude/`, including the
+  local `ui-ux-pro-max` catalogue and search runtime.
 - Existing JARVIS rules win over a generic toolkit recommendation.

@@ -6,13 +6,15 @@ marketplace loaded in a particular cloud session, or that plugin hooks executed.
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
 CLAUDE = ROOT / ".claude"
-TOOLKIT_COMMIT = "81796b8d5d35bef723fc180f4dd98c61f90e2052"
+TOOLKIT_COMMIT = "da8276e03b54d521462a0a15861d58227fb1546a"
+UI_UPSTREAM_COMMIT = "8bd29e775453ebcae52b6e6514fbf134df0c5770"
 
 EXPECTED_SKILLS = {
     "artifact-integrity",
@@ -31,6 +33,7 @@ EXPECTED_SKILLS = {
     "safe-edit",
     "select-tests",
     "uncertainty-log",
+    "ui-ux-pro-max",
     "verify-and-report",
     "windows-ci-portability",
 }
@@ -48,7 +51,7 @@ EXPECTED_AGENTS = {
 }
 
 
-def test_settings_enable_only_the_three_reviewed_toolkit_plugins():
+def test_settings_enable_only_the_four_reviewed_toolkit_plugins():
     settings = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
 
     assert settings["extraKnownMarketplaces"]["dado-tools"]["source"] == {
@@ -57,6 +60,7 @@ def test_settings_enable_only_the_three_reviewed_toolkit_plugins():
     }
     assert settings["enabledPlugins"] == {
         "dado-core@dado-tools": True,
+        "dado-ui-design@dado-tools": True,
         "dado-python-windows@dado-tools": True,
         "dado-release-safety@dado-tools": True,
     }
@@ -87,10 +91,42 @@ def test_provenance_and_project_state_are_explicit_about_the_limits():
     state = (ROOT / "docs" / "ai" / "PROJECT_STATE.md").read_text(encoding="utf-8")
 
     assert TOOLKIT_COMMIT in provenance
+    assert UI_UPSTREAM_COMMIT in provenance
     assert "not authorization" in " ".join(state.split())
     assert "Draft, open, unmerged" in state
     assert "Real microphone" in state
     assert "No tag, release, signing, merge or deployment" in state
+
+
+def test_ui_design_fallback_is_complete_local_and_dependency_free():
+    skill = CLAUDE / "skills" / "ui-ux-pro-max"
+    instructions = (skill / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "${CLAUDE_PLUGIN_ROOT}" not in instructions
+    assert ".claude/skills/ui-ux-pro-max/scripts/search.py" in instructions
+    assert (skill / "THIRD_PARTY_LICENSE.txt").is_file()
+    assert (skill / "data" / "catalog-summary.json").is_file()
+    assert (skill / "scripts" / "search.py").is_file()
+
+    forbidden_modules = {"subprocess", "requests", "httpx", "urllib3", "socket"}
+    for path in sorted((skill / "scripts").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imports = {
+            alias.name.split(".", 1)[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        imports.update(
+            (node.module or "").split(".", 1)[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        )
+        assert not imports & forbidden_modules
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "urllib.request"
 
 
 def test_claude_instructions_route_non_trivial_work_through_project_state():

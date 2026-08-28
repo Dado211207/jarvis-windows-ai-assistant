@@ -10,6 +10,7 @@
   },
   "enabledPlugins": {
     "dado-core@dado-tools": true,
+    "dado-ui-design@dado-tools": true,
     "dado-python-windows@dado-tools": true,
     "dado-release-safety@dado-tools": true
   },
