@@ -455,6 +455,43 @@ def test_the_acceptance_phase_derives_the_base_url_rather_than_hardcoding_one():
     assert hardcoded == [], f"a URL with a hardcoded port appears in {hardcoded}"
 
 
+def test_the_acceptance_phase_reviews_the_preview_plan_before_starting_it():
+    """Keep the installed-product test on the same two-step API as the UI.
+
+    The preview endpoint accepts only a short-lived reviewed ``plan_id``.
+    Posting ``project_id`` directly reached main unnoticed and made the real
+    clean-install run fail with HTTP 422 after the installer itself succeeded.
+    """
+    import ast
+
+    tree = ast.parse(_acceptance_source())
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_start_preview"
+    )
+
+    posts = {}
+    for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
+        if not (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "post"
+            and call.args
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+        ):
+            continue
+        json_keyword = next((kw for kw in call.keywords if kw.arg == "json"), None)
+        assert json_keyword is not None and isinstance(json_keyword.value, ast.Dict)
+        posts[call.args[0].value] = {
+            key.value
+            for key in json_keyword.value.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+
+    assert posts["/coding/preview/plan"] == {"project_id", "script"}
+    assert posts["/coding/preview/start"] == {"plan_id"}
+
+
 def test_the_acceptance_phase_asserts_on_real_counts_not_a_bare_total():
     """A check that found the two <h1>s and nothing else would satisfy
     `problem_count > 0` while missing the console error, the broken image

@@ -408,7 +408,18 @@ def _start_preview(client, project_id: str, root: Path) -> dict:
     """Start the project's own declared dev server, through the product."""
     import httpx
 
-    started = client.post("/coding/preview/start", json={"project_id": project_id})
+    planned = client.post(
+        "/coding/preview/plan",
+        json={"project_id": project_id, "script": "dev"},
+    )
+    if planned.status_code != 200:
+        _fail(f"Planning the preview failed: {planned.status_code} {planned.text[:300]}")
+    plan = planned.json().get("plan", {})
+    plan_id = plan.get("plan_id")
+    if not plan_id or plan.get("project_id") != project_id:
+        _fail("The preview plan did not identify the reviewed project and command.")
+
+    started = client.post("/coding/preview/start", json={"plan_id": plan_id})
     if started.status_code == 404:
         # The preview is driven by a task in this build. Start the fixture
         # server the way the product would and register it, so the browser
