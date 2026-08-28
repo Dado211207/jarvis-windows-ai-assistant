@@ -132,6 +132,25 @@ def test_the_gate_treats_packaging_paths_as_relevant():
         assert required in script, f"{required} must count as a packaging-relevant change"
 
 
+def test_installed_coding_acceptance_changes_trigger_the_real_installer_job():
+    """The script runs only against the packaged executable on Windows.
+
+    A change fixing its preview confirmation contract initially produced a
+    green workflow whose expensive job was actually skipped, because this
+    path was absent from both GitHub's filters and the pushed-range gate.
+    """
+    data = _parsed()
+    required = "scripts/installed_coding_acceptance.py"
+
+    on = data[True] if True in data else data.get("on", {})
+    assert required in on["pull_request"]["paths"]
+    assert required in on["push"]["paths"]
+
+    gate = data["jobs"]["detect-relevant-changes"]
+    script = " ".join(str(step.get("run", "")) for step in gate["steps"])
+    assert "installed_coding_acceptance" in script
+
+
 def test_the_gate_fails_safe_and_builds_when_the_range_is_unknown():
     """A gate that skipped on uncertainty could silently drop a build that
     mattered. Unknown range, or a manual dispatch, must always build."""
