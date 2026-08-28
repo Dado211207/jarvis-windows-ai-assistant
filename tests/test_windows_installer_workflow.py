@@ -1,0 +1,283 @@
+"""Sanity checks for .github/workflows/windows-installer.yml.
+
+Structural checks only — this cannot run the workflow itself (that only
+really executes on a real windows-latest GitHub Actions runner). Guards
+against the properties that matter most for this specific workflow: it
+never publishes a public release (that stays exclusively in the
+pre-existing, separately-triggered .github/workflows/release.yml, which
+this workflow does not call or modify), it pins the same Inno Setup
+version packaging/jarvis.iss documents, and it runs the build script
+before the clean-install test (not the other way around, and not
+independently of each other).
+"""
+
+from pathlib import Path
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "windows-installer.yml"
+
+
+def _read() -> str:
+    return WORKFLOW_PATH.read_text(encoding="utf-8")
+
+
+def _parsed() -> dict:
+    return yaml.safe_load(_read())
+
+
+def test_file_exists():
+    assert WORKFLOW_PATH.exists()
+
+
+def test_is_valid_yaml():
+    data = _parsed()
+    assert "jobs" in data
+
+
+def test_runs_on_windows_latest():
+    data = _parsed()
+    job = data["jobs"]["build-and-test-installer"]
+    assert job["runs-on"] == "windows-latest"
+
+
+def test_pins_the_same_inno_setup_version_as_jarvis_iss():
+    """6.7.1, not upstream's own latest (6.7.3) — Chocolatey's community
+    package repository, which is what this workflow actually installs
+    from, lags upstream and does not carry 6.7.3. An earlier pin at
+    6.7.3 here failed real CI for exactly that reason ("the package was
+    not found with the source(s) listed"); see packaging/jarvis.iss's
+    header comment for the verified detail."""
+    iss_content = (REPO_ROOT / "packaging" / "jarvis.iss").read_text(encoding="utf-8")
+    assert "6.7.1" in iss_content  # sanity: the version this workflow must match
+    assert "--version=6.7.1" in _read()
+
+
+def test_build_script_runs_before_clean_install_test():
+    data = _parsed()
+    steps = data["jobs"]["build-and-test-installer"]["steps"]
+    run_steps = [s.get("run", "") for s in steps if "run" in s]
+    build_index = next(i for i, r in enumerate(run_steps) if "build-installer.ps1" in r)
+    test_index = next(i for i, r in enumerate(run_steps) if "test_clean_install.py" in r)
+    assert build_index < test_index
+
+
+def test_never_publishes_a_release():
+    """Publishing stays exclusively in the separate, manually-triggered
+    .github/workflows/release.yml — this workflow must never call `gh
+    release create` or any release-publishing action itself."""
+    content = _read()
+    assert "release create" not in content
+    assert "softprops/action-gh-release" not in content
+    assert "actions/create-release" not in content
+
+
+def test_does_not_use_workflow_dispatch_only_release_job():
+    """This is a genuinely separate job/workflow from release.yml, not a
+    dependency on or trigger for it."""
+    data = _parsed()
+    assert "release" not in data["jobs"]  # no job named/aliased "release" here
+
+
+def test_uploads_installer_and_checksum():
+    content = _read()
+    assert "JARVIS-Setup-*.exe" in content
+    assert "JARVIS-Setup-*.exe.sha256" in content
+
+
+def test_path_scoped_not_unconditional():
+    """Heavier/slower than ci.yml's fast per-PR jobs — should only run
+    when packaging-relevant paths actually change (plus workflow_dispatch
+    for an explicit on-demand build), not on every unrelated PR."""
+    data = _parsed()
+    on = data[True] if True in data else data.get("on", {})
+    assert "workflow_dispatch" in on
+    assert "paths" in on["pull_request"]
+    assert "packaging/**" in on["pull_request"]["paths"]
+
+
+# ---------------------------------------------------------------------------
+# Docs-only pushes must not require the expensive installer job
+# ---------------------------------------------------------------------------
+
+def _jobs() -> dict:
+    return _parsed()["jobs"]
+
+
+def test_a_gate_job_decides_whether_the_installer_build_is_needed():
+    """Regression guard for a real, verified waste: three consecutive
+    documentation-only commits each triggered a full Windows installer
+    build (PyInstaller + Inno Setup + install/uninstall of a real app).
+
+    The `paths:` filters alone cannot prevent this. For pull_request
+    events GitHub evaluates them against the PR's *cumulative* diff
+    versus the base branch, not the commits just pushed — and this PR
+    genuinely changes many files under app/ and packaging/, so the filter
+    matches on every push including docs-only ones. A separate gate job
+    that inspects only the pushed range is what actually expresses "skip
+    if this push changed nothing relevant"."""
+    jobs = _jobs()
+    assert "detect-relevant-changes" in jobs, "expected a cheap gate job before the installer build"
+
+    build = jobs["build-and-test-installer"]
+    assert build.get("needs") == "detect-relevant-changes"
+    assert "relevant" in (build.get("if") or ""), "the build must be conditional on the gate's output"
+
+
+def test_the_gate_treats_packaging_paths_as_relevant():
+    gate = _jobs()["detect-relevant-changes"]
+    script = " ".join(str(step.get("run", "")) for step in gate["steps"])
+    for required in ("app/", "packaging/", "run_jarvis", "build-installer", "test_clean_install"):
+        assert required in script, f"{required} must count as a packaging-relevant change"
+
+
+def test_the_gate_fails_safe_and_builds_when_the_range_is_unknown():
+    """A gate that skipped on uncertainty could silently drop a build that
+    mattered. Unknown range, or a manual dispatch, must always build."""
+    gate = _jobs()["detect-relevant-changes"]
+    script = " ".join(str(step.get("run", "")) for step in gate["steps"])
+    assert "workflow_dispatch" in script
+    assert script.count("relevant=true") >= 2, "expected explicit fail-safe branches that still build"
+
+
+def test_superseded_builds_are_cancelled():
+    """This job installs and uninstalls a real application; two of them
+    racing on one runner is both wasteful and a source of spurious
+    failures."""
+    installer = _jobs()["build-and-test-installer"]
+
+    assert installer["concurrency"]["cancel-in-progress"] is True
+
+
+def test_the_concurrency_group_is_on_the_job_not_the_workflow():
+    """At workflow level it cancelled builds that mattered.
+
+    Every push joins a workflow-level group, including a docs-only push
+    whose gate then correctly decides no build is needed — but the
+    cancellation happens first, so a docs commit pushed during a real
+    build killed that build and then skipped its own. Three installer
+    runs were lost that way, one of them the run that would first have
+    exercised the ten-cycle lifecycle test.
+
+    A skipped job never joins a group, so on the job it cannot happen.
+    """
+    data = _parsed()
+
+    assert "concurrency" not in data, (
+        "a workflow-level group lets a run that skips the build cancel one that is "
+        "performing it"
+    )
+    assert "concurrency" in _jobs()["build-and-test-installer"]
+
+
+# ---------------------------------------------------------------------------
+# The acceptance test waits for readiness, not for a guessed interval
+# ---------------------------------------------------------------------------
+
+def test_the_clean_install_test_waits_for_the_real_readiness_signal():
+    """/health answers as soon as the server child is up, several seconds
+    before the parent has a window that can receive commands or a tray
+    loop that can receive a close request. A graceful taskkill sent in
+    that gap reaches nothing — which is exactly what happened on CI the
+    first time the native window really opened.
+
+    An earlier fix waited for a line in the boot trace. That was
+    acceptable as evidence and wrong as a contract: a human-readable log
+    line is not an interface, and anything parsing one is a rewording
+    away from breaking. The wait now polls the parent's own published
+    signal, and it must still happen before the close.
+    """
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "scripts" / "test_clean_install.py").read_text(encoding="utf-8")
+
+    assert "wait_for_desktop_ready" in source
+    assert "/desktop/ready" in source
+    assert source.index("wait_for_desktop_ready()") < source.index('"taskkill"'), (
+        "the readiness wait must come before the close request"
+    )
+    assert "PumpMessages() starting" not in source, (
+        "readiness must not go back to parsing a log line"
+    )
+
+
+def test_the_graceful_exit_budget_was_not_quietly_raised():
+    """The owner's rule: do not merely increase a timeout unless evidence
+    proves the app is healthy but slow. The readiness wait above is the
+    fix; this pins the exit budget so a future failure cannot be answered
+    by stretching it instead."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "scripts" / "test_clean_install.py").read_text(encoding="utf-8")
+
+    assert "PROCESS_EXIT_TIMEOUT_SECONDS = 15.0" in source
+
+
+def test_the_gate_treats_pinned_bytes_as_packaging_relevant():
+    """The licence-byte fix was a .gitattributes and tests change, so the
+    gate skipped the installer job entirely — and the packaged-bytes
+    verification silently never ran. Anything whose exact bytes the
+    installer must preserve has to trigger the build that checks them."""
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parent.parent
+        / ".github" / "workflows" / "windows-installer.yml"
+    ).read_text(encoding="utf-8")
+
+    for path in ("docs/licences/", ".gitattributes", "tests/test_licence_policy.py"):
+        assert path in workflow, f"{path} must make the installer job run"
+
+
+def test_the_installed_product_checks_are_never_gated_within_a_build():
+    """The path gate decides whether the job runs. Once it does, every
+    installed-product check runs.
+
+    A condition on this step would let the expensive half of a build be
+    skipped while the build still reported success — which is how a
+    release candidate ships with a capability nobody exercised.
+    """
+    import yaml
+
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["build-and-test-installer"]["steps"]
+    clean_install = next(
+        step for step in steps if "clean-install" in str(step.get("name", "")).lower()
+    )
+
+    assert "if" not in clean_install, (
+        "the clean-install acceptance test must not be conditional inside a build"
+    )
+    assert "test_clean_install.py" in clean_install["run"]
+
+
+def test_the_voice_chain_step_has_a_bounded_but_realistic_budget():
+    """It downloads two models and runs real inference on a CPU runner.
+    Long enough to finish, bounded so a hang fails rather than burning an
+    hour of runner time."""
+    import yaml
+
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["build-and-test-installer"]["steps"]
+    clean_install = next(
+        step for step in steps if "clean-install" in str(step.get("name", "")).lower()
+    )
+
+    assert clean_install.get("timeout-minutes", 0) >= 30
+
+
+def test_the_installed_bytes_are_verified_against_the_repository():
+    """Checked in the installed tree, not the repository: every step
+    between them can alter a file, and git's line-ending translation
+    already did once."""
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "scripts" / "test_clean_install.py"
+    ).read_text(encoding="utf-8")
+
+    assert "verify_installed_bytes" in source
+    assert "CMUDICT-LICENSE.txt" in source
+    assert "lexicon.txt.gz" in source
+    assert source.index("verify_installed_bytes()") < source.index('"taskkill"')

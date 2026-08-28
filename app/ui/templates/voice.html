@@ -1,26 +1,302 @@
 {% extends "base.html" %}
 {% block title %}Voice{% endblock %}
-{% block topbar_title %}Voice / TTS{% endblock %}
+{% block topbar_title %}Voice{% endblock %}
 {% block content %}
 <div id="voice-root">
 
   <div class="page-header">
-    <h1 class="page-title">Voice / TTS</h1>
+    <h1 class="page-title">Voice</h1>
     <p class="page-subtitle">
-      Local text-to-speech output controls &mdash; output only, no microphone or speech input.
+      Voice input stays on this computer. Push-to-talk records only after you press the
+      microphone button on <a href="/ui/chat">Chat</a>; optional double-clap activation measures
+      sound levels while enabled. Speech output uses the best local voice by default; the OpenAI
+      or ElevenLabs cloud voice is used only after you explicitly select it.
     </p>
+  </div>
+
+  {#
+    The voice JARVIS actually speaks with. Three engines are tried in
+    order and each reports its own reason, because "speech is not
+    available" is not a diagnosis — a missing download, a missing
+    runtime and a machine with no voices installed are three different
+    problems with three different fixes.
+  #}
+  <div class="card mb-4" id="neural-voice-card">
+    <h2 class="card-title">JARVIS's voice</h2>
+    <p class="text-xs text-muted mt-2">
+      A neural voice that runs on this computer. No account, no API key, no graphics card,
+      and no internet connection once it is installed.
+    </p>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label">Speaking with</span>
+      <span id="nv-active-engine" class="status-row-value loading">&#8230;</span>
+    </div>
+
+    <div id="nv-engine-list" class="mt-3" aria-live="polite"></div>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="nv-voice-select">Voice</label>
+      <select id="nv-voice-select" class="input" aria-label="Voice JARVIS speaks with"></select>
+      <label class="text-xs text-muted" for="nv-speed">Speed</label>
+      <select id="nv-speed" class="input" aria-label="Speaking speed">
+        <option value="0.85">Slower</option>
+        <option value="1.00" selected>Normal</option>
+        <option value="1.15">Faster</option>
+      </select>
+      <button id="nv-test" class="btn btn-primary" type="button">Test voice</button>
+      <button id="nv-stop" class="btn btn-ghost" type="button">Stop</button>
+    </div>
+    <p id="nv-voice-description" class="text-xs text-muted mt-2"></p>
+    <p id="nv-message" class="text-xs mt-2" aria-live="polite"></p>
+
+    {# Install: what is about to be downloaded, before it is. #}
+    <div id="nv-install-card" class="mt-3" hidden>
+      <div class="status-row"><span class="status-row-label">Download size</span><span id="nv-install-size" class="status-row-value"></span></div>
+      <div class="status-row"><span class="status-row-label">Source</span><span id="nv-install-source" class="status-row-value font-mono"></span></div>
+      <div class="status-row"><span class="status-row-label">Licence</span><span id="nv-install-licence" class="status-row-value"></span></div>
+      <div class="status-row"><span class="status-row-label">Destination</span><span id="nv-install-destination" class="status-row-value font-mono"></span></div>
+      <div class="status-row"><span class="status-row-label">Integrity check</span><span class="status-row-value">SHA-256, verified before installing</span></div>
+
+      <div class="btn-row mt-3">
+        <button id="nv-install-start" class="btn btn-primary" type="button">Install voice</button>
+        <button id="nv-install-cancel" class="btn btn-ghost" type="button" hidden>Cancel</button>
+        <button id="nv-install-retry" class="btn btn-ghost" type="button" hidden>Retry</button>
+      </div>
+
+      <div class="mt-3" id="nv-progress-wrap" hidden>
+        <div class="progress-bar"><div id="nv-progress-bar" class="progress-fill" style="width:0%"></div></div>
+        <p id="nv-progress-text" class="text-xs text-muted mt-2" aria-live="polite"></p>
+      </div>
+    </div>
+  </div>
+
+  {#
+    The optional cloud voice. Everything here is off until somebody
+    types a key: JARVIS speaks perfectly well without it, and the local
+    voice stays the privacy-preserving default. The key is written to
+    the Windows Credential Manager and never comes back to this page —
+    the only thing the browser is ever told is whether one exists.
+  #}
+  <div class="card mb-4" id="cloud-voice-card">
+    <h2 class="card-title">Premium cloud voice (optional)</h2>
+    <p class="text-xs text-muted mt-2">
+      ElevenLabs produces an <strong>AI-generated voice</strong> using your own ElevenLabs
+      account. It is entirely optional, requires internet access, and API usage may incur cost.
+      <strong>What changes if you turn it on:</strong> the text of each spoken reply is sent to
+      ElevenLabs&rsquo; servers to be turned into audio. Nothing else is sent &mdash; not the
+      rest of your conversation, not your files, and never your microphone. Privacy Mode blocks
+      every ElevenLabs request.
+    </p>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label">Status</span>
+      <span id="el-detail" class="status-row-value loading">&#8230;</span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">API key</span>
+      <span id="el-key-state" class="status-row-value">&mdash;</span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">Voice</span>
+      <span id="el-voice-state" class="status-row-value">&mdash;</span>
+    </div>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="el-engine">Speak with</label>
+      <select id="el-engine" class="input" aria-label="Which voice engine JARVIS speaks with">
+        <option value="">The best local voice</option>
+        <option value="elevenlabs">ElevenLabs cloud voice</option>
+        <option value="openai">OpenAI cloud voice</option>
+      </select>
+    </div>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="el-key">API key</label>
+      <input id="el-key" class="input" type="password" autocomplete="off" spellcheck="false"
+             placeholder="Paste your ElevenLabs API key" aria-label="ElevenLabs API key" maxlength="200">
+      <button id="el-key-save" class="btn btn-primary" type="button">Save key</button>
+      <button id="el-key-check" class="btn btn-ghost" type="button">Check key</button>
+      <button id="el-key-delete" class="btn btn-ghost" type="button">Remove key</button>
+    </div>
+    <p class="text-xs text-muted mt-2">
+      Saving stores the key in the Windows Credential Manager. It is never written to a file,
+      never shown again, and never included in logs or diagnostics.
+    </p>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="el-voice">Voice</label>
+      <select id="el-voice" class="input" aria-label="ElevenLabs voice"></select>
+      <button id="el-voices-refresh" class="btn btn-ghost" type="button">Load voices</button>
+      <button id="el-voice-save" class="btn btn-primary" type="button">Use this voice</button>
+    </div>
+    <p id="el-voice-id" class="text-xs text-muted mt-2 font-mono"></p>
+
+    <div class="mt-3">
+      <div class="status-row">
+        <label class="status-row-label" for="el-stability">Stability</label>
+        <span class="status-row-value">
+          <input id="el-stability" class="range" type="range" min="0" max="1" step="0.01" value="0.5">
+          <span id="el-stability-value" class="font-mono text-xs">0.50</span>
+        </span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-similarity">Similarity</label>
+        <span class="status-row-value">
+          <input id="el-similarity" class="range" type="range" min="0" max="1" step="0.01" value="0.75">
+          <span id="el-similarity-value" class="font-mono text-xs">0.75</span>
+        </span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-style">Style</label>
+        <span class="status-row-value">
+          <input id="el-style" class="range" type="range" min="0" max="1" step="0.01" value="0">
+          <span id="el-style-value" class="font-mono text-xs">0.00</span>
+        </span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-speed">Speed</label>
+        <span class="status-row-value">
+          <input id="el-speed" class="range" type="range" min="0.7" max="1.2" step="0.01" value="0.92">
+          <span id="el-speed-value" class="font-mono text-xs">0.92</span>
+        </span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-boost">Speaker boost</label>
+        <span class="status-row-value"><input type="checkbox" id="el-boost" class="toggle-input"></span>
+      </div>
+      <div class="status-row">
+        <label class="status-row-label" for="el-fallback">Let the local voice cover for it</label>
+        <span class="status-row-value"><input type="checkbox" id="el-fallback" class="toggle-input"></span>
+      </div>
+    </div>
+
+    <div class="btn-row mt-3">
+      <button id="el-settings-save" class="btn btn-primary" type="button">Save settings</button>
+      <button id="el-settings-reset" class="btn btn-ghost" type="button">Reset to recommended</button>
+      <button id="el-test" class="btn btn-ghost" type="button">Test cloud voice</button>
+      <button id="el-stop" class="btn btn-ghost" type="button">Stop</button>
+    </div>
+    <p id="el-test-phrase" class="text-xs text-muted mt-2"></p>
+    <p id="el-message" class="text-xs mt-2" aria-live="polite"></p>
+    <p id="el-fallback-note" class="text-xs text-muted mt-2"></p>
+  </div>
+
+  <div class="card mb-4" id="openai-voice-card">
+    <h2 class="card-title">OpenAI cloud voice (optional)</h2>
+    <p class="text-xs text-muted mt-2">
+      This produces an <strong>AI-generated voice</strong> through OpenAI&rsquo;s Speech API.
+      The text being spoken is sent to OpenAI; microphone audio, files and the rest of the
+      conversation are not. Cloud audio requires internet access and API usage may incur cost.
+      Privacy mode prevents every OpenAI Speech request.
+    </p>
+    <p class="text-xs text-muted mt-2">
+      The default is an original calm, polished British male style using the built-in
+      <strong>cedar</strong> voice. It is a style brief, not an imitation of any actor,
+      person or fictional character, and it does not promise the exact ChatGPT app voice.
+    </p>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label">Status</span>
+      <span id="oa-detail" class="status-row-value loading">&#8230;</span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">API key</span>
+      <span id="oa-key-state" class="status-row-value">&mdash;</span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">Selected provider</span>
+      <span id="oa-selected-state" class="status-row-value">&mdash;</span>
+    </div>
+    <div class="btn-row mt-3">
+      <button id="oa-select-provider" class="btn btn-primary" type="button">Use OpenAI for speech</button>
+      <button id="oa-select-local" class="btn btn-ghost" type="button">Use the best local voice</button>
+    </div>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="oa-key">Voice API key</label>
+      <input id="oa-key" class="input" type="password" autocomplete="off" spellcheck="false"
+             placeholder="Paste the API key selected for voice" aria-label="OpenAI voice API key"
+             maxlength="512">
+      <button id="oa-key-save" class="btn btn-primary" type="button">Save key</button>
+      <button id="oa-key-check" class="btn btn-ghost" type="button">Check key</button>
+      <button id="oa-key-delete" class="btn btn-ghost" type="button">Remove key</button>
+    </div>
+    <p class="text-xs text-muted mt-2">
+      The key is a distinct <span class="font-mono">openai_api_key</span> entry in Windows
+      Credential Manager. It is write-only here and never appears in logs or diagnostics.
+      Check key performs a brief Speech generation and may incur API usage.
+    </p>
+
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="oa-model">Model</label>
+      <select id="oa-model" class="input" aria-label="OpenAI speech model"></select>
+      <label class="text-xs text-muted" for="oa-voice">Built-in voice</label>
+      <select id="oa-voice" class="input" aria-label="OpenAI built-in voice"></select>
+      <label class="text-xs text-muted" for="oa-speed">Speed</label>
+      <input id="oa-speed" class="input" type="number" min="0.25" max="4" step="0.05"
+             aria-label="OpenAI voice speed">
+    </div>
+    <div class="mt-3">
+      <label class="text-xs text-muted" for="oa-instructions">Style instructions</label>
+      <textarea id="oa-instructions" class="input mt-2" rows="5" maxlength="4096"
+                aria-label="OpenAI voice style instructions"></textarea>
+      <p id="oa-instruction-count" class="text-xs text-muted mt-2"></p>
+    </div>
+    <div class="status-row mt-3">
+      <label class="status-row-label" for="oa-fallback">Use and disclose the local fallback</label>
+      <span class="status-row-value"><input type="checkbox" id="oa-fallback" class="toggle-input"></span>
+    </div>
+    <p class="text-xs text-muted mt-2">
+      If enabled, a local voice covers an OpenAI privacy, connection or service failure and
+      the response states that fallback was used. If disabled, JARVIS stays silent and reports why.
+    </p>
+
+    <div class="btn-row mt-3">
+      <button id="oa-settings-save" class="btn btn-primary" type="button">Save OpenAI settings</button>
+      <button id="oa-settings-reset" class="btn btn-ghost" type="button">Reset original profile</button>
+      <button id="oa-test" class="btn btn-ghost" type="button">Test OpenAI voice</button>
+      <button id="oa-stop" class="btn btn-ghost" type="button">Stop</button>
+    </div>
+    <p id="oa-test-phrase" class="text-xs text-muted mt-2"></p>
+    <p id="oa-message" class="text-xs mt-2" aria-live="polite"></p>
+    <p id="oa-fallback-note" class="text-xs text-muted mt-2"></p>
+  </div>
+
+  {#
+    Names. The case this exists for is the name entered on first run: no
+    general dictionary contains it, so without this JARVIS spells its
+    user's name out at them every time.
+  #}
+  <div class="card mb-4" id="pronunciations-card">
+    <h2 class="card-title">How JARVIS says names</h2>
+    <p id="nv-name-prompt" class="text-xs mt-2" hidden></p>
+    <p class="text-xs text-muted mt-2">
+      Write the word the way it sounds, in syllables &mdash; &ldquo;dah-doh&rdquo;. You can hear it
+      before saving it.
+    </p>
+
+    <div class="btn-row mt-3">
+      <input id="pron-word" class="input" type="text" placeholder="Word, e.g. a name" aria-label="Word to change" maxlength="64">
+      <input id="pron-spoken" class="input" type="text" placeholder="Said as, e.g. dah-doh" aria-label="How it should be said" maxlength="200">
+      <button id="pron-preview" class="btn btn-ghost" type="button">Hear it</button>
+      <button id="pron-save" class="btn btn-primary" type="button">Save</button>
+    </div>
+    <p id="pron-message" class="text-xs mt-2" aria-live="polite"></p>
+
+    <div id="pron-list" class="mt-3" aria-live="polite"></div>
   </div>
 
   <div class="grid grid-2 mb-4">
     <div class="card">
-      <div class="card-title">TTS Status</div>
+      <h2 class="card-title">Voice output</h2>
       <div class="mt-3">
         <div class="status-row">
           <span class="status-row-label">Available on this system</span>
           <span id="tts-avail" class="status-row-value loading">&#8230;</span>
         </div>
         <div class="status-row">
-          <span class="status-row-label">Session enabled</span>
+          <span class="status-row-label">Speaks replies</span>
           <span id="tts-enabled-val" class="status-row-value loading">&#8230;</span>
         </div>
         <div class="status-row">
@@ -28,44 +304,306 @@
           <span id="tts-engine-val" class="status-row-value font-mono loading">&#8230;</span>
         </div>
       </div>
-      <p class="text-xs text-muted mt-3">
-        To enable by default, set <code>JARVIS_TTS_ENABLED=true</code> in <code>.env</code>.
-        TTS preference resets on restart unless configured in <code>.env</code>.
+      <div class="status-row mt-3">
+        <span class="status-row-label"><label for="voice-output-toggle">Speak replies out loud</label></span>
+        <span class="status-row-value"><input type="checkbox" id="voice-output-toggle" class="toggle-input"></span>
+      </div>
+      <p id="voice-output-message" class="text-xs mt-2" aria-live="polite"></p>
+      <p class="text-xs text-muted mt-2">
+        Off until you turn it on. Your choice is remembered the next time JARVIS starts.
       </p>
     </div>
 
     <div class="card">
-      <div class="card-title">Capabilities</div>
+      <h2 class="card-title">Voice input (push to talk)</h2>
+      <div class="mt-3">
+        <div class="status-row">
+          <span class="status-row-label">Speech recognition</span>
+          <span id="stt-avail" class="status-row-value loading">&#8230;</span>
+        </div>
+        <div class="status-row">
+          <span class="status-row-label">Speech model</span>
+          <span id="stt-model" class="status-row-value loading">&#8230;</span>
+        </div>
+      </div>
+      <p id="stt-detail" class="text-xs text-muted mt-3"></p>
+      <div class="status-row mt-3">
+        <span class="status-row-label"><label for="voice-input-toggle">Offer push-to-talk</label></span>
+        <span class="status-row-value"><input type="checkbox" id="voice-input-toggle" class="toggle-input"></span>
+      </div>
+      <p id="voice-input-message" class="text-xs mt-2" aria-live="polite"></p>
+      <p class="text-xs text-muted mt-2">
+        Recording starts and stops only when you press the microphone button on the
+        <a href="/ui/chat">Chat</a> page. What you say is filled into the message box for you
+        to check &mdash; nothing is sent until you press Send.
+      </p>
+    </div>
+
+  </div>
+
+  {#
+    Double-clap activation. Read app/voice/clap.py before changing
+    anything here — the wording below is load-bearing, because it is
+    what somebody switching this on is relying on to be true.
+  #}
+  <div class="card mb-4" id="clap-card">
+    <h2 class="card-title">Clap to bring JARVIS forward (optional)</h2>
+    <p class="text-xs text-muted mt-2">
+      Clap twice and the JARVIS window comes to the front.
+      <strong>What this does and does not do:</strong> while it is on, the page measures how loud
+      the microphone is, several hundred times a second, and looks for two sharp sounds close
+      together. It does <em>not</em> listen for words. There is no wake word, no speech
+      recognition, no transcription, nothing recorded and nothing sent anywhere &mdash; the
+      loudness numbers are thrown away as fast as they are produced. A clap can only show the
+      window; it can never run a command.
+    </p>
+    <p class="text-xs text-muted mt-2">
+      It works while the JARVIS window is open, including when it is minimised to the tray.
+      This is opt-in background microphone-level monitoring; if you quit JARVIS, it stops.
+    </p>
+
+    <div class="status-row mt-3">
+      <span class="status-row-label"><label for="clap-toggle">Listen for a double clap</label></span>
+      <span class="status-row-value"><input type="checkbox" id="clap-toggle" class="toggle-input"></span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label">Listener</span>
+      <span id="clap-state" class="status-row-value">Off</span>
+    </div>
+    <div class="status-row">
+      <label class="status-row-label" for="clap-sensitivity">Sensitivity</label>
+      <span class="status-row-value">
+        <select id="clap-sensitivity" class="input" aria-label="Clap sensitivity">
+          <option value="low">Low &mdash; only loud, sharp claps</option>
+          <option value="normal" selected>Normal</option>
+          <option value="high">High &mdash; a quiet room</option>
+        </select>
+      </span>
+    </div>
+    <div class="status-row">
+      <span class="status-row-label"><label for="clap-greet">Say something when it activates</label></span>
+      <span class="status-row-value"><input type="checkbox" id="clap-greet" class="toggle-input"></span>
+    </div>
+    <div class="btn-row mt-3">
+      <label class="text-xs text-muted" for="clap-greeting">Greeting</label>
+      <input id="clap-greeting" class="input" type="text" maxlength="120"
+             aria-label="What JARVIS says when a double clap activates it">
+      <button id="clap-greeting-save" class="btn btn-ghost" type="button">Save greeting</button>
+    </div>
+    <p class="text-xs text-muted mt-2">
+      Only spoken if <em>Speak replies aloud</em> is already on above.
+    </p>
+    <p id="clap-active-device" class="text-xs mt-2" aria-live="polite"></p>
+    <p id="clap-message" class="text-xs mt-2" aria-live="polite"></p>
+
+    {# Calibration. Bounded, explicitly started, and entirely local — the
+       loudness and timing of two claps, measured in this page and thrown
+       away. Nothing is recorded and nothing is sent. #}
+    <h3 class="text-xs text-muted mt-3">Calibrate for this room</h3>
+    <p class="text-xs text-muted mt-2">
+      Clap twice and JARVIS will measure how loud it was and how far apart the two claps fell,
+      then suggest settings. <strong>No audio is recorded, saved, sent anywhere or turned into
+      words</strong> &mdash; only the loudness and the timing, and only while you are calibrating.
+      The microphone is released as soon as it finishes, times out or you cancel.
+      Nothing changes until you press Save.
+    </p>
+    <div class="status-row mt-3">
+      <span class="status-row-label">Current settings</span>
+      <span id="clap-calibrated" class="status-row-value">&mdash;</span>
+    </div>
+    <div class="btn-row mt-3">
+      <button id="clap-cal-start" class="btn btn-primary" type="button">Start calibration</button>
+      <button id="clap-cal-cancel" class="btn btn-ghost" type="button" disabled>Cancel</button>
+      <button id="clap-cal-save" class="btn btn-primary" type="button" disabled>Save</button>
+      <button id="clap-cal-reset" class="btn btn-ghost" type="button">Reset to defaults</button>
+    </div>
+    <p id="clap-cal-message" class="text-xs mt-2" aria-live="polite"></p>
+    <p id="clap-cal-proposal" class="text-xs text-muted mt-2" aria-live="polite"></p>
+  </div>
+
+  {#
+    Voice diagnostics. Split by what can actually know each answer: the
+    server reports the engine and the model, the browser reports the
+    microphone, because a server process cannot observe a microphone and
+    a page cannot see the filesystem. A single "Not ready" line covering
+    all of it is what made the reported failure impossible to act on.
+  #}
+  <div class="card mb-4" id="voice-diagnostics-card">
+    <h2 class="card-title">Voice diagnostics</h2>
+
+    {# One state, out of the ten in app/voice/input_state.py, and what to
+       do about it. Six accurate rows and no diagnosis is what the
+       release candidate shipped: everything below was correct and the
+       only advice on offer was to reinstall, which would not have
+       helped. This row is the answer; the rows below are the working. #}
+    <div class="status-row mt-3">
+      <span class="status-row-label">Voice input</span>
+      <span id="diag-state" class="status-row-value loading">&#8230;</span>
+    </div>
+    <p id="diag-state-detail" class="text-xs text-muted mt-2"></p>
+    <div class="status-row mt-3">
+      <span class="status-row-label">What to do</span>
+      <span id="diag-next-step" class="status-row-value"></span>
+    </div>
+    <div class="mt-3" id="diag-progress-wrap" hidden>
+      <div class="progress-bar"><div id="diag-progress-bar" class="progress-fill" style="width:0%"></div></div>
+    </div>
+
+    <div class="mt-3">
+      <div class="status-row">
+        <span class="status-row-label">Microphone permission</span>
+        <span id="diag-mic-permission" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Input device</span>
+        <span id="diag-mic-device" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Speech runtime</span>
+        <span id="diag-runtime" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Installed model</span>
+        <span id="diag-model" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Model location</span>
+        <span id="diag-model-path" class="status-row-value font-mono">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Last check</span>
+        <span id="diag-last-result" class="status-row-value">Not run yet</span>
+      </div>
+    </div>
+
+    {# The other half of the voice system. Somebody whose voice is not
+       working comes to this panel; splitting "speaking" onto a
+       different card from "listening" meant half the answer was
+       somewhere else on the page. #}
+    <h3 class="text-xs text-muted mt-3">Speaking</h3>
+    <div class="mt-2">
+      <div class="status-row">
+        <span class="status-row-label">Speaking with</span>
+        <span id="diag-out-engine" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Speak replies aloud</span>
+        <span id="diag-out-enabled" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Cloud voice</span>
+        <span id="diag-out-cloud" class="status-row-value loading">&#8230;</span>
+      </div>
+      <div class="status-row">
+        <span class="status-row-label">Clap to activate</span>
+        <span id="diag-clap" class="status-row-value">&#8230;</span>
+      </div>
+    </div>
+
+    <div class="mt-3">
+      <label class="text-xs text-muted" for="diag-device-select">Microphone to use</label>
+      <p class="text-xs text-muted mt-2">
+        One choice, used by the test below and by clap detection. It is remembered across restarts.
+      </p>
+      <select id="diag-device-select" class="input mt-2" aria-label="Microphone to use">
+        <option value="">System default</option>
+      </select>
+    </div>
+
+    <div class="btn-row mt-3">
+      <p id="diag-device-missing" class="text-xs text-err mt-2" aria-live="polite"></p>
+      <button id="diag-test-mic" class="btn btn-primary" type="button">Test microphone</button>
+      <button id="diag-refresh" class="btn btn-ghost" type="button">Run diagnostics again</button>
+    </div>
+
+    <div class="mt-3">
+      <div class="progress-bar" role="img" aria-label="Microphone input level">
+        <div id="diag-level-bar" class="progress-fill" style="width:0%"></div>
+      </div>
+      <p id="diag-test-message" class="text-xs text-muted mt-2" aria-live="polite"></p>
+    </div>
+
+    <p class="text-xs text-muted mt-3">
+      Test microphone measures the input level for a few seconds and shows it as a bar.
+      Nothing is recorded, uploaded, transcribed or saved &mdash; the level is computed in
+      this page and discarded as it goes.
+    </p>
+  </div>
+
+  {#
+    The speech-model installer. It used to live on the first-run wizard,
+    which is why setting up JARVIS looked like a technical exercise.
+    Voice is where someone comes when they want voice, and it is entirely
+    optional — nothing here blocks starting the app.
+  #}
+  <div class="card mb-4" id="setup-model-card">
+    <h2 class="card-title">Local speech model</h2>
+    <p class="text-xs text-muted mt-2">
+      Push-to-talk needs a speech model on this machine. Nothing downloads on its own &mdash;
+      the details below are shown first, and you can cancel at any point.
+    </p>
+    <div id="setup-model-preview" class="mt-3">
+      <div class="status-row"><span class="status-row-label">Model</span><span id="model-info-name" class="status-row-value">&#8230;</span></div>
+      <div class="status-row"><span class="status-row-label">Source</span><span id="model-info-source" class="status-row-value font-mono"></span></div>
+      <div class="status-row"><span class="status-row-label">License</span><span id="model-info-license" class="status-row-value"></span></div>
+      <div class="status-row"><span class="status-row-label">Download size</span><span id="model-info-size" class="status-row-value"></span></div>
+      <div class="status-row"><span class="status-row-label">Destination</span><span id="model-info-destination" class="status-row-value font-mono"></span></div>
+      <div class="status-row"><span class="status-row-label">Integrity check</span><span id="model-info-checksum" class="status-row-value"></span></div>
+    </div>
+    <p id="model-info-language-note" class="text-xs text-muted mt-2"></p>
+    <p id="model-info-error" class="text-xs text-err mt-2"></p>
+
+    <div class="btn-row mt-3">
+      <button id="model-install-start" class="btn btn-primary" type="button">Install</button>
+      <button id="model-install-cancel" class="btn btn-ghost" type="button" hidden>Cancel</button>
+      <button id="model-install-retry" class="btn btn-ghost" type="button" hidden>Retry</button>
+    </div>
+
+    <div class="mt-3" id="model-install-progress-wrap" hidden>
+      <div class="progress-bar"><div id="model-install-progress-bar" class="progress-fill" style="width:0%"></div></div>
+      <p id="model-install-progress-text" class="text-xs text-muted mt-2" aria-live="polite"></p>
+    </div>
+  </div>
+
+  <div class="grid grid-2 mb-4">
+    <div class="card">
+      <h2 class="card-title">Capabilities</h2>
       <ul class="checklist mt-3">
-        <li><span class="check-ok">&#10003;</span> Text-to-speech output (pyttsx3 / SAPI5)</li>
-        <li><span class="check-ok">&#10003;</span> Output only — no audio capture</li>
-        <li><span class="check-ok">&#10003;</span> No microphone access</li>
-        <li><span class="check-ok">&#10003;</span> No speech-to-text</li>
-        <li><span class="check-ok">&#10003;</span> No wake word or always-listening</li>
-        <li><span class="check-ok">&#10003;</span> No cloud TTS — local engine only</li>
-        <li><span class="check-plan">&#9675;</span> <span style="color:var(--text-muted);">Microphone / STT &mdash; planned for a later phase</span></li>
+        <li><span class="check-ok">&#10003;</span> Neural speech output, running on this computer</li>
+        <li><span class="check-ok">&#10003;</span> Windows' own natural voices as a fallback, the older robotic voice last</li>
+        <li><span class="check-ok">&#10003;</span> This engine is output only — it never captures audio</li>
+        <li><span class="check-ok">&#10003;</span> Push-to-talk voice input (mic button on the <a href="/ui/chat">Chat</a> page)</li>
+        <li><span class="check-ok">&#10003;</span> No wake-word speech recognition; opt-in clap activation monitors sound levels only</li>
+        <li><span class="check-ok">&#10003;</span> Optional OpenAI and ElevenLabs cloud TTS, selected explicitly; speech recognition stays local</li>
+        <li><span class="check-plan">&#9675;</span> <span style="color:var(--text-muted);">Wake word / continuous listening &mdash; planned for a later phase</span></li>
       </ul>
     </div>
   </div>
 
   <div class="card mb-4">
-    <div class="card-title">Controls</div>
+    <h2 class="card-title">Controls</h2>
     <div class="btn-row mt-3">
-      <button id="btn-speak-on"   class="btn btn-primary" type="button">Enable Speech</button>
-      <button id="btn-speak-off"  class="btn btn-ghost"   type="button">Disable Speech</button>
       <button id="btn-speak-test" class="btn btn-ghost"   type="button">Test Speech</button>
       <button id="btn-speak-stop" class="btn btn-danger"  type="button">Stop Speaking</button>
     </div>
     <p class="text-xs text-muted mt-3">
-      Enable/Disable sends <code>speak on</code> / <code>speak off</code> through the JARVIS command router.
-      Test speaks a short phrase aloud. Stop interrupts current speech immediately.
+      Test speaks a short phrase aloud, whether or not spoken replies are turned on.
+      Stop interrupts speech that is playing right now.
     </p>
   </div>
 
   <div class="info-box">
-    JARVIS Phase 3 implements text-to-speech output only using the local pyttsx3 engine (Windows SAPI5 / Linux espeak).
-    Microphone input, speech recognition, and wake-word detection are planned for a later phase and are not present in this build.
-    TTS failures never crash the app &mdash; audio errors are logged and the app continues normally.
+    Speech is produced on this computer unless you explicitly select ElevenLabs or the
+    OpenAI cloud voice above. A cloud voice sends only the text being spoken to the provider
+    you selected, requires internet access, may incur API cost, and is blocked by Privacy
+    Mode. Local speech components are not downloaded without their size, source and licence
+    being shown first. Audio errors never interrupt JARVIS; they are recorded and the app
+    carries on silently.
+    Push-to-talk needs a local speech model &mdash; install one above, with its license, size and
+    checksum shown first.
+    Wake-word speech recognition is not part of this build. If you enable double-clap
+    activation above, the microphone remains open to measure sound levels until you
+    switch it off, enable Privacy Mode, or quit JARVIS.
   </div>
 
 </div>

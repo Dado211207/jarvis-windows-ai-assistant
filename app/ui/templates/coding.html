@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+{% block title %}Coding Workspace{% endblock %}
+{% block topbar_title %}Coding Workspace{% endblock %}
+{% block content %}
+<div id="coding-root">
+
+  <div class="page-header">
+    <div class="flex items-center justify-between" style="flex-wrap:wrap;gap:0.5rem;">
+      <div>
+        <h1 class="page-title">Coding Workspace</h1>
+        <p class="page-subtitle">
+          A separate mode for working on your own code projects. It does nothing until you
+          add a project, and it can only reach files inside the project folder you choose.
+        </p>
+      </div>
+      <button id="coding-stop-all" class="btn btn-danger btn-sm" type="button">
+        Stop everything
+      </button>
+    </div>
+  </div>
+
+  <!--
+    The mode banner. Coding Workspace has powers the ordinary assistant
+    does not, so the page says so permanently rather than relying on the
+    user remembering which page they are on.
+  -->
+  <div class="notice notice-mode" id="coding-mode-banner" role="note">
+    <strong>You are in Coding Workspace.</strong>
+    JARVIS can read and change files in the project you select, and run that project's own
+    development commands. It cannot reach anything outside the project folder, and it never
+    reads the files that hold your credentials &mdash; the exact list is at the bottom of
+    this page. Chat on the other pages has none of these powers.
+  </div>
+
+  <div id="coding-privacy" class="notice notice-warn" hidden role="note"></div>
+
+  <!-- Tabs. Buttons rather than links: no navigation, so no history entry. -->
+  <div class="tablist-wrap">
+    <div role="tablist" aria-label="Coding Workspace sections" id="coding-tabs">
+      <button role="tab" id="tab-projects"  aria-controls="panel-projects"  aria-selected="true"  class="tab-btn">Projects</button>
+      <button role="tab" id="tab-task"      aria-controls="panel-task"      aria-selected="false" class="tab-btn" tabindex="-1">Task</button>
+      <button role="tab" id="tab-activity"  aria-controls="panel-activity"  aria-selected="false" class="tab-btn" tabindex="-1">Activity</button>
+      <button role="tab" id="tab-diff"      aria-controls="panel-diff"      aria-selected="false" class="tab-btn" tabindex="-1">Changes</button>
+      <button role="tab" id="tab-preview"   aria-controls="panel-preview"   aria-selected="false" class="tab-btn" tabindex="-1">Preview</button>
+      <button role="tab" id="tab-results"   aria-controls="panel-results"   aria-selected="false" class="tab-btn" tabindex="-1">Results</button>
+      <button role="tab" id="tab-tools"     aria-controls="panel-tools"     aria-selected="false" class="tab-btn" tabindex="-1">Tools</button>
+    </div>
+  </div>
+
+  <!-- ============================ PROJECTS ============================ -->
+  <section role="tabpanel" id="panel-projects" aria-labelledby="tab-projects" tabindex="0">
+    <h2 class="section-title">Your projects</h2>
+    <div id="coding-projects"><p class="empty">Loading&hellip;</p></div>
+
+    <h2 class="section-title" style="margin-top:2rem;">Add a project you already have</h2>
+    <form id="coding-add-form" class="stack">
+      <div>
+        <span class="label" id="coding-add-folder-label">Project folder</span>
+        <div class="btn-row">
+          <button class="btn btn-secondary" type="button" id="coding-add-browse"
+                  aria-describedby="coding-add-folder-help">Browse&hellip;</button>
+        </div>
+        <!-- The chosen folder, announced when it changes: a person using a
+             screen reader must hear what the dialog returned, not be left to
+             go looking for it. -->
+        <p class="chosen-path" id="coding-add-chosen" role="status" aria-live="polite"
+           aria-labelledby="coding-add-folder-label" tabindex="0">No folder chosen yet.</p>
+        <p class="text-xs text-muted" id="coding-add-folder-help">
+          JARVIS reads and writes only inside the folder you choose. Adding a project does
+          not change anything in it.
+        </p>
+      </div>
+
+      <!-- The typed field is the fallback, and it says so. It exists because
+           JARVIS also runs in an ordinary browser, where no native dialog is
+           available at all; the picker stays the primary control. -->
+      <details id="coding-add-manual">
+        <summary class="text-sm">Type the folder path instead</summary>
+        <label class="label" for="coding-add-path">Full path to the project folder</label>
+        <input class="input" id="coding-add-path" name="path" type="text" autocomplete="off"
+               aria-describedby="coding-add-path-help">
+        <p class="text-xs text-muted" id="coding-add-path-help">
+          Checked in exactly the same way as a folder chosen through the dialog.
+        </p>
+      </details>
+
+      <div>
+        <label class="label" for="coding-add-name">Name it (optional)</label>
+        <input class="input" id="coding-add-name" name="name" type="text" autocomplete="off"
+               maxlength="120">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" type="submit">Add project</button>
+      </div>
+      <p class="form-error" id="coding-add-error" role="alert" hidden></p>
+    </form>
+
+    <h2 class="section-title" style="margin-top:2rem;">Start a new project</h2>
+    <form id="coding-new-form" class="stack">
+      <div>
+        <span class="label" id="coding-new-folder-label">Create it inside this folder</span>
+        <div class="btn-row">
+          <button class="btn btn-secondary" type="button" id="coding-new-browse"
+                  aria-describedby="coding-new-folder-help">Browse&hellip;</button>
+        </div>
+        <p class="chosen-path" id="coding-new-chosen" role="status" aria-live="polite"
+           aria-labelledby="coding-new-folder-label" tabindex="0">No folder chosen yet.</p>
+        <p class="text-xs text-muted" id="coding-new-folder-help">
+          The new project is created inside this folder. Nothing already in it is changed.
+        </p>
+      </div>
+
+      <details id="coding-new-manual">
+        <summary class="text-sm">Type the folder path instead</summary>
+        <label class="label" for="coding-new-parent">Full path to the parent folder</label>
+        <input class="input" id="coding-new-parent" type="text" autocomplete="off">
+      </details>
+
+      <div>
+        <label class="label" for="coding-new-name">Project name</label>
+        <input class="input" id="coding-new-name" type="text" autocomplete="off" maxlength="80"
+               aria-describedby="coding-new-name-help">
+        <p class="text-xs text-muted" id="coding-new-name-help">
+          Letters, numbers, dashes and underscores.
+        </p>
+      </div>
+      <div>
+        <label class="label" for="coding-new-template">Starting point</label>
+        <select class="input" id="coding-new-template"></select>
+        <p class="text-xs text-muted" id="coding-new-template-desc"></p>
+      </div>
+      <div class="btn-row">
+        <!-- Deliberately not "Create project". This button produces the plan
+             below; nothing is written until the plan is confirmed. -->
+        <button class="btn btn-primary" type="submit">Review what will be created</button>
+      </div>
+      <p class="form-error" id="coding-new-error" role="alert" hidden></p>
+      <p class="text-xs text-muted">
+        Every template is bundled with JARVIS. Creating a project writes files and nothing
+        else &mdash; no download, and no packages installed. Installing dependencies is a
+        separate step you approve.
+      </p>
+    </form>
+
+    <!-- ================= CREATION PLAN (step two) ================= -->
+    <section id="coding-create-plan" class="card" hidden aria-labelledby="coding-create-plan-title"
+             tabindex="-1">
+      <h2 class="card-title" id="coding-create-plan-title">This is what will be created</h2>
+      <div id="coding-create-plan-body"></div>
+      <div class="btn-row" id="coding-create-plan-actions">
+        <button class="btn btn-primary" type="button" id="coding-create-plan-confirm">Create project</button>
+        <button class="btn btn-secondary" type="button" id="coding-create-plan-change">Change options</button>
+        <button class="btn btn-ghost" type="button" id="coding-create-plan-cancel">Cancel</button>
+      </div>
+      <p class="form-error" id="coding-create-plan-error" role="alert" hidden></p>
+    </section>
+  </section>
+
+  <!-- ============================== TASK ============================== -->
+  <section role="tabpanel" id="panel-task" aria-labelledby="tab-task" tabindex="0" hidden>
+    <div id="coding-no-project" class="empty">
+      <p>Open a project first. JARVIS will not start work without one.</p>
+    </div>
+
+    <div id="coding-task-area" hidden>
+      <h2 class="section-title">What would you like done?</h2>
+      <form id="coding-task-form" class="stack">
+        <div>
+          <label class="label" for="coding-task-request">Describe the change</label>
+          <textarea class="input" id="coding-task-request" rows="3" maxlength="4000"
+                    aria-describedby="coding-task-help"
+                    placeholder="Add a footer with the copyright year to every page"></textarea>
+          <p class="text-xs text-muted" id="coding-task-help">
+            JARVIS shows you a plan first. Nothing runs until you approve it.
+          </p>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" type="submit">Make a plan</button>
+        </div>
+        <p class="form-error" id="coding-task-error" role="alert" hidden></p>
+      </form>
+
+      <div id="coding-plan" hidden>
+        <h2 class="section-title">The plan</h2>
+        <div id="coding-plan-body"></div>
+        <div class="btn-row" style="margin-top:1rem;">
+          <button class="btn btn-primary" id="coding-plan-start" type="button">Start</button>
+          <button class="btn btn-ghost" id="coding-plan-edit" type="button">Change the request</button>
+          <button class="btn btn-ghost" id="coding-plan-cancel" type="button">Cancel</button>
+        </div>
+        <p class="form-error" id="coding-plan-error" role="alert" hidden></p>
+      </div>
+
+      <div id="coding-running" hidden>
+        <h2 class="section-title">Running</h2>
+        <!--
+          Progress is text plus a bar. The bar alone would convey the state
+          by colour and length only, which §4 forbids, so the sentence next
+          to it always says the same thing in words.
+        -->
+        <p id="coding-progress-text" aria-live="polite" class="text-sm"></p>
+        <div class="progress-bar" aria-hidden="true">
+          <div class="progress-fill" id="coding-progress-bar" style="width:0%"></div>
+        </div>
+        <div class="btn-row" style="margin-top:1rem;">
+          <button class="btn btn-danger" id="coding-stop" type="button">Stop</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ ACTIVITY ============================ -->
+  <section role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" tabindex="0" hidden>
+    <h2 class="section-title">Activity</h2>
+    <p class="text-sm text-muted">
+      Every step, in order. Command output is plain text you can select, copy and read with a
+      screen reader.
+    </p>
+    <div id="coding-activity" aria-live="polite" aria-relevant="additions">
+      <p class="empty">Nothing has run yet.</p>
+    </div>
+  </section>
+
+  <!-- ============================== DIFF ============================== -->
+  <section role="tabpanel" id="panel-diff" aria-labelledby="tab-diff" tabindex="0" hidden>
+    <h2 class="section-title">Changes</h2>
+    <div class="notice" role="note">
+      Changes are labelled by who made them. Anything marked <strong>Yours</strong> was
+      already in the folder before this task started &mdash; JARVIS did not create it and
+      will not undo it.
+    </div>
+    <div id="coding-diff"><p class="empty">No project open.</p></div>
+  </section>
+
+  <!-- ============================ PREVIEW ============================= -->
+  <section role="tabpanel" id="panel-preview" aria-labelledby="tab-preview" tabindex="0" hidden>
+    <h2 class="section-title">Preview</h2>
+    <p class="text-sm text-muted">
+      JARVIS starts the project's own development server on 127.0.0.1 &mdash; reachable from
+      this computer only. It never uses or stops a server it did not start.
+    </p>
+    <div id="coding-preview"><p class="empty">No preview is running.</p></div>
+  </section>
+
+  <!-- ============================= TOOLS ============================== -->
+  <section role="tabpanel" id="panel-tools" aria-labelledby="tab-tools" tabindex="0" hidden>
+    <h2 class="section-title">Tools on this computer</h2>
+    <p class="text-sm text-muted">
+      JARVIS looks at PATH and a short list of standard install locations, asks each tool
+      for its version, and changes nothing. It never searches your drive, and it never
+      installs anything.
+    </p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" type="button" id="coding-tools-refresh">Check again</button>
+    </div>
+    <div id="coding-tools"><p class="empty">Not checked yet.</p></div>
+  </section>
+
+  <!-- ============================ RESULTS ============================= -->
+  <section role="tabpanel" id="panel-results" aria-labelledby="tab-results" tabindex="0" hidden>
+    <h2 class="section-title">Results</h2>
+    <div id="coding-results"><p class="empty">No finished task yet.</p></div>
+
+    <h2 class="section-title" style="margin-top:2rem;">Task history</h2>
+    <div id="coding-history"><p class="empty">Loading&hellip;</p></div>
+  </section>
+
+  <!-- Approval dialog. Focus is trapped while it is open; the target is
+       named exactly, never as "this file" or "the command". -->
+  <div class="modal-backdrop" id="coding-approval-backdrop" hidden></div>
+  <div class="modal" id="coding-approval" role="dialog" aria-modal="true"
+       aria-labelledby="coding-approval-title" aria-describedby="coding-approval-summary" hidden>
+    <h2 id="coding-approval-title">JARVIS needs your permission</h2>
+    <p id="coding-approval-summary" class="approval-target"></p>
+    <div id="coding-approval-detail"></div>
+    <div class="btn-row" style="margin-top:1.25rem;">
+      <button class="btn btn-primary" id="coding-approve" type="button">Allow</button>
+      <button class="btn btn-ghost" id="coding-decline" type="button">Don't allow</button>
+    </div>
+  </div>
+
+  <div class="notice" style="margin-top:2rem;">
+    <h2 class="section-title" style="margin-top:0;">What Coding Workspace will not do</h2>
+    <ul class="plain-list text-sm" id="coding-disabled-list"></ul>
+
+    <h2 class="section-title">Files it never reads</h2>
+    <p class="text-sm" id="coding-protected-note"></p>
+    <div id="coding-protected"></div>
+  </div>
+
+</div>
+{% endblock %}
+
+{# After app.js, which defines $, API and getSessionCookie. #}
+{% block scripts %}
+<script src="/ui/static/coding.js"></script>
+{% endblock %}

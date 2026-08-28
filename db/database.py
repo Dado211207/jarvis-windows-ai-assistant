@@ -1,11 +1,18 @@
 """Database access layer — thin wrapper around sqlite3."""
 
+import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from app.config import settings
-from app.core.models import ActionLog, ConversationEntry, MemoryEntry
+from app.core.models import (
+    ActionLifecycleRecord,
+    ActionLog,
+    ConversationEntry,
+    MemoryEntry,
+)
 from app.logging_config import get_logger
 
 logger = get_logger("db.database")
@@ -40,6 +47,24 @@ class Database:
     # --- memories ---
 
     def add_memory(self, content: str, tags: Optional[str] = None) -> int:
+        """Insert one memory row.
+
+        **The only place a memory row is ever created**, which is why the
+        secret check is repeated here. `app/core/memory.py` checks first
+        and returns a readable refusal; this raises. A caller that forgot
+        to check gets an exception rather than quietly writing a
+        credential to disk — the guarantee belongs at the insert, not at
+        each of the callers that might one day exist.
+
+        Raises SecretRejected, which carries the *kind* of secret and
+        never the value.
+        """
+        from app.core.secret_guard import SecretRejected, find_secret
+
+        label = find_secret(content) or find_secret(tags or "")
+        if label:
+            raise SecretRejected(label)
+
         conn = self._get_conn()
         cur = conn.execute(
             "INSERT INTO memories (content, tags) VALUES (?, ?)",
@@ -78,6 +103,36 @@ class Database:
             for r in rows
         ]
 
+    def delete_memory(self, memory_id: int) -> bool:
+        """Delete one memory. Returns whether a row was actually removed,
+        so a caller can tell "deleted" from "was not there" rather than
+        reporting success for an id that never existed."""
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+    def clear_memories(self) -> int:
+        """Delete every stored memory. Returns the number removed."""
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM memories")
+        conn.commit()
+        return cur.rowcount
+
+    def count_rows(self, table: str) -> int:
+        """Row count for one of the tables JARVIS stores user data in.
+
+        The table name is checked against a fixed set rather than
+        interpolated blindly — a count endpoint is not a reason to open a
+        path from a request to arbitrary SQL.
+        """
+        allowed = {"memories", "conversations", "action_logs", "action_lifecycle"}
+        if table not in allowed:
+            raise ValueError(f"Unknown table: {table!r}")
+        conn = self._get_conn()
+        row = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
+        return int(row["n"]) if row else 0
+
     # --- conversations ---
 
     def add_conversation(self, role: str, content: str) -> int:
@@ -93,7 +148,9 @@ class Database:
         conn = self._get_conn()
         rows = conn.execute(
             "SELECT id, role, content, created_at FROM conversations "
-            "ORDER BY created_at DESC LIMIT ?",
+            # IDs are monotonic and break same-timestamp ties deterministically.
+            # User and assistant turns are commonly inserted within one second.
+            "ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [
@@ -101,16 +158,36 @@ class Database:
             for r in rows
         ]
 
+    def clear_conversations(self) -> int:
+        """Delete every stored conversation turn. Returns rows deleted.
+
+        Scoped to this table alone — action_logs and action_lifecycle are
+        untouched, so clearing a chat never doubles as erasing the audit
+        trail (see app/core/conversation.py::reset)."""
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM conversations")
+        conn.commit()
+        return cur.rowcount
+
     # --- action logs ---
 
     def log_action(
         self, command: str, tool_name: str, status: str, message: str
     ) -> int:
+        # This is the single write boundary for the legacy action log.
+        # Callers are numerous and historically inconsistent, so redact
+        # here rather than relying on every route to remember.
+        from app.core.redaction import redact_message
+
+        safe_command = redact_message(str(command))
+        safe_tool_name = redact_message(str(tool_name))
+        safe_status = redact_message(str(status))
+        safe_message = redact_message(str(message))
         conn = self._get_conn()
         cur = conn.execute(
             "INSERT INTO action_logs (command, tool_name, status, message) "
             "VALUES (?, ?, ?, ?)",
-            (command, tool_name, status, message),
+            (safe_command, safe_tool_name, safe_status, safe_message),
         )
         conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
@@ -140,6 +217,129 @@ class Database:
             )
             for r in rows
         ]
+
+    # --- action lifecycle (v0.2 audit trail) ---
+    # Policy and idempotency decisions stay in app/core/action_lifecycle.py,
+    # but redaction is repeated at this final SQLite boundary. A future
+    # caller that forgets caller-side sanitisation must still be unable to
+    # persist a credential. A duplicate idempotency_key still raises
+    # sqlite3.IntegrityError for the lifecycle layer to resolve.
+
+    def create_action_lifecycle_record(self, record: ActionLifecycleRecord) -> None:
+        from app.core.redaction import redact_message, redact_params
+
+        def safe_text(value):
+            return redact_message(value) if isinstance(value, str) else value
+
+        safe_input_summary = redact_params(record.input_summary or {})
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT INTO action_lifecycle (
+                id, correlation_id, tool_name, status, input_summary,
+                risk, policy_action, policy_reason, created_at, updated_at,
+                approved_by, approval_source, result_summary,
+                verification_result, error_category, duration_ms, idempotency_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.id,
+                safe_text(record.correlation_id),
+                safe_text(record.tool_name),
+                record.status.value,
+                json.dumps(safe_input_summary),
+                safe_text(record.risk),
+                safe_text(record.policy_action),
+                safe_text(record.policy_reason),
+                record.created_at.isoformat(),
+                record.updated_at.isoformat(),
+                safe_text(record.approved_by),
+                safe_text(record.approval_source),
+                safe_text(record.result_summary),
+                safe_text(record.verification_result),
+                safe_text(record.error_category),
+                record.duration_ms,
+                safe_text(record.idempotency_key),
+            ),
+        )
+        conn.commit()
+
+    def get_action_lifecycle_record(self, action_id: str) -> Optional[ActionLifecycleRecord]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM action_lifecycle WHERE id = ?", (action_id,)
+        ).fetchone()
+        return self._row_to_action_record(row) if row else None
+
+    def get_action_lifecycle_record_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> Optional[ActionLifecycleRecord]:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM action_lifecycle WHERE idempotency_key = ?", (idempotency_key,)
+        ).fetchone()
+        return self._row_to_action_record(row) if row else None
+
+    def update_action_lifecycle_record(
+        self, action_id: str, **fields: Any
+    ) -> Optional[ActionLifecycleRecord]:
+        """Update arbitrary columns on an existing record and stamp
+        updated_at. Returns the refreshed record, or None if *action_id*
+        does not exist. A no-op (no fields) still refreshes updated_at."""
+        from app.core.redaction import redact_message, redact_params
+
+        allowed_fields = {
+            "correlation_id", "tool_name", "status", "input_summary", "risk",
+            "policy_action", "policy_reason", "approved_by", "approval_source",
+            "result_summary", "verification_result", "error_category",
+            "duration_ms", "idempotency_key",
+        }
+        unknown = set(fields) - allowed_fields
+        if unknown:
+            raise ValueError(f"Unknown action lifecycle field(s): {sorted(unknown)!r}")
+
+        conn = self._get_conn()
+        fields = dict(fields)
+        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        values = []
+        for column, value in fields.items():
+            if column == "input_summary":
+                value = json.dumps(redact_params(value if isinstance(value, dict) else {}))
+            elif column != "status" and isinstance(value, str):
+                value = redact_message(value)
+            values.append(value.value if hasattr(value, "value") else value)
+
+        set_clause = ", ".join(f"{column} = ?" for column in fields)
+        cur = conn.execute(
+            f"UPDATE action_lifecycle SET {set_clause} WHERE id = ?",
+            (*values, action_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+        return self.get_action_lifecycle_record(action_id)
+
+    def count_action_lifecycle_records(self) -> int:
+        """How many audit records exist in total, so a capped list can say
+        "showing 50 of 214" instead of implying it showed everything."""
+        conn = self._get_conn()
+        row = conn.execute("SELECT COUNT(*) AS n FROM action_lifecycle").fetchone()
+        return int(row["n"]) if row else 0
+
+    def list_recent_action_lifecycle_records(self, limit: int = 50) -> List[ActionLifecycleRecord]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM action_lifecycle ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_action_record(r) for r in rows]
+
+    @staticmethod
+    def _row_to_action_record(row: sqlite3.Row) -> ActionLifecycleRecord:
+        data = dict(row)
+        data["input_summary"] = json.loads(data["input_summary"]) if data["input_summary"] else {}
+        return ActionLifecycleRecord(**data)
 
 
 # Module-level singleton

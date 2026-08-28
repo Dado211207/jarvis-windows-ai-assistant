@@ -1,4 +1,4 @@
 """JARVIS — Personal Windows AI Assistant."""
 
-__version__ = "0.1.6-alpha"
-__phase__ = "Phase 7: Professional UI/UX Polish"
+__version__ = "0.2.0-rc1"
+__phase__ = "v0.2: Safe Voice Command Center & Windows Action Runtime"

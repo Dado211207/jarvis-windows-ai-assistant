@@ -59,6 +59,29 @@ async def actions_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "actions.html", {"page": "actions"})
 
 
+@router.get("/coding", response_class=HTMLResponse, include_in_schema=False)
+async def coding_page(request: Request) -> HTMLResponse:
+    """Coding Workspace. The page renders whether or not a project exists;
+    with none, it shows an explicit empty state rather than a coding agent
+    nobody asked for."""
+    return templates.TemplateResponse(request, "coding.html", {"page": "coding"})
+
+
 @router.get("/help", response_class=HTMLResponse, include_in_schema=False)
 async def help_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "help.html", {"page": "help"})
+
+
+@router.get("/setup", response_class=HTMLResponse, include_in_schema=False)
+async def setup_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "setup.html", {"page": "setup"})
+
+
+@router.get("/settings", response_class=HTMLResponse, include_in_schema=False)
+async def settings_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "settings.html", {"page": "settings"})
+
+
+@router.get("/diagnostics", response_class=HTMLResponse, include_in_schema=False)
+async def diagnostics_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "diagnostics.html", {"page": "diagnostics"})

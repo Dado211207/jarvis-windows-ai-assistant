@@ -1,0 +1,515 @@
+"""Git safety: the user's own work must survive everything.
+
+The nine repository states §6 names are all here, each with the same
+question asked of it: after JARVIS has done whatever it does, is the
+user's uncommitted work exactly as they left it?
+
+That question is asked by comparing file *bytes* before and after, not by
+reading a status flag. A test that asserts "we did not call git reset"
+proves nothing about a code path that calls `git checkout --force`
+instead.
+"""
+
+import hashlib
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from app.coding import gitsafe, tasks, undo
+from tests import coding_fixtures as fx
+
+
+def snapshot_bytes(root: Path) -> dict:
+    """Every file's exact contents, so a comparison afterwards is real."""
+    result = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file() and ".git" not in path.parts:
+            result[str(path.relative_to(root))] = path.read_bytes()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Reading
+# ---------------------------------------------------------------------------
+
+def test_status_reports_a_clean_repository(tmp_path):
+    root = fx.static_site(tmp_path / "clean", with_defect=False)
+    fx.init_repo(root)
+    state = gitsafe.status(root)
+    assert state.is_repository is True
+    assert state.is_dirty is False
+    assert state.branch == "main"
+
+
+def test_status_finds_modified_staged_and_untracked_separately(tmp_path):
+    root = fx.static_site(tmp_path / "mixed", with_defect=False)
+    fx.init_repo(root)
+    fx.write(root, "index.html", "<h1>modified</h1>\n")
+    fx.write(root, "staged.txt", "staged\n")
+    fx.git(root, "add", "staged.txt")
+    fx.write(root, "untracked.txt", "untracked\n")
+
+    state = gitsafe.status(root)
+    assert "index.html" in state.modified
+    assert "staged.txt" in state.staged
+    assert "untracked.txt" in state.untracked
+    assert state.is_dirty is True
+
+
+def test_a_folder_that_is_not_a_repository_says_so_rather_than_failing(tmp_path):
+    root = fx.not_a_repo(tmp_path / "plain")
+    state = gitsafe.status(root)
+    assert state.is_repository is False
+    assert state.is_dirty is False
+
+
+def test_a_merge_conflict_is_detected(tmp_path):
+    root = fx.repo_with_merge_conflict(tmp_path / "conflicted")
+    state = gitsafe.status(root)
+    assert state.has_conflicts is True
+
+
+def test_a_detached_head_is_detected(tmp_path):
+    root = fx.repo_detached_head(tmp_path / "detached")
+    assert gitsafe.status(root).detached is True
+
+
+def test_credentials_embedded_in_a_remote_url_are_never_returned(tmp_path):
+    root = fx.static_site(tmp_path / "remote", with_defect=False)
+    fx.init_repo(root)
+    fx.git(root, "remote", "add", "origin",
+           "https://someone:ghp_averysecrettokenvalue@github.com/someone/repo.git")
+
+    remotes = gitsafe.remotes(root)
+    flattened = repr(remotes)
+    assert "ghp_averysecrettokenvalue" not in flattened
+    assert "someone:" not in flattened
+    assert "github.com/someone/repo" in flattened, "the useful part must survive"
+
+
+def test_strip_credentials_handles_the_shapes_that_appear_in_practice():
+    cases = [
+        ("https://user:token@github.com/a/b.git", "token"),
+        ("https://token@github.com/a/b.git", "token"),
+        ("https://x-access-token:ghs_abc123@github.com/a/b", "ghs_abc123"),
+    ]
+    for url, secret in cases:
+        assert secret not in gitsafe.strip_credentials(url), url
+
+
+# ---------------------------------------------------------------------------
+# Isolation, across every state
+# ---------------------------------------------------------------------------
+
+def test_isolation_is_planned_for_a_clean_repository(tmp_path):
+    root = fx.static_site(tmp_path / "clean", with_defect=False)
+    fx.init_repo(root)
+    plan = gitsafe.plan_isolation(root, "task1234")
+    assert plan.possible is True
+    assert plan.strategy == "worktree"
+    assert plan.branch_name and plan.branch_name.startswith("jarvis/")
+
+
+@pytest.mark.parametrize("builder,label", [
+    (fx.repo_with_modified_tracked_file, "modified tracked file"),
+    (fx.repo_with_staged_changes, "staged changes"),
+    (fx.repo_with_untracked_files, "untracked files"),
+    (fx.repo_with_ignored_files, "ignored files"),
+])
+def test_a_worktree_leaves_every_uncommitted_change_untouched(tmp_path, builder, label):
+    """The central claim of the whole feature, tested by bytes."""
+    root = builder(tmp_path / "project")
+    before = snapshot_bytes(root)
+
+    plan = gitsafe.plan_isolation(root, "task5678")
+    assert plan.possible is True, f"{label}: isolation should still be possible"
+    created, message = gitsafe.create_worktree(root, plan)
+    assert created is True, message
+
+    worktree = Path(plan.worktree_path)
+    assert worktree.is_dir()
+
+    # Work in the worktree, as a task would.
+    fx.write(worktree, "jarvis-made-this.txt", "task output\n")
+    fx.write(worktree, "index.html", "<h1>changed by the task</h1>\n")
+
+    after = snapshot_bytes(root)
+    assert after == before, (
+        f"{label}: the user's working copy changed. "
+        f"added={set(after) - set(before)} removed={set(before) - set(after)} "
+        f"altered={[k for k in before if k in after and before[k] != after[k]]}"
+    )
+
+
+@pytest.mark.parametrize("builder,blocker", [
+    (fx.repo_with_merge_conflict, "unresolved_merge_conflicts"),
+    (fx.repo_detached_head, "detached_head"),
+])
+def test_isolation_refuses_and_explains_rather_than_improvising(tmp_path, builder, blocker):
+    root = builder(tmp_path / "project")
+    plan = gitsafe.plan_isolation(root, "task9999")
+    assert plan.possible is False
+    assert blocker in plan.blockers
+    assert plan.reason, "a refusal with no reason is the least useful failure there is"
+
+
+def test_a_folder_with_no_repository_is_reported_as_in_place_with_a_warning(tmp_path):
+    root = fx.not_a_repo(tmp_path / "plain")
+    plan = gitsafe.plan_isolation(root, "task0000")
+    assert plan.possible is False
+    assert plan.strategy == "in_place"
+    assert "not a Git repository" in plan.reason
+
+
+def test_a_nested_repository_does_not_confuse_the_outer_one(tmp_path):
+    root = fx.repo_with_nested_repo(tmp_path / "outer")
+    state = gitsafe.status(root)
+    assert state.is_repository is True
+    # The inner repo appears as one untracked entry, not as its contents.
+    assert not any(entry.startswith("vendor/library/lib.js") for entry in state.untracked)
+
+
+def test_an_existing_worktree_is_listed_and_not_disturbed(tmp_path):
+    root = fx.repo_with_worktree(tmp_path / "project", tmp_path / "side-worktree")
+    before = snapshot_bytes(tmp_path / "side-worktree")
+    listed = gitsafe.worktrees(root)
+    assert len(listed) >= 2
+    assert snapshot_bytes(tmp_path / "side-worktree") == before
+
+
+def test_a_submodule_is_not_entered_or_modified(tmp_path):
+    root = fx.repo_with_submodule(tmp_path / "project", tmp_path / "upstream")
+    before = snapshot_bytes(root / "vendor" / "dep")
+    gitsafe.status(root)
+    gitsafe.diff(root)
+    assert snapshot_bytes(root / "vendor" / "dep") == before
+
+
+def test_creating_a_worktree_twice_refuses_rather_than_reusing(tmp_path):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.init_repo(root)
+    plan = gitsafe.plan_isolation(root, "sametask")
+    assert gitsafe.create_worktree(root, plan)[0] is True
+    created, message = gitsafe.create_worktree(root, plan)
+    assert created is False
+    assert "already exists" in message.lower()
+
+
+# ---------------------------------------------------------------------------
+# What must not exist
+# ---------------------------------------------------------------------------
+
+def test_the_git_layer_has_no_destructive_verb_anywhere_in_it():
+    """A grep of the module's own source. The point is not that these
+    calls are currently absent — it is that adding one has to be a
+    deliberate act that fails a test."""
+    source = (Path(__file__).resolve().parent.parent /
+              "app" / "coding" / "gitsafe.py").read_text(encoding="utf-8")
+    # Only the argv lists matter, and every one is a list of literals, so
+    # a substring search over the source is the right granularity here.
+    forbidden = [
+        '"reset"', '"clean"', '"push"', '"filter-branch"',
+        '"rebase"', '"cherry-pick"',
+    ]
+    for verb in forbidden:
+        # Allowed to *name* them in FORBIDDEN_VERBS and in prose; not to
+        # place one in a command list.
+        for line in source.splitlines():
+            if verb in line and "FORBIDDEN_VERBS" not in source[:source.index(line)][-400:]:
+                assert not line.strip().startswith('_git('), f"destructive verb in a call: {line}"
+
+
+def test_forbidden_verbs_are_declared_and_include_the_dangerous_ones():
+    assert {"reset", "clean", "push", "filter-branch"} <= set(gitsafe.FORBIDDEN_VERBS)
+
+
+@pytest.fixture
+def undo_store(tmp_path, monkeypatch):
+    location = tmp_path / "undo-store"
+    monkeypatch.setattr(undo, "_undo_root", lambda: location)
+    return undo
+
+
+def _sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def test_undo_restores_an_updated_file_byte_for_byte(tmp_path, undo_store):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    original = (root / "index.html").read_bytes()
+    backup = undo_store.store_bytes("task-update", original)
+    changed = b"<h1>JARVIS changed this</h1>\r\n"
+    fx.write(root, "index.html", changed)
+
+    results = gitsafe.undo_task_edits(root, "task-update", [{
+        "path": "index.html", "destination": "", "kind": "update",
+        "before_sha256": _sha(original), "after_sha256": _sha(changed),
+        "undo_backup": backup,
+    }])
+
+    assert results[0]["reverted"] is True
+    assert (root / "index.html").read_bytes() == original
+
+
+def test_undo_removes_a_created_file_only_when_it_is_unchanged(tmp_path, undo_store):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    created = b"created by JARVIS\n"
+    fx.write(root, "new.txt", created)
+
+    results = gitsafe.undo_task_edits(root, "task-create", [{
+        "path": "new.txt", "destination": "", "kind": "create",
+        "before_sha256": None, "after_sha256": _sha(created), "undo_backup": "",
+    }])
+
+    assert results[0]["reverted"] is True
+    assert not (root / "new.txt").exists()
+
+
+def test_undo_recreates_a_deleted_file_with_exact_bytes(tmp_path, undo_store):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    original = b"first\r\nsecond\x00third\n"
+    fx.write(root, "delete-me.txt", original)
+    backup = undo_store.store_bytes("task-delete", original)
+    (root / "delete-me.txt").unlink()
+
+    results = gitsafe.undo_task_edits(root, "task-delete", [{
+        "path": "delete-me.txt", "destination": "", "kind": "delete",
+        "before_sha256": _sha(original), "after_sha256": None,
+        "undo_backup": backup,
+    }])
+
+    assert results[0]["reverted"] is True
+    assert (root / "delete-me.txt").read_bytes() == original
+
+
+def test_undo_moves_a_renamed_file_back_to_its_exact_path(tmp_path, undo_store):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    original = (root / "style.css").read_bytes()
+    backup = undo_store.store_bytes("task-rename", original)
+    os.replace(root / "style.css", root / "assets.css")
+
+    results = gitsafe.undo_task_edits(root, "task-rename", [{
+        "path": "style.css", "destination": "assets.css", "kind": "rename",
+        "before_sha256": _sha(original), "after_sha256": _sha(original),
+        "undo_backup": backup,
+    }])
+
+    assert results[0]["reverted"] is True
+    assert (root / "style.css").read_bytes() == original
+    assert not (root / "assets.css").exists()
+
+
+def test_undo_leaves_a_file_changed_after_jarvis_alone(tmp_path, undo_store):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    original = (root / "index.html").read_bytes()
+    backup = undo_store.store_bytes("task-stale", original)
+    jarvis_wrote = b"<h1>JARVIS wrote this</h1>\n"
+    user_wrote = b"<h1>the user changed it afterwards</h1>\n"
+    fx.write(root, "index.html", user_wrote)
+
+    results = gitsafe.undo_task_edits(root, "task-stale", [{
+        "path": "index.html", "destination": "", "kind": "update",
+        "before_sha256": _sha(original), "after_sha256": _sha(jarvis_wrote),
+        "undo_backup": backup,
+    }])
+
+    assert results[0]["reverted"] is False
+    assert (root / "index.html").read_bytes() == user_wrote
+
+def test_a_commit_proposal_does_not_commit(tmp_path):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.init_repo(root)
+    fx.write(root, "new.txt", "content\n")
+
+    before = fx.git(root, "rev-parse", "HEAD").stdout.strip()
+    proposal = gitsafe.build_commit_proposal(root, "add a file", ["new.txt"])
+    assert proposal.message
+    assert fx.git(root, "rev-parse", "HEAD").stdout.strip() == before
+
+
+def test_a_commit_without_approval_is_refused(tmp_path):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.init_repo(root)
+    fx.write(root, "new.txt", "content\n")
+    proposal = gitsafe.build_commit_proposal(root, "add a file", ["new.txt"])
+
+    before = fx.git(root, "rev-parse", "HEAD").stdout.strip()
+    committed, message = gitsafe.commit(root, proposal, approved=False)
+    assert committed is False
+    assert fx.git(root, "rev-parse", "HEAD").stdout.strip() == before
+
+
+def test_an_approved_commit_commits_only_the_named_files(tmp_path):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.init_repo(root)
+    fx.write(root, "jarvis.txt", "from the task\n")
+    fx.write(root, "user-scratch.txt", "the user's own file\n")
+
+    proposal = gitsafe.build_commit_proposal(root, "task change", ["jarvis.txt"])
+    committed, message = gitsafe.commit(root, proposal, approved=True)
+    assert committed is True, message
+
+    tracked = fx.git(root, "ls-files").stdout.split()
+    assert "jarvis.txt" in tracked
+    assert "user-scratch.txt" not in tracked, "an unrelated file was swept into the commit"
+    assert (root / "user-scratch.txt").exists()
+
+
+def test_removing_a_worktree_that_still_has_changes_is_refused(tmp_path):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.init_repo(root)
+    plan = gitsafe.plan_isolation(root, "task4321")
+    gitsafe.create_worktree(root, plan)
+    worktree = Path(plan.worktree_path)
+    fx.write(worktree, "unsaved-task-work.txt", "not committed\n")
+
+    removed, message = gitsafe.remove_worktree(root, str(worktree))
+    assert removed is False
+    assert worktree.exists(), "task work was thrown away"
+
+
+# ---------------------------------------------------------------------------
+# The diff is a way for a file's contents to leave the project
+# ---------------------------------------------------------------------------
+
+def test_a_diff_never_shows_the_contents_of_a_protected_file(tmp_path):
+    """`git diff` knows nothing about the protected-path engine.
+
+    The Windows CI job found this: line-ending normalisation made every
+    file show as modified, and `GET /coding/projects/{id}/diff` returned
+    the fixture's fake Anthropic key, Stripe secret, npm token and
+    private key. On Linux the same test passed only because nothing
+    happened to be modified — the hole was there either way.
+    """
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.with_secrets(root)
+    fx.init_repo(root)
+
+    # The user edits everything, including their credentials.
+    fx.write(root, ".env", f"ANTHROPIC_API_KEY={fx.FAKE_ANTHROPIC_KEY}\nEDITED=yes\n")
+    fx.write(root, "certs/server.key",
+             "-----BEGIN PRIVATE KEY-----\nFIXTUREPRIVATEKEYMATERIAL\nrotated\n"
+             "-----END PRIVATE KEY-----\n")
+    fx.write(root, "secrets.yaml", "database_password: fixture-yaml-secret\nnew: 1\n")
+    fx.write(root, "index.html", "<h1>a real change the user made</h1>\n")
+
+    body = gitsafe.diff(root)
+
+    for secret in fx.SECRET_VALUES:
+        assert secret not in body, f"the diff leaked {secret[:16]}…"
+
+    # The ordinary change is still shown — this must not be a blunt refusal.
+    assert "a real change the user made" in body
+
+    # And the user is told their protected files differ, without being
+    # shown what they now say.
+    assert ".env" in body
+    assert "not shown" in body
+
+
+def test_a_staged_diff_excludes_protected_files_too(tmp_path):
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.with_secrets(root)
+    fx.init_repo(root)
+
+    fx.write(root, ".env", f"ANTHROPIC_API_KEY={fx.FAKE_ANTHROPIC_KEY}\nSTAGED=yes\n")
+    fx.git(root, "add", ".env")
+
+    body = gitsafe.diff(root, staged=True)
+    for secret in fx.SECRET_VALUES:
+        assert secret not in body, "the staged diff leaked a secret"
+
+
+def test_a_diff_of_only_protected_files_is_a_notice_not_an_empty_string(tmp_path):
+    """Empty would read as "nothing changed", which is false."""
+    root = fx.static_site(tmp_path / "project", with_defect=False)
+    fx.with_secrets(root)
+    fx.init_repo(root)
+    fx.write(root, ".env", "ANTHROPIC_API_KEY=changed\n")
+
+    body = gitsafe.diff(root)
+    assert body.strip(), "a changed .env produced an empty diff, which reads as 'no changes'"
+    assert ".env" in body
+
+
+def test_partial_worktree_add_failure_removes_owned_path_and_branch(
+    tmp_path, monkeypatch,
+):
+    root = fx.static_site(tmp_path / "Project with spaces ü", with_defect=False)
+    fx.init_repo(root)
+    plan = gitsafe.plan_isolation(root, "partial123")
+    real_git = gitsafe._git
+
+    def fail_after_creating_ref(project_root, args, timeout=20.0):
+        if args[:2] == ["worktree", "add"]:
+            destination = Path(args[4])
+            destination.mkdir(parents=True)
+            (destination / ".git").write_text("partial worktree marker\n", encoding="utf-8")
+            created = real_git(project_root, ["branch", plan.branch_name, plan.start_sha])
+            assert created[0] == 0
+            return 1, "", "injected checkout failure"
+        return real_git(project_root, args, timeout)
+
+    monkeypatch.setattr(gitsafe, "_git", fail_after_creating_ref)
+    created, message = gitsafe.create_worktree(root, plan)
+    assert created is False
+    assert "cleanup succeeded" in message.lower()
+    assert not Path(plan.worktree_path).exists()
+    assert real_git(root, ["show-ref", "--verify", f"refs/heads/{plan.branch_name}"])[0] != 0
+
+
+def test_task_history_delete_purges_its_private_undo_bytes(tmp_path, monkeypatch):
+    monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
+    record = tasks.create("project", "change")
+    backup = undo.store_bytes(record.id, b"private source bytes")
+    path = undo._backup_path(record.id, backup)
+    assert path.is_file()
+    assert tasks.delete(record.id) is True
+    assert not path.exists()
+
+
+def test_undo_store_caps_are_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
+    monkeypatch.setattr(undo, "MAX_UNDO_TASK_BYTES", 8)
+    monkeypatch.setattr(undo, "MAX_UNDO_TOTAL_BYTES", 16)
+    undo.store_bytes("cap-task", b"12345678")
+    with pytest.raises(undo.UndoBackupError):
+        undo.store_bytes("cap-task", b"x")
+
+
+def test_undo_retention_matches_installer_preserve_and_full_remove_policy():
+    source = (Path(__file__).resolve().parent.parent /
+              "app" / "coding" / "undo.py").read_text(encoding="utf-8")
+    installer = (Path(__file__).resolve().parent.parent /
+                 "packaging" / "jarvis.iss").read_text(encoding="utf-8")
+    assert "Normal uninstall preserves" in source
+    assert "DelTree(DataDir, True, True, True)" in installer
+
+
+def test_task_history_clear_purges_all_private_undo_bytes(tmp_path, monkeypatch):
+    monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
+    first = tasks.create("project", "one")
+    second = tasks.create("project", "two")
+    first_path = undo._backup_path(first.id, undo.store_bytes(first.id, b"first"))
+    second_path = undo._backup_path(second.id, undo.store_bytes(second.id, b"second"))
+    assert tasks.clear() == 2
+    assert not first_path.exists()
+    assert not second_path.exists()
+
+
+def test_task_history_pruning_purges_the_pruned_tasks_undo_bytes(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(tasks, "_tasks_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(undo, "_undo_root", lambda: tmp_path / "undo")
+    monkeypatch.setattr(tasks, "MAX_TASKS_KEPT", 1)
+    first = tasks.create("project", "first")
+    first_path = undo._backup_path(first.id, undo.store_bytes(first.id, b"first"))
+    second = tasks.create("project", "second")
+    assert tasks.get(first.id) is None
+    assert tasks.get(second.id) is not None
+    assert not first_path.exists()

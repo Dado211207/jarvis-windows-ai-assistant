@@ -1,13 +1,28 @@
-"""JARVIS Brain — orchestrates tools, routing, and Claude AI.
+"""JARVIS Brain — orchestrates tools, routing, and the AI providers.
 
 Phase 1: deterministic routing only.
-Phase 2: unknown commands fall through to the Anthropic API when a key is present;
-          local fallback message returned when no key is configured.
+Phase 2: unknown commands fall through to the AI when one is configured;
+          local fallback message returned when none is.
+Phase 5: the provider call itself moved out to app/core/ai/, so this
+          module decides *what to say* about a failure rather than
+          re-implementing *how to call* each provider. The important
+          behavioural change is that every failure no longer produces the
+          same "add an API key" sentence: the message a user sees now
+          matches the actual cause (rate limit, expired key, unreachable
+          local server, timeout), because a wrong diagnosis sends people
+          to change settings that were never the problem.
+
+The AI still only ever returns text. It cannot invoke a tool, and no
+code path from here reaches the tool registry — see CLAUDE.md's Phase 2
+rules and app/core/policy.py, which is the only risk decision-maker.
 """
 
+from typing import Iterator, Optional, Tuple
+
 from app.config import settings
+from app.core.errors import ErrorCategory, SafeError, to_safe_error
 from app.core.models import BrainResponse, CommandResponse
-from app.core.system_prompt import SYSTEM_PROMPT
+from app.core.system_prompt import build_system_prompt
 from app.core.tool_registry import registry
 from app.logging_config import get_logger
 
@@ -26,11 +41,20 @@ class Brain:
         if self._ready:
             return
 
+        # Before create_tables(), and that ordering is the whole point:
+        # once an empty database exists at the destination there is
+        # nothing left to carry a v0.1 install's data into. A no-op in
+        # dev mode, and never able to raise — see the module docstring.
+        from app.core.legacy_migration import migrate_if_needed
+        migrate_if_needed()
+
         from db.migrations import create_tables
         create_tables()
 
         from app.core import memory as memory_module
-        from app.desktop import apps, folders, maintenance, notes, screenshots, system, web
+        from app.core import privacy as privacy_module
+        from app.desktop import apps, clipboard, folders, maintenance, notes, screenshots, session, system, web
+        from app.voice import speak_reply as speak_reply_module
         from app.voice import tts as tts_module
 
         apps.register_tools(registry)
@@ -38,10 +62,14 @@ class Brain:
         system.register_tools(registry)
         memory_module.register_tools(registry)
         tts_module.register_tools(registry)
+        speak_reply_module.register_tools(registry)
         maintenance.register_tools(registry)
         web.register_tools(registry)
         folders.register_tools(registry)
         notes.register_tools(registry)
+        clipboard.register_tools(registry)
+        session.register_tools(registry)
+        privacy_module.register_tools(registry)
         self._register_utility_tools()
 
         self._ready = True
@@ -65,58 +93,162 @@ class Brain:
         router = CommandRouter(registry, brain=self)
         return router.route(command)
 
-    def generate_response(self, command: str) -> BrainResponse:
-        """Call the Anthropic API with *command* as the user message.
+    # --- provider plumbing ---
 
-        Falls back to a local message if the key is absent or the call fails.
-        """
-        if not self.is_configured():
-            return self._local_fallback(command)
+    def provider_name(self) -> str:
+        """A choice saved in Settings wins over the configured default —
+        see app/core/preferences.py. Falling through to this module's own
+        `settings` (rather than calling selected_provider(), which reads
+        app.config directly) keeps the answer patchable when a test
+        drives the Brain through a mocked settings object."""
+        from app.core.preferences import get as get_preference
+        from app.core.providers import normalise_provider
 
-        model = settings.jarvis_ai_model or "claude-haiku-4-5-20251001"
-        try:
-            import anthropic
-            client = anthropic.Anthropic(
-                api_key=settings.anthropic_api_key,
-                timeout=float(settings.jarvis_ai_timeout_seconds),
-            )
-            message = client.messages.create(
-                model=model,
-                max_tokens=settings.jarvis_ai_max_tokens,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": command}],
-            )
-            content = message.content[0].text if message.content else ""
-            logger.info("Claude API response received. model=%s tokens=%s", model, message.usage)
-            return BrainResponse(
-                content=content,
-                provider=settings.jarvis_ai_provider,
-                model=model,
-                used_api=True,
-            )
-        except Exception as exc:
-            logger.warning("Claude API call failed (%s), using local fallback.", exc)
-            return BrainResponse(
-                content=self._local_fallback(command).content,
-                provider=settings.jarvis_ai_provider,
-                model=model,
-                used_api=False,
-                error=str(exc),
-            )
+        return normalise_provider(get_preference("ai_provider") or settings.jarvis_ai_provider)
 
-    # --- private helpers ---
+    def _provider_config(self):
+        """The single place global settings become provider configuration.
 
-    def _local_fallback(self, command: str) -> BrainResponse:
-        """Return a polite message when no API key is set or the call fails."""
-        msg = (
-            f"I received your message: \"{command}\"\n"
-            "Claude AI is not configured. "
-            "Add your ANTHROPIC_API_KEY to .env to enable AI responses."
+        The key is resolved to "" whenever no key is configured, so a
+        provider's own availability check and this class's is_configured()
+        can never disagree about whether credentials exist."""
+        from app.core.ai import ProviderConfig
+
+        return ProviderConfig(
+            model=settings.jarvis_ai_model or "",
+            max_tokens=settings.jarvis_ai_max_tokens,
+            timeout_seconds=float(settings.jarvis_ai_timeout_seconds),
+            api_key=settings.effective_api_key if settings.has_anthropic_key else "",
+            ollama_model=self._ollama_model(),
         )
+
+    @staticmethod
+    def _system_prompt() -> str:
+        """The immutable system prompt, plus the name the user asked to
+        be called, plus what this installation can actually do.
+
+        All three parts are read per request rather than cached. For the
+        name that means a change in Settings takes effect on the next
+        message instead of the next restart; for the capabilities it
+        means a voice that finished installing two minutes ago is one the
+        model knows it has. A remembered answer would be wrong in exactly
+        the moment somebody asks about it.
+        """
+        from app.core.capabilities import describe_now
+        from app.core.preferences import get as get_preference
+
+        return build_system_prompt(
+            get_preference("preferred_name") or "",
+            capabilities=describe_now(),
+        )
+
+    @staticmethod
+    def _ollama_model() -> str:
+        from app.core.preferences import get as get_preference
+
+        configured = getattr(settings, "jarvis_ollama_model", "")
+        if not isinstance(configured, str):
+            configured = ""  # a mocked settings object in tests
+        return get_preference("ollama_model") or configured
+
+    def provider(self):
+        from app.core.ai import get_provider
+
+        return get_provider(self.provider_name(), self._provider_config())
+
+    def provider_ready(self) -> Tuple[bool, str]:
+        """(usable right now, why not). Never raises — it is called from
+        request handlers and page renders."""
+        try:
+            availability = self.provider().availability()
+            return bool(availability.ready), availability.reason
+        except Exception:  # noqa: BLE001
+            logger.warning("Provider availability check failed.", exc_info=True)
+            return False, "The AI provider could not be checked. Local commands still work normally."
+
+    # --- generation ---
+
+    def generate_response(self, command: str) -> BrainResponse:
+        """Ask the configured provider to answer *command*.
+
+        Never raises and never returns an unhandled failure: an
+        unavailable provider, a rejected key, a rate limit or a timeout
+        all produce a BrainResponse whose text says which of those it
+        actually was.
+        """
+        from app.core.ai.base import GenerationCancelled, ProviderError
+        from app.core.conversation import build_request_messages
+
+        provider = self.provider()
+        availability = provider.availability()
+        if not availability.ready:
+            return self._unavailable(availability, provider)
+
+        try:
+            reply = provider.generate(build_request_messages(command), self._system_prompt())
+        except ProviderError as exc:
+            return self._provider_failed(exc, provider)
+        except GenerationCancelled:
+            return BrainResponse(
+                content="Stopped.", provider=provider.name,
+                model=provider.resolved_model(), used_api=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — a provider that broke its own contract
+            return self._provider_failed(
+                ProviderError(ErrorCategory.PROVIDER_ERROR, cause=exc), provider
+            )
+
         return BrainResponse(
-            content=msg,
+            content=reply.content,
+            provider=reply.provider,
+            model=reply.model,
+            used_api=reply.used_api,
+        )
+
+    def stream_response(self, command: str, cancel=None) -> Iterator[str]:
+        """Yield answer text as it arrives. Raises ProviderError, which
+        the caller turns into a SafeError — the streaming endpoint needs
+        the classified failure mid-stream, where returning a BrainResponse
+        is no longer possible."""
+        from app.core.conversation import build_request_messages
+
+        provider = self.provider()
+        yield from provider.stream(build_request_messages(command), self._system_prompt(), cancel=cancel)
+
+    # --- failure reporting ---
+
+    def _unavailable(self, availability, provider) -> BrainResponse:
+        """No usable provider. This is not an error — it is the normal
+        state of a fresh install — so no correlation ID is minted and
+        nothing is logged as a failure. The reason comes from the
+        provider itself, which knows whether the cause is "no key yet"
+        or "Ollama isn't running"."""
+        return BrainResponse(
+            content=availability.reason,
             provider="local",
+            model=None,
             used_api=False,
+        )
+
+    def _provider_failed(self, exc, provider) -> BrainResponse:
+        """A real failure. The raw exception is logged server-side with a
+        correlation ID; the user gets the category's fixed safe message,
+        plus the provider's own credential-free detail when it wrote one
+        (e.g. which local models are actually installed)."""
+        safe_error: SafeError = to_safe_error(
+            exc.cause or exc,
+            category=exc.category,
+            context=f"{provider.name} generation",
+        )
+        message = safe_error.message
+        if getattr(exc, "detail", ""):
+            message = exc.detail
+        return BrainResponse(
+            content=message,
+            provider=provider.name,
+            model=provider.resolved_model(),
+            used_api=False,
+            error=safe_error,
         )
 
     def _register_utility_tools(self) -> None:
@@ -167,8 +299,8 @@ class Brain:
             f"  Tools registered : {len(registry)}\n"
             f"  Claude API       : {ai_status}\n"
             f"  AI model         : {settings.jarvis_ai_model or 'default'}\n"
-            f"  DB               : {settings.jarvis_db_path}\n"
-            f"  Log file         : {settings.jarvis_log_file}"
+            f"  DB               : {settings.db_path}\n"
+            f"  Log file         : {settings.log_file}"
         )
         return {"success": True, "message": msg, "data": None}
 

@@ -42,7 +42,7 @@ def test_core_modules_import():
 
 
 def test_desktop_modules_import():
-    from app.desktop import apps, screenshots, system, windows
+    from app.desktop import apps, screenshots, system
 
 
 def test_db_modules_import():
@@ -174,8 +174,9 @@ def api_client():
     """Start the full FastAPI app via TestClient (triggers lifespan / brain init)."""
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
     with TestClient(jarvis_app, raise_server_exceptions=True) as client:
-        yield client
+        yield prime_session(client)
 
 
 def test_fastapi_app_loads(api_client):
@@ -196,6 +197,57 @@ def test_health_returns_200(api_client):
     assert r.status_code == 200
     body = r.json()
     assert body["healthy"] is True
+    assert body["status"] == "ok"
+
+
+def test_health_is_degraded_when_the_database_is_unreachable(api_client):
+    with patch("db.database.get_db", side_effect=OSError("database unavailable")):
+        body = api_client.get("/health").json()
+
+    assert body["healthy"] is False
+    assert body["status"] == "degraded"
+    assert body["db"] == "error"
+    assert body["db_accessible"] is False
+
+
+def test_health_reports_a_ready_selected_ollama_provider(api_client):
+    from app.core.providers import ProviderStatus
+
+    ready = ProviderStatus(
+        name="ollama",
+        display_name="Ollama (local models)",
+        kind="local",
+        available=True,
+        detail="ready",
+        models=["qwen2.5-coder:latest"],
+    )
+    with patch("app.core.providers.selected_provider", return_value="ollama"), \
+         patch("app.core.providers.ollama_status", return_value=ready):
+        body = api_client.get("/health").json()
+
+    assert body["brain"] == "ollama"
+    assert body["brain_configured"] is True
+
+
+def test_health_keeps_the_unavailable_selected_provider_visible(api_client):
+    from app.core.providers import ProviderStatus
+
+    unavailable = ProviderStatus(
+        name="ollama",
+        display_name="Ollama (local models)",
+        kind="local",
+        available=False,
+        detail="not running",
+    )
+    with patch("app.core.providers.selected_provider", return_value="ollama"), \
+         patch("app.core.providers.ollama_status", return_value=unavailable):
+        body = api_client.get("/health").json()
+
+    assert body["brain"] == "ollama"
+    assert body["brain_configured"] is False
+    # Deterministic local commands still make the service operational.
+    assert body["healthy"] is True
+    assert body["status"] == "ok"
 
 
 def test_tools_returns_200_and_non_empty(api_client):

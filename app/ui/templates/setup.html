@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Welcome{% endblock %}
+{% block topbar_title %}Welcome{% endblock %}
+{% block content %}
+{#
+  First run asks two questions and nothing else.
+
+  The previous version was a six-step wizard covering privacy notes,
+  provider discovery, speech-model installation, startup and close
+  behaviour. Real hardware testing found it exposed setup work a normal
+  user should never see, and most of it duplicated Settings. Everything
+  optional moved to where it belongs — Settings for preferences and the
+  key, Voice for the speech model — and none of it blocks getting
+  started.
+#}
+<div id="setup-root" class="setup-simple">
+
+  <div class="card">
+    <div class="page-header">
+      <h1 class="page-title" id="setup-heading">Welcome to JARVIS</h1>
+      <p class="page-subtitle">
+        Two quick things and you're ready. Both can be changed later in Settings.
+      </p>
+    </div>
+
+    <div class="form-field mt-4">
+      <label class="form-label" for="setup-name-input">What should JARVIS call you?</label>
+      <input id="setup-name-input" class="input" type="text" maxlength="40"
+             autocomplete="off" placeholder="Your name"
+             aria-describedby="setup-name-hint">
+      <p class="text-xs text-muted mt-2" id="setup-name-hint">
+        Optional. Leave it blank and JARVIS won't use a name.
+      </p>
+    </div>
+
+    <div class="form-field mt-4">
+      <label class="form-label" for="setup-key-input">Anthropic API key</label>
+      <input id="setup-key-input" class="input" type="password" autocomplete="off"
+             placeholder="Paste your key here" aria-describedby="setup-key-hint">
+      <p class="text-xs text-muted mt-2" id="setup-key-hint">
+        Stored in the Windows credential store, never in a file, and never shown again.
+        JARVIS checks it works before saving it.
+      </p>
+      <div class="status-row mt-3">
+        <span class="status-row-label">Status</span>
+        <span id="setup-key-status" class="status-row-value loading">&#8230;</span>
+      </div>
+      <p id="setup-key-message" class="text-xs mt-2" aria-live="polite"></p>
+    </div>
+
+    <div class="btn-row mt-4">
+      <button id="setup-continue" class="btn btn-primary" type="button">Start using JARVIS</button>
+      <button id="setup-skip" class="btn btn-ghost" type="button">Skip for now</button>
+    </div>
+    <p id="setup-finish-message" class="text-xs mt-2" role="alert" aria-live="assertive"></p>
+    <p class="text-xs text-muted mt-2">
+      Without a key, JARVIS still runs commands, opens allowlisted apps, takes notes and
+      reports system status &mdash; it just can't answer open questions.
+    </p>
+  </div>
+
+  <div class="card mt-3">
+    <h2 class="card-title">Everything else is optional</h2>
+    <ul class="checklist mt-3">
+      <li>Voice input and spoken replies are set up on the <a href="/ui/voice">Voice</a> page.</li>
+      <li>A local AI provider, startup behaviour and privacy mode live in <a href="/ui/settings">Settings</a>.</li>
+      <li>Nothing leaves this machine unless you configure a cloud provider above.</li>
+    </ul>
+  </div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,73 @@
+# Windows packaging-only dependencies — NOT installed by requirements.txt
+# and NOT needed to run, test, or develop JARVIS from source on any
+# platform. Installed only by scripts/build-installer.ps1 before running
+# PyInstaller.
+#
+# Kept out of requirements.txt deliberately:
+#   - pywin32 has no non-Windows wheel at all (import fails outright).
+#   - keyring is technically importable elsewhere, but its Windows
+#     credential-store use only matters for the packaged app — dev/CI
+#     always set ANTHROPIC_API_KEY directly (see
+#     app/config.py::Settings.effective_api_key), and every keyring call
+#     already runs through app/core/credentials.py's own isolation, so
+#     nothing breaks if it's simply absent (get_stored_api_key() etc.
+#     just return a safe empty/False result).
+#   - pywebview + pythonnet: pywebview's only Windows backend
+#     (webview/platforms/winforms.py) needs pythonnet (.NET/CLR
+#     interop) — verified directly against the real pywebview 6.2.1
+#     source, not assumed. Both are import-local to
+#     app/launcher/webview_window.py's create_and_run(), the one
+#     function that actually builds a real native window — see that
+#     module's docstring for why it forces the modern WebView2/Chromium
+#     backend and refuses to silently fall back to the legacy
+#     mshtml/IE engine.
+# app/launcher/tray.py, app/launcher/webview_window.py, and
+# app/core/credentials.py all keep every import of these strictly local
+# to the function that needs it — this file is a second,
+# belt-and-suspenders layer on top of that.
+# See docs/THIRD_PARTY_NOTICES.md for the full license/maintenance
+# reasoning, including why the tray is pywin32 and not pystray.
+#
+#   - faster-whisper + ctranslate2: the local speech engine behind
+#     push-to-talk. Previously in requirements-voice.txt only and
+#     deliberately excluded from the installer, which meant the packaged
+#     app reported "Speech runtime — Not ready" permanently and no user
+#     action could change it. The *engine* now ships; the *model* is
+#     still downloaded on request, with its licence, size and checksum
+#     shown first (app/voice/model_installer.py).
+#
+#   pip install -r requirements.txt -r requirements-windows.txt
+#
+#   - winsdk: the WinRT projection behind the *second* speech tier
+#     (app/voice/winrt_voices.py) — Windows' own natural voices, tried
+#     after the neural voice and before the old robotic one. MIT, from
+#     Microsoft. Without it that tier can never be selected at all, so
+#     the chain silently fell from the neural voice straight to SAPI5;
+#     the adapter was written and unreachable. Windows-only, imported
+#     strictly inside the function that needs it, and collected as an
+#     *optional* package by the PyInstaller spec — if it cannot be
+#     bundled the tier reports itself unavailable, which is exactly what
+#     it already does on a machine that lacks it.
+#   - requests: declared here rather than left to pip's resolution of
+#     faster-whisper -> huggingface_hub. The packaged app reported
+#     "Speech recognition (faster-whisper): No module named 'requests'"
+#     from a build that had otherwise succeeded, because the package was
+#     not present in the build environment for PyInstaller to bundle.
+#     A dependency the installed product cannot start without is one
+#     this file should name, not one to hope a transitive resolution
+#     keeps providing.
+pywin32==312
+keyring==25.7.0
+winsdk==1.0.0b10
+pywebview==6.2.1
+pythonnet==3.1.0
+faster-whisper==1.2.0
+requests>=2.31.0
+# Reached only through faster-whisper and pythonnet respectively, and
+# both are things the installed product cannot start without: the first
+# is imported by faster_whisper at package-import time, the second is
+# how pythonnet loads the CLR for the native window. Named here for the
+# same reason as requests — a build environment that resolves them
+# differently should fail loudly at pip, not quietly at PyInstaller.
+huggingface-hub>=0.13
+clr-loader>=0.2.6

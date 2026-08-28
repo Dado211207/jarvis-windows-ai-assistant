@@ -1,0 +1,13 @@
+# Optional: local speech-to-text for push-to-talk voice input (v0.2).
+#
+# For running from source. The Windows installer bundles this engine
+# already (see requirements-windows.txt) — it did not, which is why the
+# packaged app reported "Speech runtime — Not ready" permanently.
+#
+# Not in requirements.txt: JARVIS runs fully without it, text input always
+# works, and the Voice page reports an honest "not installed" status for
+# push-to-talk until it is present. See app/voice/stt.py.
+#
+#   pip install -r requirements-voice.txt
+#
+faster-whisper>=1.0.0

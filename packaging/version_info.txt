@@ -1,0 +1,55 @@
+# UTF-8
+#
+# Windows version-resource for JARVIS.exe, consumed by PyInstaller's
+# EXE(version=...) (see packaging/jarvis.spec). This is itself
+# Python-syntax, per PyInstaller's own convention, not a plain
+# text/ini format — see
+# https://pyinstaller.org/en/stable/usage.html#capturing-windows-version-data
+#
+# Keep the version strings below in sync with app/__init__.py's
+# __version__ by hand — there is no automated sync between the two.
+#
+# CompanyName/LegalCopyright deliberately name the actual GitHub repo
+# owner (Dado211207), not an invented company — this is a personal
+# project with no separate legal entity, and CLAUDE.md's packaging
+# rules explicitly forbid fake company/legal information. No LICENSE
+# file exists in this repository at the time of writing, so no
+# specific license is named here; "All rights reserved" reflects the
+# real default under copyright law for an unlicensed repository, not
+# an invented claim.
+
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    # Numeric Windows version fields cannot carry a "-rc1" suffix —
+    # (0, 2, 0, 1) encodes 0.2.0, build 1 ("rc1"). The human-readable
+    # StringStructs below carry the real "0.2.0-rc1" text.
+    filevers=(0, 2, 0, 1),
+    prodvers=(0, 2, 0, 1),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0),
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '040904B0',
+          [
+            StringStruct('CompanyName', 'Dado211207'),
+            StringStruct('FileDescription', 'JARVIS - Personal Windows AI Assistant'),
+            StringStruct('FileVersion', '0.2.0-rc1'),
+            StringStruct('InternalName', 'JARVIS'),
+            StringStruct('LegalCopyright', 'Copyright (c) 2026 Dado211207. All rights reserved.'),
+            StringStruct('OriginalFilename', 'JARVIS.exe'),
+            StringStruct('ProductName', 'JARVIS'),
+            StringStruct('ProductVersion', '0.2.0-rc1'),
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

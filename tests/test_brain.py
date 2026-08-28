@@ -23,6 +23,8 @@ def _make_brain(api_key: str = ""):
         mock_settings.jarvis_ai_timeout_seconds = 20
         mock_settings.jarvis_db_path = "data/jarvis.db"
         mock_settings.jarvis_log_file = "data/logs/jarvis.log"
+        mock_settings.db_path = "data/jarvis.db"
+        mock_settings.log_file = "data/logs/jarvis.log"
         b = Brain()
     return b
 
@@ -61,7 +63,11 @@ def test_generate_response_local_fallback_when_no_key():
 
     assert result.used_api is False
     assert result.provider == "local"
-    assert "Claude AI is not configured" in result.content
+    # The fallback must point somewhere a packaged-app user can actually
+    # go (the in-app Settings page), never at a .env file they don't have
+    # — see tests/test_no_developer_instructions_in_ui.py.
+    assert "settings" in result.content.lower()
+    assert ".env" not in result.content
     assert result.error is None
 
 
@@ -108,7 +114,15 @@ def test_generate_response_uses_api_when_key_present():
 
 
 def test_generate_response_passes_system_prompt():
-    """Verify the system prompt is forwarded to the Anthropic SDK."""
+    """Verify the system prompt is forwarded to the Anthropic SDK.
+
+    Compared with startswith() rather than equality: the immutable rules
+    are the prefix, and what follows them is appended per request — the
+    preferred name and the live capability block from
+    app/core/capabilities.py. Equality here would mean the prompt could
+    never tell the model anything about this machine, which is the defect
+    tests/test_capabilities.py exists for.
+    """
     from app.core.brain import Brain
     from app.core.system_prompt import SYSTEM_PROMPT
     b = Brain()
@@ -131,7 +145,8 @@ def test_generate_response_passes_system_prompt():
         b.generate_response("tell me a joke")
 
     call_kwargs = mock_client.messages.create.call_args
-    assert call_kwargs.kwargs.get("system") == SYSTEM_PROMPT
+    system = call_kwargs.kwargs.get("system")
+    assert system.startswith(SYSTEM_PROMPT), "the immutable rules must be sent unchanged"
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +174,48 @@ def test_generate_response_falls_back_on_api_error():
 
     assert result.used_api is False
     assert result.error is not None
-    assert "401" in result.error
+    assert result.error.category is not None
+    assert result.error.correlation_id
+
+
+def test_generate_response_error_never_leaks_raw_exception_text():
+    """Regression test for the v0.2 audit's known exception-leak defect:
+    raw SDK exception text (which can carry request/response detail, or
+    in a worst case a fragment of a header/URL) must never reach
+    BrainResponse.error — only a safe category, a fixed safe message, and
+    a correlation ID for the server-side log line that has the real
+    detail. See app/core/errors.py."""
+    from app.core.brain import Brain
+    b = Brain()
+
+    sensitive_detail = (
+        "Connection failed to https://api.anthropic.com/v1/messages "
+        "with Authorization: Bearer sk-ant-api03-REALSECRETVALUE123 "
+        "(local trace: /home/realuser/.config/jarvis/secrets.json line 42)"
+    )
+
+    with patch("app.core.brain.settings") as s, \
+         patch("anthropic.Anthropic") as mock_anthropic_cls:
+        s.has_anthropic_key = True
+        s.anthropic_api_key = "sk-ant-api03-REALSECRETVALUE123"
+        s.jarvis_ai_provider = "anthropic"
+        s.jarvis_ai_model = "claude-haiku-4-5-20251001"
+        s.jarvis_ai_max_tokens = 250
+        s.jarvis_ai_timeout_seconds = 20
+
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = Exception(sensitive_detail)
+
+        result = b.generate_response("hello")
+
+    assert result.error is not None
+    safe_json = result.error.model_dump_json()
+    assert "sk-ant-api03-REALSECRETVALUE123" not in safe_json
+    assert "/home/realuser/.config/jarvis/secrets.json" not in safe_json
+    assert "Bearer" not in safe_json
+    assert result.error.correlation_id  # present, so the real log line can be found
+    assert result.error.category  # a stable typed category, not free text
 
 
 def test_generate_response_falls_back_on_timeout():
@@ -184,6 +240,38 @@ def test_generate_response_falls_back_on_timeout():
 
     assert result.used_api is False
     assert result.error is not None
+    assert result.error.category.value == "provider_timeout"
+
+
+def test_brain_response_transitions_through_thinking_state():
+    """A regression test for a real gap found while building push-to-talk:
+    RuntimeState.THINKING was defined in the state machine but nothing
+    ever actually transitioned into it. Any command that falls through to
+    the AI (typed or voice-transcribed) must now visibly pass through it —
+    proven via the actual published event, not just the final state."""
+    from app.core.brain import Brain
+    from app.core.events import EventType, event_bus
+    from app.core.router import CommandRouter
+    from app.core.runtime_state import RuntimeState, runtime
+    from app.core.tool_registry import ToolRegistry
+
+    runtime.force_state(RuntimeState.STANDBY)
+    last_seq = event_bus.latest_seq()
+    b = Brain()
+    with patch("app.core.brain.settings") as s, patch("db.database.get_db") as mock_db:
+        s.has_anthropic_key = False
+        s.jarvis_ai_provider = "anthropic"
+        mock_db.return_value.add_conversation = MagicMock()
+        router = CommandRouter(ToolRegistry(), brain=b)
+        router.route("a completely unrouted question")
+
+    assert runtime.state == RuntimeState.STANDBY  # back to rest afterward
+    new_events = event_bus.since(last_seq)
+    thinking_events = [
+        e for e in new_events
+        if e.type == EventType.RUNTIME_STATE and e.payload.get("to") == "thinking"
+    ]
+    assert len(thinking_events) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -297,8 +385,9 @@ def test_brain_response_stored_in_db():
 def api_client():
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
     with TestClient(jarvis_app, raise_server_exceptions=True) as client:
-        yield client
+        yield prime_session(client)
 
 
 def test_api_command_ai_response(api_client):

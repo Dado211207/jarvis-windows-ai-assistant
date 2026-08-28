@@ -1,11 +1,66 @@
 # JARVIS — Personal Windows AI Assistant
 
-> Phase 5: Action Approval System — risky actions require explicit confirmation before execution.
+> v0.2: Safe Voice Command Center & Windows Action Runtime — every action is
+> classified by risk, policy-gated, and recorded in a persisted audit trail
+> before it ever touches your system.
 
 JARVIS is a local Windows AI assistant that brings together PC automation,
 memory, system monitoring, voice output, and Claude AI —
 all running privately on your machine, never in the cloud unless you choose to
 enable it.
+
+---
+
+## v0.2 — Safe Voice Command Center & Windows Action Runtime
+
+This milestone adds the pipeline every command actually flows through, and
+makes it visible: **user input → deterministic routing → risk
+classification → policy decision → optional approval → execution → audit
+record → real-time dashboard update.** Nothing here replaces the Phase 5
+approval system below — it is built on top of it.
+
+**What's implemented and tested:**
+
+- **Runtime state machine** (`app/core/runtime_state.py`) — one
+  authoritative "what is JARVIS doing right now" model
+  (`booting`/`standby`/`listening`/`thinking`/`awaiting_approval`/`executing`/`speaking`/`error`/`offline`),
+  every transition validated and turned into an event.
+- **Typed tool contract + policy engine** (`app/core/policy.py`,
+  `app/core/models.py`) — a five-tier `RiskLevel`
+  (`read_only`/`reversible`/`sensitive`/`destructive`/`blocked`) drives one
+  policy decision (`auto_execute`/`require_approval`/`deny`); tools may
+  declare a Pydantic `input_model` validated before the handler ever runs.
+- **Persisted action audit trail** (`app/core/action_lifecycle.py`, new
+  `action_lifecycle` table) — every proposed action, across every risk
+  tier, gets a durable record: tool, risk, policy reason, redacted input,
+  timestamps, result, duration. Additive migration — your existing
+  `memories`/`conversations`/`action_logs` data and the live approval
+  queue are untouched.
+- **Real-time WebSocket event stream** (`GET /ws/events`) — typed,
+  read-only events (runtime state changes, action proposals, approval
+  changes, results) with Origin validation and a bounded-backoff
+  reconnect. The topbar shows connected / reconnecting / offline; the
+  Actions page updates live when a pending action changes anywhere, not
+  just from a button click on that page.
+- **New tool: `read_clipboard`** — reads the current text clipboard.
+  Always SENSITIVE / approval-required; content is shown once to the
+  approving caller and never appears in a log line, the audit trail, or a
+  WebSocket event.
+- **Security fixes** — the dashboard's CORS `allow_origins` previously
+  used glob patterns (`"http://127.0.0.1:*"`) that Starlette's
+  `CORSMiddleware` never actually matches (it compares by exact string);
+  this is now a real, working allowlist shared with the new WebSocket's
+  own Origin check.
+- **Genuine concurrency tests** — the existing double-execution guard is
+  now also proven under real multi-threaded contention, not only
+  sequential double-calls (`tests/test_concurrency.py`).
+
+**Deferred (named honestly, not silently skipped):** wake-word speech
+recognition, a full visual redesign, an automated Playwright/axe browser-test
+suite, and a Windows CI smoke job. Push-to-talk speech recognition and the
+Ollama provider are implemented; optional double-clap activation measures
+sound levels only while explicitly enabled. See `docs/audit-v0.2.md` for the baseline audit and
+`docs/THREAT_MODEL.md` for exactly what is and is not protected.
 
 ---
 
@@ -57,6 +112,10 @@ Open **http://127.0.0.1:5555/ui/** in any browser while JARVIS API is running.
 | Voice | `/ui/voice` | TTS status and controls |
 | Help | `/ui/help` | Quick start guide and command reference |
 
+Every page connects to the v0.2 real-time event stream (`GET /ws/events`) —
+the topbar shows a live connected / reconnecting / offline indicator and the
+current runtime state.
+
 The dashboard is **local-only** — it never exposes your API key to the browser
 and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 
@@ -83,10 +142,10 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 | Local fallback when no API key | ✅ |
 | Windows installer scripts | ✅ |
 | Pytest test suite | ✅ |
-| TTS voice output (pyttsx3, local/offline) | ✅ |
+| TTS voice output (local voices by default; optional ElevenLabs cloud voice) | ✅ |
 | Voice CLI commands (speak on/off/test/status) | ✅ |
 | Voice API endpoints (`/voice/status`, `/voice/speak`, `/voice/stop`) | ✅ |
-| Local browser dashboard (8 pages, dark UI) | ✅ |
+| Local browser dashboard (7 pages, dark UI) | ✅ |
 | Dashboard chat page (calls `POST /command`) | ✅ |
 | Dashboard memory browser | ✅ |
 | Dashboard TTS controls | ✅ |
@@ -109,19 +168,28 @@ and only binds to `127.0.0.1`. No external CDNs, no analytics, no tracking.
 | Command | What it does | Risk |
 |---|---|---|
 | `clear logs` | Clears all action log entries from the database | Medium |
+| `read clipboard` (or `clipboard`, `show clipboard`) | Reads the current text clipboard contents | Medium (v0.2: SENSITIVE) |
 
 ## What is NOT included (current alpha)
 
 The following are **not** in the current release. Some are planned for later phases with explicit user confirmation and safety controls; others are permanently excluded.
 
 **Planned later (with explicit user permission and safety controls):**
-- Push-to-talk voice input (Phase 7 — approval-gated, no always-listening)
-- Screen intelligence / OCR — on user request only (Phase 7)
-- Browser automation with approval gate (Phase 8)
-- Controlled computer-use actions with preview + confirmation (Phase 9)
+- Screen intelligence / OCR — on user request only (Phase 8)
+- Browser automation with approval gate (Phase 9)
+- Smart home, health and trading integrations (Phase 10)
+
+**Session actions that will not be added:** JARVIS can lock the screen and
+nothing else. Sign out, restart, sleep and shut down all end running
+programs and can lose unsaved work in other applications; locking cannot.
+See `app/desktop/session.py`.
 
 **Permanently excluded:**
-- Always-listening / wake word (no microphone open in the background, ever)
+- Wake-word speech recognition. Push-to-talk voice input **is** included:
+  one recording per button press, started and stopped by the user. Optional
+  double-clap activation is separate: when explicitly enabled, it keeps the
+  microphone open to measure sound levels only. It never recognises words,
+  records audio, or sends microphone data anywhere, and Privacy Mode stops it.
 - Email sending without an approval flow
 - AnyDesk / remote control
 - Any network exposure (API binds to `127.0.0.1` only, never `0.0.0.0`)
@@ -136,27 +204,45 @@ The following are **not** in the current release. Some are planned for later pha
 
 - Python 3.11+
 - Windows 10/11 (for app launcher and screenshots; CLI/API work cross-platform)
+- **Microsoft Edge WebView2 Runtime**, for the desktop window. It ships
+  with Windows 11 and with recent Windows 10, and the installer fetches
+  and installs it from Microsoft if it is missing — so this is a
+  dependency to know about rather than one to go and get. It is a shared
+  Windows component: JARVIS never removes it, even when it installed it.
+  The double-clap listener and push-to-talk both run inside that
+  WebView2 window, which is why they stop when JARVIS is quit.
 
 ---
 
 ## Installation
 
-### Windows (recommended)
+### Windows — the installer
 
-```bat
-git clone https://github.com/dado211207/jarvis-windows-ai-assistant.git
-cd jarvis-windows-ai-assistant
-installer\JARVIS_SETUP.bat
-```
+**`JARVIS-Setup-v<version>-x64.exe` is how JARVIS is installed.** It is a
+per-user Inno Setup installer: it needs no administrator rights, installs
+to `%LOCALAPPDATA%\Programs\JARVIS`, keeps your data separately in
+`%LOCALAPPDATA%\JARVIS`, and adds a Start Menu entry. Python is not
+required — the runtime is inside the executable.
 
-Or with PowerShell:
+Run it, then follow the first-run wizard (a preferred name and, if you
+want AI replies, an Anthropic API key). Everything else — the voice, the
+speech model, local AI — is set up from inside the application when you
+choose to.
 
-```powershell
-cd jarvis-windows-ai-assistant
-.\installer\install.ps1
-```
+`docs/WINDOWS_INSTALLER.md` has the full walkthrough, including how to
+verify the download's SHA-256 before running it.
 
-### Manual / Linux / macOS (development)
+> **v0.2.0-rc1 is a release candidate, not a published release.** There
+> is no GitHub Release and no tag for it. Builds are produced by the
+> **Windows Installer** workflow and attached to that workflow run, which
+> requires a signed-in account with read access to this repository and
+> expires after 30 days. The build is also **unsigned**, so Windows
+> SmartScreen will warn about an unrecognised publisher.
+
+### From source (developers only)
+
+Not the way to install JARVIS. This is for working *on* it — the
+installed application above is a packaged build of this same tree.
 
 ```bash
 git clone https://github.com/dado211207/jarvis-windows-ai-assistant.git
@@ -167,30 +253,12 @@ pip install -r requirements.txt
 cp .env.example .env               # optional: add ANTHROPIC_API_KEY
 ```
 
----
-
-## First Run (Windows ZIP)
-
-If you downloaded the release ZIP, use the included helper scripts — no
-Python installation required.
-
-| Script | What it does |
-|---|---|
-| `SETUP_ENV.bat` | Creates `.env` from `.env.example`; prints API key setup instructions |
-| `START_JARVIS.bat` | Starts the JARVIS CLI assistant |
-| `START_JARVIS_API.bat` | Starts the local FastAPI server on `127.0.0.1:5555` |
-| `QUICKSTART.md` | Step-by-step guide for new users |
-
-**Quick steps:**
-
-1. Extract the ZIP (e.g. to `C:\JARVIS\`).
-2. Double-click `SETUP_ENV.bat` — follow the on-screen instructions to
-   add your Anthropic API key to `.env` (optional; required only for
-   natural-language AI responses).
-3. Double-click `START_JARVIS.bat`.
-
-The API key is **never** included in the ZIP and is stored only in your
-local `.env` file.
+`installer\JARVIS_SETUP.bat` and `installer\install.ps1` are development
+helpers with the same status: they prepare a source checkout on Windows,
+and they are not an installation method. Neither are the
+`START_JARVIS*.bat` / `SETUP_ENV.bat` scripts in the repository root,
+which date from the v0.1 alpha ZIP and only make sense inside a source
+tree.
 
 ---
 
@@ -239,6 +307,9 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | `disk space` | Show disk usage (used / free / total) |
 | `network status` | Show hostname and local IP (read-only, no scanning) |
 | `battery status` | Show battery / power status |
+| `what time is it` | Local date and time, read from this computer's clock |
+| `top processes` | What is using the most memory right now — a snapshot, nothing is recorded |
+| `lock screen` | Lock Windows, exactly like Win+L. Nothing closes and no work is lost |
 | `screenshot` | Capture screen → `data/screenshots/` |
 | `take screenshot` | Same as above |
 
@@ -278,24 +349,35 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | Command | What it does |
 |---|---|
 | `create note <text>` | Save a timestamped note to `~/Documents/JARVIS_Notes/` |
+| `list notes` | List saved notes, newest first |
+| `read note <filename>` | Read one note back (only from the notes folder; a path is refused) |
 | `memory add <text>` | Save a note to local SQLite memory |
 | `memory search <query>` | Search saved memories |
 
-### Voice (TTS)
+### Voice
 
 | Command | What it does |
 |---|---|
-| `speak on` | Enable TTS voice output for this session |
-| `speak off` | Disable TTS voice output |
-| `speak status` | Show TTS engine status |
+| `speak on` | Speak replies out loud. The choice is remembered across restarts |
+| `speak off` | Stop speaking replies |
+| `speak status` | Show whether replies are spoken, and the speech engine status |
 | `speak test` | Speak a test phrase aloud |
 | `stop speaking` | Stop current speech immediately |
+
+Speech-to-text is local, opt-in push-to-talk. TTS uses the local Kokoro/Windows
+chain by default. OpenAI and ElevenLabs are separate, explicitly selected
+AI-generated cloud voice providers: both require internet access, send only the
+text being spoken, and may incur API usage cost. Privacy mode blocks them.
+Double-clap activation is separately opt-in background microphone-level
+monitoring while JARVIS runs; it measures loudness without recording or
+transcribing words.
 
 ### Approval-required
 
 | Command | What it does |
 |---|---|
 | `clear logs` | Delete all action log entries — requires confirmation |
+| `read clipboard` | Read the current text clipboard — requires confirmation (v0.2) |
 
 ### API endpoints
 
@@ -304,13 +386,26 @@ Then open **http://127.0.0.1:5555/docs** for the interactive Swagger UI.
 | GET | `/` | Status JSON |
 | GET | `/health` | Health check |
 | POST | `/command` | `{"command": "system status"}` |
-| GET | `/tools` | List all registered tools |
+| GET | `/tools` | List all registered tools (v0.2: includes `risk` and `input_model` JSON schema) |
 | GET | `/memory/search?q=...` | Search memory |
 | GET | `/memory` | List recent memories |
 | GET | `/logs` | Recent action logs |
-| GET | `/voice/status` | TTS enabled / engine / available |
-| POST | `/voice/speak` | `{"text": "hello"}` — speak text (requires TTS enabled) |
+| GET | `/actions/pending` | List pending approval actions |
+| GET | `/actions/{id}` | Get one pending/resolved action by ID |
+| POST | `/actions/{id}/confirm` | Confirm and execute a pending action |
+| POST | `/actions/{id}/cancel` | Cancel a pending action |
+| GET | `/voice/status` | Whether replies are spoken / engine / available |
+| POST | `/voice/output` | `{"enabled": true}` — turn spoken replies on or off; remembered |
+| POST | `/voice/speak` | `{"text": "hello"}` — speak text (refused when speech is off) |
 | POST | `/voice/stop` | Stop current speech |
+| GET | `/voice/stt-status` | Push-to-talk readiness (local speech recognition) |
+| POST | `/chat/stream` | `{"command": "..."}` — the chat answer, streamed as server-sent events |
+| POST | `/chat/stop` | Stop a generation in progress |
+| POST | `/conversation/reset` | Delete stored chat history (leaves the action audit trail alone) |
+| GET | `/providers` | Which AI providers were actually detected, and which is selected |
+| POST | `/providers/select` | `{"provider": "ollama", "model": "llama3:latest"}` — refuses anything not detected |
+| GET | `/diagnostics` | Copyable diagnostic report — never contains a credential |
+| WS | `/ws/events` | **(v0.2)** Real-time typed event stream — read-only, optional `?since=<seq>` to resume after a reconnect. See `app/api/ws.py`. |
 
 ---
 
@@ -331,7 +426,7 @@ JARVIS_AI_MODEL=            # Leave blank for default (claude-haiku-4-5-20251001
 JARVIS_AI_MAX_TOKENS=250
 JARVIS_AI_TIMEOUT_SECONDS=20
 
-# Phase 3 TTS / voice output (local/offline — no cloud API required)
+# Phase 3 TTS / voice output (local default; optional cloud providers are configured in-app)
 JARVIS_TTS_ENABLED=false    # Set to true to enable voice output
 JARVIS_TTS_ENGINE=pyttsx3
 JARVIS_TTS_RATE=175         # Words per minute
@@ -364,9 +459,29 @@ pytest
 |---|---|---|
 | Permissions | `tests/test_permissions.py` | All 3 levels, blocked keywords |
 | Router | `tests/test_router.py` | All command patterns |
-| Tool registry | `tests/test_tool_registry.py` | Register, execute, error handling |
+| Tool registry | `tests/test_tool_registry.py` | Register, execute, error handling, typed input validation |
 | Smoke | `tests/test_smoke.py` | Imports, routing, registry, API endpoints |
 | Brain / AI | `tests/test_brain.py` | is_configured, AI mock, fallback, DB storage, API |
+| Runtime state (v0.2) | `tests/test_runtime_state.py` | Every legal/illegal transition, event publication |
+| Policy engine (v0.2) | `tests/test_policy.py` | Full risk → decision matrix, legacy mapping, determinism |
+| Redaction (v0.2) | `tests/test_redaction.py` | Sensitive-key masking, truncation |
+| Action lifecycle (v0.2) | `tests/test_action_lifecycle.py` | Real SQLite round-trip, idempotency, terminal-state guard |
+| WebSocket stream (v0.2) | `tests/test_ws.py` | Origin allowlist, snapshot-on-connect, `?since=` resume |
+| Origin allowlist (v0.2) | `tests/test_origin.py` | CORS/WS shared allowlist |
+| Clipboard tool (v0.2) | `tests/test_clipboard.py` | Content never in logs/messages, graceful degradation |
+| Pipeline integration (v0.2) | `tests/test_pipeline_integration.py` | Real end-to-end dispatch → policy → lifecycle → events |
+| Concurrency (v0.2) | `tests/test_concurrency.py` | Real multi-threaded races, not just sequential double-calls |
+| Migration compatibility (v0.2) | `tests/test_migration_compatibility.py` | Upgrading an existing pre-v0.2 database preserves data |
+| AI providers | `tests/test_ai_providers.py` | Per-cause failure classification, streaming, cancellation, Ollama model honesty, no model download |
+| Chat pipeline | `tests/test_chat_pipeline.py` | Honest error messages, bounded history, privacy gating, streaming/stop/reset endpoints |
+| Provider selection | `tests/test_provider_selection.py` | Preferences allowlist, precedence, refusing an undetected provider or model |
+| Voice output | `tests/test_voice_output.py` | One flag across every surface, server-side gate, approval prompts never spoken |
+| Phase 7 actions | `tests/test_phase7_actions.py` | Note containment against real files and symlinks, clock, process snapshot, lock |
+| Action history | `tests/test_action_history.py` | Audit trail exposure, filtering, totals, no secret ever served |
+| Memory & privacy | `tests/test_memory_privacy.py` | Save/delete from the page, approval-gated bulk clear, stored-data counts |
+| About & updates | `tests/test_about_and_updates.py` | Version consistency across three files, no automatic update check, licence notices |
+| Security invariants | `tests/test_security_invariants.py` | Every mutating endpoint token-gated, no shell/eval/pickle, no credential literal, approval gate holds |
+| Browser + accessibility | `tests/test_playwright_e2e.py` | Real Chromium: streaming, Stop, spoken replies, skip link, heading order, axe |
 
 ### CI pipeline
 
@@ -383,104 +498,48 @@ Workflow file: `.github/workflows/ci.yml`
 
 ---
 
-## Windows build artifact
+## Builds
 
-A downloadable Windows build is produced automatically by GitHub Actions on every
-pull request and push to `main`.
+Two workflows produce Windows output, and they are not the same thing.
 
-### How to download
+| Workflow | Produces | Who it is for |
+|---|---|---|
+| `windows-installer.yml` | `JARVIS-Setup-v<version>-x64.exe` + its `.sha256` | **The installer.** What a person installs. |
+| `windows-build.yml` | An unpacked `JARVIS\` folder | A developer wanting the frozen tree without installing |
 
-1. Go to the [**Actions** tab](../../actions/workflows/windows-build.yml) in the
-   repository.
-2. Click the latest successful **Windows Build** run.
-3. Scroll to **Artifacts** and download **JARVIS-Windows-Build.zip**.
-4. Unzip it — you get a `JARVIS\` folder containing `JARVIS.exe`.
+Both attach their output to the workflow run that produced it. Neither
+publishes anything.
 
-### What is included
+### Getting the installer
 
-| Item | Included |
-|---|---|
-| `JARVIS.exe` and its runtime libraries | ✅ |
-| `README.md` | ✅ |
-| `QUICKSTART.md` | ✅ |
-| `.env.example` | ✅ |
-| `START_JARVIS.bat` | ✅ |
-| `START_JARVIS_API.bat` | ✅ |
-| `SETUP_ENV.bat` | ✅ |
-| Python runtime (embedded) | ✅ |
-| All `app/` and `db/` modules | ✅ (compiled into the bundle) |
+Full walkthrough, including checksum verification: **[`docs/WINDOWS_INSTALLER.md`](docs/WINDOWS_INSTALLER.md)**.
 
-### What is NOT included
+In short — open **Actions → Windows Installer**, pick the run you were
+pointed at, download the **JARVIS-Windows-Installer** artifact, and check
+its SHA-256 against the bundled `.sha256` before running it.
 
-| Item | Excluded |
-|---|---|
-| `.env` / `ANTHROPIC_API_KEY` | ✅ Never included |
-| `data/jarvis.db` (live database) | ✅ Created fresh on first run |
-| `data/logs/` | ✅ Created fresh on first run |
-| `data/screenshots/` | ✅ Created on demand |
-| Test files | ✅ Not bundled |
-| `.git` history | ✅ Not bundled |
+### Who can download a build
 
-### First-time setup on Windows
+This repository is public; its workflow artifacts are not. GitHub serves
+an artifact download only to an account **signed in with read access to
+the repository**, from that run's own page, over a short-lived signed
+URL. Anonymous visitors cannot fetch it.
 
-```bat
-REM 1. Unzip JARVIS-Windows-Build.zip into a folder, e.g. C:\JARVIS\
-REM 2. Copy .env.example to .env and add your API key (optional):
-copy C:\JARVIS\JARVIS\.env.example C:\JARVIS\JARVIS\.env
-REM    Then edit .env and add: ANTHROPIC_API_KEY=sk-ant-...
-REM 3. Run JARVIS:
-C:\JARVIS\JARVIS\JARVIS.exe
-```
+Artifacts also **expire** — 30 days for the installer, 14 for the test
+logs — so a link to one is worth nothing a month later. That is why no
+document here links to a specific build.
 
-JARVIS runs entirely on your local machine. No data is sent to the network unless
-you configure an `ANTHROPIC_API_KEY` for AI responses. The API key is **never**
-included in the build artifact.
+### Not a release
 
-> **Note:** This is a development/testing artifact, not a signed Windows installer.
-> Windows SmartScreen may warn on first launch — click **More info → Run anyway**.
-> A signed installer is planned for a later phase.
+There is no GitHub Release and no tag for v0.2.0-rc1, and this pass
+creates neither. Builds are **unsigned**, so SmartScreen warns about an
+unrecognised publisher — accurately, which is why the checksum step
+matters. Signing and an auto-updater are both deliberately out of scope;
+see `docs/THREAT_MODEL.md`.
 
-Workflow file: `.github/workflows/windows-build.yml`
-
----
-
-## GitHub Releases
-
-Versioned Windows ZIPs are published to **GitHub Releases** via a separate
-manual workflow.
-
-### How to create a release
-
-1. Go to **GitHub → Actions → Release** workflow.
-2. Click **Run workflow**, enter a version tag (e.g. `v0.1.0`), click **Run**.
-3. The workflow runs all tests, builds the executable, and publishes a release.
-4. The release appears under **GitHub → Releases** with the ZIP attached.
-
-### Release asset name
-
-```
-JARVIS-Windows-v0.1.0.zip
-```
-
-### What is and is not in the release ZIP
-
-The release ZIP includes the same content as the Actions build artifact,
-plus the first-run helper scripts and quick-start guide.
-The `ANTHROPIC_API_KEY` and `.env` are **never bundled**.
-Run `SETUP_ENV.bat` after extracting to create your local `.env`.
-
-### Security and limitations
-
-- The API key is **never** included in any release asset.
-- FastAPI binds to `127.0.0.1` only.
-- Releases are **unsigned** — Windows SmartScreen may warn on first launch.
-  Click **More info → Run anyway**.
-- A signed installer is planned for a later phase.
-
-See [`docs/release-process.md`](docs/release-process.md) for the full release
-checklist and version naming guide.
-
-Workflow file: `.github/workflows/release.yml`
+The v0.1 alpha tags (`v0.1.0-alpha` … `v0.1.6-alpha`) are historical.
+They predate the installer and shipped a ZIP with batch-file helpers;
+`docs/release-process.md` describes that older flow.
 
 ---
 
@@ -492,30 +551,73 @@ app/
   config.py         — Pydantic settings
   logging_config.py — Structured logging setup
   core/
-    brain.py        — Orchestrator + Claude AI integration
-    router.py       — Command → tool mapping
-    tool_registry.py — Central tool registry
-    permissions.py  — Permission enforcement
-    memory.py       — Memory tool wrappers
-    models.py       — Shared Pydantic models
-    system_prompt.py — JARVIS AI safety constraints
+    brain.py            — Orchestrator + Claude AI integration
+    router.py           — Command → tool mapping; v0.2 pipeline dispatch
+    tool_registry.py    — Central tool registry; v0.2 input_model validation
+    permissions.py      — Permission enforcement (SAFE/APPROVAL_REQUIRED/BLOCKED)
+    policy.py            (v0.2) — Risk classification + the policy engine
+    runtime_state.py      (v0.2) — Authoritative runtime state machine
+    events.py             (v0.2) — Typed event envelope + in-memory event bus
+    action_lifecycle.py   (v0.2) — Persisted action audit trail
+    redaction.py           (v0.2) — Sensitive-key masking for logs/audit/events
+    pending_actions.py  — Live in-memory approval queue (unchanged by v0.2)
+    memory.py           — Memory tool wrappers
+    models.py           — Shared Pydantic models (incl. v0.2 RiskLevel, ActionLifecycleStatus)
+    system_prompt.py    — JARVIS AI safety constraints
+    ai/                 — Provider contract, Anthropic and Ollama implementations
+    conversation.py     — History sent to a provider, persistence, and reset
+    generation.py       — Live generations, so one can be stopped
+    providers.py        — Provider detection: what this machine can really use
+    preferences.py      — Small allowlisted store for choices made in the app
+    credentials.py      — API key in the OS credential store (never a file)
+    diagnostics.py      — The copyable report, built by allowlist
   desktop/
     apps.py         — App launcher (allowlist)
+    web.py          — Safe URL opener
+    folders.py      — Safe folder opener (allowlisted roots)
+    notes.py        — Notes: create, list, read (confined to JARVIS_Notes)
     screenshots.py  — Screenshot tool
-    system.py       — System status (psutil)
-    windows.py      — Windows utilities
+    system.py       — System status, clock, memory snapshot (psutil)
+    session.py      — Lock the screen; the only session action that exists
+    maintenance.py  — Log clearing (approval-required)
+    clipboard.py     (v0.2) — read_clipboard (SENSITIVE, approval-required)
+  voice/
+    tts.py          — Local-default speech output plus explicitly selected cloud providers
+    stt.py          — Push-to-talk speech recognition (local, opt-in)
+  launcher/         — Desktop shell: tray, server child, native window child
+  ui/
+    routes.py       — Dashboard pages
+    templates/, static/ — Jinja2 + vanilla JS/CSS, no external CDNs
   api/
-    server.py       — FastAPI app
+    server.py       — FastAPI app; CORS + lifespan runtime-state wiring
     routes.py       — Route handlers
+    actions.py      — Approval confirm/cancel; v0.2 lifecycle sync
+    chat.py         — Streaming chat, stop-generation, conversation reset
+    origin.py         (v0.2) — Shared CORS/WebSocket origin allowlist
+    ws.py             (v0.2) — GET /ws/events real-time stream
 db/
-  database.py       — SQLite access layer
-  migrations.py     — Schema creation
+  database.py       — SQLite access layer; v0.2 action_lifecycle CRUD
+  migrations.py     — Schema creation; v0.2 additive action_lifecycle table
 data/               — Runtime data (gitignored except .gitkeep)
-tests/              — Pytest suite
+tests/              — Pytest suite (see "What is tested" above)
 installer/          — Windows setup scripts
-docs/               — Developer process documentation
-run_jarvis.py       — PyInstaller entry point (--api flag starts FastAPI server)
+docs/
+  audit-v0.2.md     — Phase 0 baseline audit for this milestone
+  INSPIRATION.md    — Research sources consulted, concepts adopted/rejected, licenses
+  THREAT_MODEL.md   — What is and is not protected, stated honestly
+  release-process.md — Release checklist and version naming guide
+  clean-room-and-voice-identity.md — What may and may not be taken from the
+                       reference project, and what JARVIS's voice is and is not
+  double-clap-activation.md — The one exception to the no-continuous-listening
+                       rule: how narrow it is, how it was measured, what it cannot do
+  dependency-review.md — Every dependency, its licence, and what this pass added
+  mobile-companion-architecture.md — Considered and deliberately not built
+  physical-pc-checklist.md — The 34 things no automated run can verify;
+                       this release candidate is not finished until they pass
+run_jarvis.py       — PyInstaller entry point (default: windowed launcher + tray;
+                       --api: headless FastAPI server only; --cli: interactive REPL)
 QUICKSTART.md       — First-run guide (included in release ZIP)
+SECURITY.md         — Short security overview, points to docs/THREAT_MODEL.md
 START_JARVIS.bat    — CLI launcher (included in release ZIP)
 START_JARVIS_API.bat — API launcher (included in release ZIP)
 SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
@@ -527,10 +629,20 @@ SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 
 - The API **only binds to 127.0.0.1** — it is never exposed to the network.
 - The app launcher uses a **strict allowlist** — arbitrary executables cannot be launched.
-- All tools pass through a **permission check** before execution.
+- All tools pass through a **permission check** before execution; v0.2 adds a
+  five-tier risk classification and a single policy engine
+  (`app/core/policy.py`) on top of that, not instead of it.
 - Blocked tool categories (password extraction, keylogging, etc.) are
   **not implemented** and are permanently refused by the permission system.
 - No secrets are ever committed to version control.
+- **v0.2 fix:** the dashboard's CORS `allow_origins` previously used glob
+  patterns that were never actually enforced (see the v0.2 section above) —
+  this is now a real, working allowlist.
+- See **[`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)** for the full,
+  honest picture — including what is explicitly **not** protected (no OS
+  sandboxing, no encrypted storage, no protection from a malicious local
+  admin, and more). See **[`SECURITY.md`](SECURITY.md)** for the short
+  version.
 
 ---
 
@@ -540,10 +652,16 @@ SETUP_ENV.bat       — First-run .env setup helper (included in release ZIP)
 |---|---|---|
 | 1 | Foundation: CLI, router, tools, API, SQLite | ✅ Done |
 | 2 | Claude AI integration (natural-language fallback, conversation memory) | ✅ Done |
-| 3 | TTS voice output (pyttsx3, local/offline, output-only — no microphone) | ✅ Done |
-| 4 | Local browser dashboard (8 pages, dark UI, Jinja2 + vanilla JS) | ✅ Done |
+| 3 | TTS voice output (local default; optional explicit OpenAI/ElevenLabs cloud voices) | ✅ Done |
+| 4 | Local browser dashboard (7 pages, dark UI, Jinja2 + vanilla JS) | ✅ Done |
 | 5 | Action approval system (pending / confirm / cancel, Actions UI) | ✅ Done |
 | 6 | Safe Windows actions expansion (URL opener, folders, notes, disk, network, battery) | ✅ Done |
-| 7 | Screen intelligence (OCR, on-request only — explicit user permission required) | Planned |
-| 8 | Browser automation (approval-gated, no autonomous browsing) | Planned |
-| 9 | Smart home, health tracking, optional trading alerts | Planned |
+| 7 | Professional UI/UX polish (sidebar layout, design system, metric cards) | ✅ Done |
+| 8 | Screen intelligence (OCR, on-request only — explicit user permission required) | Planned |
+| 9 | Browser automation (approval-gated, no autonomous browsing) | Planned |
+| 10 | Smart home, health tracking, optional trading alerts | Planned |
+
+> **v0.2** (infrastructure, not a numbered phase): Safe Voice Command
+> Center and Windows Action Runtime — see the section near the top of this
+> README, `docs/audit-v0.2.md`, and `docs/THREAT_MODEL.md`. Phase 8/9/10's
+> planned scope above is unchanged by it.

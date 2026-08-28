@@ -23,7 +23,7 @@
   /* Status */
   --ok:              #22c55e;
   --ok-soft:         rgba(34, 197, 94, 0.12);
-  --err:             #ef4444;
+  --err:             #f87171;
   --err-soft:        rgba(239, 68, 68, 0.12);
   --warn:            #f59e0b;
   --warn-soft:       rgba(245, 158, 11, 0.12);
@@ -56,8 +56,13 @@ body {
   display: flex;
 }
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { color: var(--accent-hover); text-decoration: underline; }
+/* Underlined by default so links embedded in a run of body text (Help
+   page's command list, prose paragraphs) are distinguishable by more
+   than color alone (WCAG 1.4.1 / axe "link-in-text-block"). .sidebar-link
+   opts back out below — nav items already convey their affordance
+   through icon + position + active-state, not surrounding text. */
+a { color: var(--accent); text-decoration: underline; }
+a:hover { color: var(--accent-hover); }
 
 /* ── Sidebar ────────────────────────────────────────────────────────── */
 .sidebar {
@@ -259,6 +264,15 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   color: var(--text);
   flex: 1;
   min-width: 0;
+  /* min-width:0 lets this flex item shrink below its text's natural
+     width (needed so .topbar-indicators keeps its space) — but without
+     these three, the overflowing text paints past its own shrunk box
+     instead of stopping at it, visually colliding with the indicators
+     next to it. Real, visible at 200% browser zoom / narrow desktop
+     widths above the 768px breakpoint where the topbar doesn't wrap. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar-indicators {
@@ -324,13 +338,42 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 }
 .card:hover { border-color: var(--border-bright); }
 
+/* Card titles are <h2> elements so screen-reader users can navigate a
+   page by its sections; the styling below is what makes them read as
+   small labels rather than headings visually. The margin reset matters
+   because a bare h2 would otherwise push every card open. */
 .card-title {
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--text-muted);
+  margin: 0;
+  line-height: 1.4;
 }
+
+/* Off-screen until focused. Not display:none — that would remove it from
+   the tab order entirely, which is the opposite of the point. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 1000;
+  padding: 0.6rem 1rem;
+  background: var(--accent);
+  color: #04121a;
+  font-weight: 600;
+  border-radius: 0 0 var(--radius-sm) 0;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+/* The skip target itself must not draw a focus ring around the whole
+   page when it receives focus programmatically. */
+.main:focus { outline: none; }
 
 .card-glass {
   background: linear-gradient(135deg, rgba(0, 212, 255, 0.04) 0%, var(--surface) 100%);
@@ -457,7 +500,27 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 .btn-danger   { background: var(--err-soft); border-color: rgba(239, 68, 68, 0.45); color: var(--err); }
 .btn-danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.22); border-color: var(--err); box-shadow: 0 0 10px rgba(239, 68, 68, 0.12); }
 
+.btn-secondary { background: var(--surface-raised); border-color: var(--border-bright); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); }
 .btn-sm { padding: 0.35rem 0.75rem; font-size: 0.78rem; }
+
+/* The folder a person chose. A Windows path can be very long, so it
+ * scrolls inside itself rather than pushing the page sideways — and it is
+ * focusable, because a container that scrolls must be reachable by
+ * keyboard to be scrolled. */
+.chosen-path {
+  margin: 0.5rem 0 0.25rem;
+  padding: 0.5rem 0.75rem;
+  font-family: var(--font-mono, ui-monospace, "Cascadia Code", Consolas, monospace);
+  font-size: 0.8125rem;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.chosen-path:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .btn-row { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 
@@ -482,6 +545,23 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 .input::placeholder { color: var(--text-subtle); }
 
 /* ── Table ─────────────────────────────────────────────────────────── */
+/* Licence text: long, pre-formatted, and not worth pushing the page
+   sideways for — it scrolls inside its own box. */
+.notices-text {
+  max-height: 22rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Cascadia Code", "Fira Mono", "Consolas", monospace;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem;
+  margin: 0;
+}
+
 .table-wrap { overflow-x: auto; }
 .table {
   width: 100%;
@@ -509,6 +589,17 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 .table tbody tr:hover td { background: rgba(255, 255, 255, 0.02); }
 
 /* ── Chat ──────────────────────────────────────────────────────────── */
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.6rem;
+  margin-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
 .chat-messages {
   min-height: 340px;
   max-height: 560px;
@@ -603,6 +694,52 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   font-size: 0.67rem;
   color: var(--text-muted);
   padding: 0.1rem 0.1rem;
+}
+
+/* Read this answer aloud. Quiet until wanted — it sits under every
+   JARVIS message and must not compete with the message itself. */
+.msg-speak {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.25rem 0.6rem;
+  margin-top: 0.1rem;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.msg-speak:hover {
+  color: var(--accent);
+  border-color: rgba(0, 212, 255, 0.4);
+  background: var(--accent-soft);
+}
+.msg-speak:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.msg-speak.is-speaking {
+  color: var(--accent);
+  border-color: rgba(0, 212, 255, 0.5);
+  background: var(--accent-soft);
+}
+.msg-speak-glyph { font-size: 0.62rem; }
+
+/* The always-speak switch, alongside the provider label in the toolbar. */
+.chat-speak-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-left: auto;
+  margin-right: 0.6rem;
 }
 
 .chat-input-row {
@@ -750,7 +887,16 @@ code, .mono {
 }
 .status-row:last-child { border-bottom: none; }
 .status-row-label { color: var(--text-muted); font-size: 0.8rem; }
-.status-row-value { font-weight: 500; }
+/* A value with no spaces in it — a download URL, a file path, a SHA-256 —
+   must break rather than push the page sideways. Caught on a 390 px
+   viewport by the browser suite's no-horizontal-overflow test the first
+   time a URL was put in one of these rows. */
+.status-row-value {
+  font-weight: 500;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
 
 /* ── Safety checklist ──────────────────────────────────────────────── */
 .checklist { list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
@@ -792,9 +938,299 @@ code, .mono {
 /* ── Responsive: hide sidebar on narrow screens ─────────────────────── */
 @media (max-width: 768px) {
   .sidebar { display: none; }
+
+  /* The topbar's 5 status indicators are fixed-width (white-space: nowrap
+     labels) and .topbar-indicators never shrinks below its content's
+     intrinsic width (the flex default). Below the sidebar breakpoint
+     their combined width exceeds narrow viewports, so let the topbar
+     wrap to a second line instead of forcing horizontal scroll. */
+  .topbar {
+    height: auto;
+    flex-wrap: wrap;
+    row-gap: 0.5rem;
+    padding: 0.6rem 1.25rem;
+  }
+  .topbar-indicators {
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+  }
+
+  /* .cmd-name is a fixed 210px non-shrinking label column (Help page's
+     command reference) — doesn't fit next to .cmd-desc in a narrow card.
+     Stack name above description instead of forcing a cramped row. */
+  .cmd-list li {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.2rem;
+  }
+  .cmd-name {
+    min-width: 0;
+  }
 }
 
 /* ── Reduced motion ─────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation: none !important; }
+}
+
+/* ── First run ───────────────────────────────────────────────────────── */
+/* Colours come from the existing :root tokens only — no new literals, so
+   this page follows the same theme as every other one.
+
+   The six-step wizard this replaced had its own step-list chrome. Two
+   fields do not need a progress indicator, and a progress indicator on
+   two fields makes them look like the start of something longer. */
+
+.setup-simple {
+  max-width: 640px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.form-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.toggle-input {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.toggle-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Sliders for the cloud voice's tuning. Sized so the number beside each
+   one stays on the same line as the control at the narrowest layout the
+   browser tests cover. */
+.range {
+  width: 9rem;
+  max-width: 45vw;
+  vertical-align: middle;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin-right: var(--space-2);
+}
+
+.range:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ══ Coding Workspace ══════════════════════════════════════════════════
+   Every colour below is a token from :root — the Phase 7 rule forbids a
+   hardcoded value here, and a new page is exactly where one creeps in.
+   Nothing in this block reaches the network: no font, no image, no CDN. */
+
+/* The permanent mode banner. Coding Workspace has powers the rest of the
+   application does not, so the page says so rather than relying on the
+   user remembering which page they are on. */
+.notice-mode {
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+}
+.notice-warn {
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+}
+
+.tablist-wrap { overflow-x: auto; margin-bottom: 1.5rem; }
+#coding-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  min-width: max-content;
+}
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  padding: 0.65rem 1rem;
+  /* 44px minimum target, as §4 requires, at every zoom level. */
+  min-height: 44px;
+  min-width: 44px;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tab-btn:hover { color: var(--text); background: var(--surface-hover); }
+.tab-btn[aria-selected="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  /* The selected tab is not distinguished by colour alone: it also carries
+     the underline and aria-selected, which is what a screen reader reads. */
+  font-weight: 600;
+}
+
+/* A path or a command line can be longer than the viewport. It scrolls
+   inside its own box so the page itself never scrolls sideways, and it is
+   focusable so a keyboard user can actually reach that scroll. */
+.path-box,
+.command-output,
+.diff-box {
+  display: block;
+  overflow-x: auto;
+  overflow-y: auto;
+  max-width: 100%;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.8125rem;
+  color: var(--text);
+  white-space: pre;
+  tab-size: 2;
+}
+.command-output, .diff-box { max-height: 22rem; }
+.path-box { white-space: pre-wrap; word-break: break-all; }
+
+.path-box:focus-visible,
+.command-output:focus-visible,
+.diff-box:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Added and removed lines carry a symbol as well as a colour, and each
+   line has an aria-label spelling out which it is — colour alone would
+   fail both §4 and a monochrome display. */
+.diff-add { color: var(--ok); display: block; }
+.diff-del { color: var(--err); display: block; }
+.diff-ctx { color: var(--text-muted); display: block; }
+
+.activity-row {
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 0;
+}
+.activity-kind {
+  color: var(--text-subtle);
+  margin: 0 0.5rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.activity-summary { color: var(--text); }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 40;
+}
+.modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  background: var(--surface-solid);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+  z-index: 41;
+}
+/* The exact thing being approved, never "this file" or "the command". */
+.approval-target {
+  font-weight: 600;
+  color: var(--text);
+  margin: 0.5rem 0 1rem;
+  overflow-wrap: anywhere;
+}
+
+.preview-shot {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-top: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.plain-list { list-style: disc; padding-left: 1.25rem; margin: 0.5rem 0; }
+.plain-list li { margin-bottom: 0.25rem; overflow-wrap: anywhere; }
+
+/* ---- Browser check ----------------------------------------------------
+ * A label/value grid rather than a table: the rows are a fixed set of
+ * facts about one check, and a two-column grid reflows to one column on a
+ * narrow window without the horizontal scroll a table would need.
+ */
+.qa-block { margin-top: 1.25rem; }
+.qa-block .card-subtitle {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 1rem 0 0.25rem;
+}
+.qa-block details { margin-top: 0.5rem; }
+.qa-block summary { cursor: pointer; color: var(--text-muted); }
+.qa-block summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.kv-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(9rem, max-content) 1fr;
+  gap: 0.25rem 1rem;
+  font-size: 0.875rem;
+}
+.kv-list li { display: contents; }
+.kv-key { color: var(--text-muted); }
+.kv-value { color: var(--text); overflow-wrap: anywhere; }
+
+@media (max-width: 520px) {
+  .kv-list { grid-template-columns: 1fr; gap: 0 0; }
+  .kv-list li { display: block; margin-bottom: 0.5rem; }
+  .kv-key { display: block; }
+}
+
+/* Requests the boundary refused. Bordered rather than coloured like an
+ * error: nothing went wrong here — the page asked, and JARVIS declined. */
+.qa-blocked {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+}
+
+.form-error { color: var(--err); font-size: 0.875rem; margin-top: 0.5rem; }
+.stack { display: flex; flex-direction: column; gap: 1rem; }
+.label {
+  display: block;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+/* Windows High Contrast. The theme replaces our colours wholesale, so
+   the selected tab and the diff markers need a non-colour signal that
+   survives it. */
+@media (forced-colors: active) {
+  .tab-btn[aria-selected="true"] { border-bottom-color: Highlight; }
+  .path-box, .command-output, .diff-box, .modal { border: 1px solid CanvasText; }
+  .diff-add::before { content: "+ "; }
+  .diff-del::before { content: "- "; }
 }

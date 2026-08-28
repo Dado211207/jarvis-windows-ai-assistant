@@ -15,10 +15,559 @@ how Claude Code sessions should work on this codebase.
 - **Register, don't hard-code.** Add new tools via the `ToolRegistry`; do not add
   elif chains to `router.py` or `brain.py`.
 
+## UI design workflow
+
+- For any non-trivial interface design, redesign or visual-quality task, use
+  `/dado-ui-design:ui-ux-pro-max` when the marketplace plugin is available, or the
+  repository fallback `/ui-ux-pro-max` otherwise.
+- Detect the actual UI stack before applying stack guidance. For JARVIS, preserve
+  keyboard access, Windows scaling, focus visibility, reduced motion, loopback-only
+  boundaries and the existing release gates.
+- Design guidance is input, not proof. Verify the implemented result with the
+  repository's real browser, accessibility, responsive and installed-product gates.
+- Never overwrite an existing persisted design system with `--force` unless the
+  user explicitly approves that overwrite.
+
+## AI provider rules (non-negotiable)
+
+- **One provider contract.** All generation goes through `app/core/ai/`.
+  Providers are constructed with a `ProviderConfig`; they never read
+  global settings, and they never raise a raw SDK exception past their
+  own boundary — only a `ProviderError` carrying an `ErrorCategory`.
+- **The failure a user reads must be the failure that happened.** A rate
+  limit, an expired key, an unreachable local server and a timeout are
+  four different problems with four different fixes. Never collapse them
+  into one message, and never tell someone to add an API key when they
+  already have one.
+- **Never claim a provider or model that was not detected.**
+  `POST /providers/select` refuses a provider that is not available and
+  an Ollama model the local instance does not report, and the refusal
+  names what *is* installed.
+- **JARVIS downloads an AI model only when a person presses the button,
+  and only from one module.** This rule used to read "JARVIS never
+  downloads an AI model"; the product's owner reversed it, deciding that
+  someone who wants local AI should be able to get it from a button
+  rather than a set of instructions. What replaced it:
+  `/api/pull` may be called from `app/core/local_ai_models.py` and
+  nowhere else, and `model_puller.start()` may be reached only from the
+  session-token-protected `POST /local-ai/pull` — both enforced by tests
+  that walk the AST of every module under `app/`. `GET /local-ai/plan`
+  names the source, publisher, licence, size and this machine's free
+  space *before* anything is fetched, and fetches nothing itself.
+  Nothing downloads on startup, on a status read, or as a side effect of
+  anything else.
+- **The Ollama runtime is installed only after its signature is
+  verified.** `app/core/local_ai_install.py` downloads Ollama's own
+  installer from a host-pinned HTTPS URL, refuses a redirect off that
+  host, verifies the Authenticode signature names Ollama
+  (`app/core/authenticode.py`), records the SHA-256, and deletes the file
+  rather than running it if any of that fails. There is no "continue
+  anyway". Ollama's installer runs visibly, never silently.
+- **JARVIS never takes ownership of an Ollama it did not install.** An
+  existing installation is used as it is and never reinstalled over;
+  whether JARVIS installed it is recorded (`ollama_installed_by_jarvis`)
+  so the uninstaller can tell the two cases apart.
+- **Anthropic chat never depends on local AI.** Local AI failing, being
+  skipped, or never being set up leaves the rest of the product exactly
+  as it was.
+- **Ollama is loopback-only.** There is deliberately no setting for a
+  remote Ollama host; that would turn a local-first assistant into one
+  that ships conversations to a machine configured once and forgotten.
+- **Conversation history is bounded and privacy-gated.** The last few
+  turns are replayed so a follow-up question makes sense; while privacy
+  mode is on, a request carries only the message just typed.
+- **`/chat/stream` is not a second dispatch path.** It asks
+  `router.find_route()` first and executes a matched command through the
+  ordinary policy-gated path. No tool is reachable through it that
+  `POST /command` could not reach, and the approval gate applies
+  identically.
+
+## Coding Workspace rules (non-negotiable)
+
+Coding Workspace is a **separate, explicitly-entered mode** for working on
+the user's own code projects. See `docs/coding-workspace-architecture.md`
+for the trust boundaries and `docs/desktop-capability-roadmap.md` for what
+was deliberately left out.
+
+- **The ordinary assistant gains nothing from its existence.** Coding
+  capabilities live in `app/coding/registry.py`, are never added to
+  `app.core.tool_registry.registry`, and are not reachable through
+  `router.find_route()`. `tests/test_coding_isolation.py` asserts both,
+  plus an AST walk proving no module under `app/coding/` imports the
+  global registry. Off until the user adds a project.
+- **`app/coding/workspace.py` is the only way a path enters the feature.**
+  It re-canonicalises the root on every call, compares component-wise
+  rather than by string prefix (`/a/b-evil` is not inside `/a/b`), and
+  refuses link escapes, device paths, alternate data streams, reserved
+  device names and UNC. A second path-checking routine anywhere is a
+  defect — that is how `canonical_root()` and `resolve()` drifted apart
+  once already.
+- **A protected file is never read, and the check runs before the read.**
+  The list is `PROTECTED_FILENAMES/SUFFIXES/DIR_COMPONENTS/PATTERNS`, and
+  `protected_summary()` is what the UI renders, so the page cannot
+  describe a protection the code does not enforce. No secret value may
+  reach model context, a log, a diff, a screenshot or a task record.
+- **The model never executes anything.** A provider returns a string; it
+  is parsed and validated against `app/coding/schema.py`'s closed,
+  discriminated union with `extra="forbid"` before anything looks at it.
+  An invented tool name and a `skip_approval` field are both validation
+  errors. The injection defence is structural, not semantic — do not
+  replace it with prompt wording.
+- **Repository content is untrusted, including `package.json`.** A
+  project's declared script is AUTO only after its *body* is screened for
+  blocked programs, and an entry whose body cannot be read fails closed.
+  A repository does not get to write its own permission slip.
+- **`shell=True` never, and no command line is ever built.** argv only.
+  `BLOCKED_PROGRAMS` is refused at every approval level; a user cannot
+  approve `powershell`. Install commands disclose the registry, and
+  report licence and size as unknown rather than querying the registry to
+  find out — that would be a network request made because the user is
+  being asked whether to permit one.
+- **The program is resolved before it is started, against the child's own
+  PATH.** `CreateProcess` appends `.exe` but does not apply `PATHEXT`, so
+  `["npm", "run", "dev"]` — `npm` is `npm.cmd` — raised
+  `FileNotFoundError` on every Windows machine while
+  `app/coding/toolchain.py` truthfully reported `npm=available`, because
+  `shutil.which` *does* apply it. Every Node dev, test, lint, format and
+  build command in the product was unreachable, and every test passed on
+  Linux, where `npm` really is a file called `npm`.
+  `runner.CommandHandle._resolved_argv()` is the only place this happens;
+  a resolved path inside the project is refused, as
+  `toolchain._impersonation_refusal` refuses one. argv-only and
+  `shell=False` are untouched — resolving makes the program *more*
+  explicit, never less.
+- **Every child gets an allowlisted environment**, so no `npm install`
+  postinstall script ever sees `ANTHROPIC_API_KEY`. A key that is dropped
+  is logged, never silently discarded.
+- **No Git verb that can destroy work.** No `reset --hard`, no forced
+  checkout, no `clean`, no history rewrite, no push, no branch deletion,
+  no remote change. Isolation is a worktree on a task branch; if that is
+  not safe, JARVIS stops and explains rather than continuing, and working
+  in place is an explicit choice the user makes, never a default.
+- **The user's own changes are recorded before anything starts** and are
+  labelled as theirs in every diff. Undo checks each file against the
+  hash JARVIS last wrote and skips one the user has edited since.
+- **A preview is loopback-only, owned, and truthfully reported.**
+  "Running" means the owned process is alive *and* the endpoint answers.
+  A port somebody else is using is neither adopted nor killed.
+- **"Not checked" is never reported as zero.** A browser check that did
+  not run reports `None` and says why. Writing `0` after looking at
+  nothing is the defect `browser_qa.py` exists to prevent.
+- **Browser QA runs in the installed product, or it is not a feature.**
+  The first version needed Playwright — a test dependency the packaged
+  build does not carry — so it reported `available: false` on every
+  machine a user actually had. It now drives the Chromium Windows already
+  has (Edge, then the WebView2 Runtime the installer requires) over the
+  DevTools protocol. **No new dependency, no download, no installer
+  growth**; `websockets` was already present through `uvicorn[standard]`.
+  `docs/browser-qa-architecture.md` records the four options compared and
+  the measurements. Do not "fix" an unavailable engine by adding a
+  package — investigate why the engine is missing.
+- **`opened` is recorded by the code that opened the page**, never
+  derived from the state. `FAILED` covers both "the page has defects" and
+  "the check fell over before it launched", and inferring "a browser ran"
+  from the state claimed the first when it was the second. Exactly one
+  assignment to it exists, and a test counts them.
+- **Seven outcomes, never two.** `browser_findings.QaState` — passed,
+  failed, blocked, timed out, engine unavailable, preview unavailable,
+  cancelled. Collapsing any of them back into "not available" removes the
+  only information the user could have acted on.
+- **`app/coding/browser_origin.py` is the only thing that decides what a
+  browser check may open**, and it computes the origin from the owned
+  preview's port rather than accepting one. `localhost`, `[::1]`,
+  `127.0.0.2` and `0.0.0.0` are refused: they may reach this machine, but
+  by a route JARVIS did not compute. The browser enforces it a second
+  time — `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1` makes
+  every other hostname unresolvable inside Chromium. Two mechanisms,
+  because a boundary with one implementation is a boundary with one bug.
+- **Every check gets a fresh profile that is deleted afterwards**, all
+  permissions denied, downloads refused, dialogs dismissed by the
+  protocol pump, and a full `process_tree` cleanup. A reused profile would
+  accumulate the history and storage of every page a coding task opened.
+- **`cdp.py` is not a browser-automation library and must not become
+  one.** Attach, enable four domains, navigate, collect, evaluate,
+  screenshot, close. No click, no type, no form fill, no cookie handling,
+  and no way to pass it a URL.
+- **The accessibility check is nine named structural rules, and the UI
+  says so.** It is deliberately not called an axe audit: axe-core is a
+  Node package the packaged build does not carry, and implying a full
+  audit while running nine rules is the same species of dishonesty as
+  reporting zero console errors for a page nothing opened.
+
+## Coding Workspace: folder picker, creation plan, toolchain (non-negotiable)
+
+- **A folder is chosen in a native Windows dialog, not typed.** Only the
+  process that owns a window can open one, so the flow is brokered:
+  `app/coding/folder_requests.py` mints a request (one at a time, short
+  expiry), the page hands the id across pywebview's bridge, and
+  `app/launcher/folder_picker.py` opens the dialog and **posts the outcome
+  back authenticated with the per-session desktop secret**. The answer
+  deliberately does not return through the bridge — routing it through an
+  authenticated endpoint is what makes `selected_via_picker` a fact the
+  server witnessed rather than the page's word for it.
+- **The typed field is a labelled fallback, never the primary control.**
+  It exists because JARVIS also runs in an ordinary browser, where no
+  native dialog is available at all. It is validated identically, through
+  `workspace.canonical_root()`, and the server still reports which of the
+  two happened.
+- **A selection is spent once, a Cancel registers nothing, and a path the
+  dialog could not have produced is screened anyway** — the value arrives
+  over a socket, and a boundary that trusts its input because of where it
+  is supposed to have come from is not a boundary. No chosen path reaches
+  a log, and the dialog is never given a starting directory: that would
+  mean JARVIS remembering and displaying a list of the user's folders.
+- **Creating a project is two steps, and the first writes nothing.**
+  `app/coding/project_plan.py` reports the destination, the exact file
+  list, whether Git is initialised and with which branch, the
+  dependencies, the commands, the network use, the size, what is
+  deliberately not created and any conflict — and a test walks its AST to
+  prove there is no write in it. `POST /coding/projects/create` takes a
+  plan id **and nothing else**, so the thing the user read is the thing
+  that runs.
+- **A plan is re-checked against the filesystem immediately before
+  anything is written.** A destination that appeared while the
+  confirmation was on screen is a refusal, never an overwrite and never a
+  merge. "Empty" is a race; a folder that exists is not ours to fill.
+- **Toolchain detection looks, and never searches or changes.** PATH plus
+  a short named set of standard locations — no disk scan, the same rule
+  `app/core/legacy_migration.py` follows. Nothing is installed, no
+  variable is set, and every probe is a bounded `--version`.
+- **An executable inside the project is refused, not run.** On Windows a
+  `git.exe` committed to a repository is a repository choosing which Git
+  inspects it. `refused` is its own state, distinct from `missing`: the
+  two call for entirely different responses from the user.
+- **A step whose tool is absent reports that it did not run.** Never that
+  it passed. A formatter that is not installed did not agree the code is
+  formatted; it did not look.
+- **Nothing is pushed, merged, deployed or cloned in this version**, and
+  `GET /coding/status` publishes that list rather than leaving it implied.
+- **No test may reach a package registry or a real service.**
+  `tests/test_coding_agent.py` carries an autouse guard that turns an
+  accidental `npm install` into a failure — it was added because one
+  actually happened.
+
+## Preferences store rules (non-negotiable)
+
+- **`app/core/preferences.py` is an allowlist, not a settings store.**
+  Only `STORABLE_KEYS` may be written; anything else is refused. It must
+  never become a general "write any setting from the browser" mechanism.
+- **Never a credential.** API keys live in the OS credential store
+  (`app/core/credentials.py`). A plain JSON file in AppData is the wrong
+  place for a secret.
+- **A saved choice wins over the environment variable**, which supplies
+  the starting default. The reverse gives a control that silently does
+  nothing on a machine where the variable happens to be set.
+
+## Capability-honesty rules (non-negotiable)
+
+These exist because the installed release candidate, asked "answer me
+with your voice", replied that it had no text-to-speech and recommended
+Windows Narrator, NaturalReader and Google Docs. Nothing was broken
+except the prompt.
+
+- **The model is told what this installation can do, per request.**
+  `app/core/capabilities.py` snapshots the real state — active speech
+  engine and voice, the Speak-responses setting, push-to-talk, local AI,
+  desktop actions — and `build_system_prompt()` appends it. Never cached:
+  a voice that finished installing two minutes ago is one the model has
+  to know it has. Never a hardcoded list.
+- **JARVIS never recommends another program for something it does
+  itself.** SYSTEM_PROMPT rule 8 names the three it actually offered.
+- **A request to speak is a deterministic route, not a judgement call.**
+  "answer me with your voice", "say that again", "read this aloud" and
+  their neighbours reach `speak_last_reply` (`app/voice/speak_reply.py`).
+- **An explicit one-off utterance is not gated on the always-speak
+  switch.** `output_enabled` answers "speak every reply automatically";
+  `/voice/speak` is gated on it and `/voice/speak-once` deliberately is
+  not, exactly as `tts_test` has always behaved. Still one flag, not two.
+- **One utterance at a time.** Every path stops what is playing before
+  starting.
+- **An unavailable capability reports the cause and the step that fixes
+  it.** "Voice input — Not set up" over six accurate rows and a
+  reinstall suggestion that would not have helped is the failure this
+  replaces; `app/voice/input_state.py` holds the ten states.
+
+## Cloud voice rules (non-negotiable)
+
+ElevenLabs is an **optional** premium tier. See
+`docs/clean-room-and-voice-identity.md` for the voice brief and the
+clean-room decision behind it.
+
+- **Local stays the default, and stays sufficient.** Kokoro, Windows
+  natural voices and SAPI5 all keep working with no key, no network and
+  no account. `ENGINE_ORDER` is the *local* chain and ElevenLabs is
+  deliberately not in it: a tier that costs money and sends text to a
+  third party may only ever be chosen by name.
+- **The key lives in Windows Credential Manager, in its own entry**
+  (`credentials.ELEVENLABS_USERNAME`), never in preferences, the
+  database, `.env`, a log, a diagnostic or an event. No endpoint returns
+  it; the UI learns only whether one exists.
+- **One pinned host, no redirects, bounded everything.**
+  `app/voice/elevenlabs.py` talks to `api.elevenlabs.io` over HTTPS with
+  `follow_redirects=False`, connect and read timeouts, a capped response
+  body and a content-type check before a byte is treated as audio. There
+  is no endpoint that fetches an audio URL supplied by anyone.
+- **Privacy mode blocks it completely** — no text is sent, and the
+  refusal says so rather than quietly using a different voice.
+- **A fallback is always visible.** If the local voice covers for the
+  cloud one, the reason is reported. A silent fallback would make an
+  expired key and an exhausted quota both sound like success.
+- **Nothing is created, cloned or billed automatically.** No voice
+  design, no cloning, no credits spent without a button press. Nothing
+  ElevenLabs-related runs during installation, onboarding, startup,
+  tests or CI, and no test may ever call the real API.
+- **The voice is original.** It does not imitate or clone any actor,
+  performer or copyrighted character, and this project never claims
+  otherwise.
+
+## Double-clap activation rules (non-negotiable)
+
+The product owner asked for one hands-free convenience and granted a
+deliberate, extremely narrow exception to the blanket ban on continuous
+listening in the Safety rules below. The exception is this feature and
+nothing else. `app/voice/clap.py` and `app/ui/static/clap-processor.js`
+carry the full reasoning; these are the lines that may not move.
+
+- **A transient counter, not a listener.** The detector computes
+  root-mean-square and peak amplitude per 128-sample block, and nothing
+  else. No FFT, no frequency analysis, no wake word, no speech
+  recognition, no transcription. Enforced by a test that reads the
+  worklet's source.
+- **Nothing is recorded, stored or sent.** The worklet's state is six
+  scalars, overwritten every block. No buffer, no history, no file, no
+  upload. Its only output is `{type: "clap-pair"}` — a message with no
+  payload, because there is nothing in it that would be safe to carry.
+- **A clap can only show the window.** Activation goes through
+  `app/launcher/attention.py`, whose entire message is the existence of a
+  marker file. `POST /voice/clap/activate` takes **no request body** and
+  never will: a microphone must not be able to name an action.
+- **Off by default, and gated three times server-side** — the stored
+  preference, privacy mode (which `app/core/privacy.py` always said a
+  future listener would have to honour), and a refractory interval.
+  Server-side because a page left open before the feature was switched
+  off elsewhere must not still be able to act.
+- **No new audio dependency.** The detector runs in the page that is
+  already open, on the microphone stream the level meter already uses.
+  JARVIS still has no native audio *input* dependency — no PortAudio, no
+  PyAudio, no sounddevice — and playback is still stdlib `winsound`.
+- **It is tested against real audio, in a real browser.**
+  `tests/test_clap_detection.py` plays synthesised claps, speech, a hum
+  and silence through Chromium's fake capture device and asserts that
+  only a genuine pair activates anything. Never replace it with a mock:
+  a state machine asserted against itself proves nothing about whether
+  speech sets it off.
+- **Privacy mode releases the microphone, it does not merely relabel
+  it.** The failure this replaces is a build that repainted the privacy
+  indicator and left the capture running. `setPrivacyBlocked(true)` in
+  `app/ui/static/clap-controller.js` tears down synchronously: every
+  track stopped, the source and worklet disconnected, the `AudioContext`
+  closed. Stopping the tracks is what turns the Windows
+  microphone-in-use indicator off; closing the context alone does not.
+- **One controller owns the microphone.** `clap-controller.js` is a
+  single state machine with nine states and one decision point
+  (`reconcile()`); nothing else may call `start()` or `teardown()`.
+  Scattered booleans are what produced the defect above, so do not
+  reintroduce them — and do not split the file: the cohesion is the
+  reason it holds.
+- **Suspension is reference-counted.** Speech, push-to-talk, the
+  microphone test and calibration each take a named reason. Two reasons
+  in and one out leaves the listener suspended. Every path releases its
+  reason on success, failure and cancellation alike.
+- **The microphone dropdown is the one shared choice**, not a
+  diagnostic. It reaches `getUserMedia` as `deviceId: {exact: …}`. A
+  missing device falls back to the system default **and says so**;
+  claiming the chosen device is active when it is not is the failure
+  mode this exists to prevent. There is never more than one clap stream.
+- **Calibration is bounded, local and opt-in.** It owns the microphone
+  for its duration and releases it on success, timeout, cancel,
+  navigation, privacy and quit. The per-onset scalars exist only behind
+  the worklet's `calibrate` guard, never leave the page, and nothing is
+  saved without an explicit Save — clamped server-side to `SAFE_BOUNDS`.
+  The attack and sustained-sound thresholds are never calibratable.
+- **The tray may say "On" only while a page has recently proved a live
+  microphone.** `clap.py::tray_label()` composes the line and refuses
+  "On" for a stale report; the page re-sends its report well inside
+  `LISTENER_FRESH_SECONDS` so the reverse dishonesty — "Microphone
+  unavailable" while it is plainly listening — cannot happen either.
+- **The lifecycle assertions are on resources, never on flags.**
+  `tests/test_clap_controller.py` asserts against real
+  `MediaStreamTrack`s, `AudioContext`s, worklet nodes, listeners and
+  timers in a real browser. A test that reads a boolean would have passed
+  against the broken build.
+- **A state is a phase; it is not a receipt for a resource.**
+  `state === "calibrating"` means calibration was *requested* —
+  `startCalibration()` publishes it, then awaits `getUserMedia`. For a
+  measured 7–22 ms there is no microphone open, and two tests that waited
+  for that state and then counted tracks were flaky for months at one run
+  in four. Anything asserting on a track, a stream, an `AudioContext` or a
+  worklet node waits for `clapState() === "calibrating" &&
+  clapListening() === true` — `wait_for_calibration_capturing()`. The
+  state stays honest because `notify()` publishes `listening: false`
+  alongside it; the *test* was reading the wrong field. See
+  `docs/clap-flake-investigation.md` and `scripts/diagnose_clap_flake.py`.
+- **A calibration session is held by identity, never read back off the
+  module variable after an await.** A second `startCalibration()` may
+  already have replaced it, and the first call's cleanup then destroys
+  the second call's session — which is what pressing Calibrate twice did.
+- **The calibration bound covers acquiring the microphone, not only
+  holding it.** The timer is armed before `start()` is awaited, because
+  `getUserMedia` can hang and an unbounded acquisition phase is not
+  bounded.
+- **An attack that straddles a 128-sample block is still an attack.**
+  A clap landing near the end of a block lifts that block's RMS just over
+  the quiet gate — 0.01268 against 0.01225 — so `prevRms < threshold *
+  attackFall` rejected the loud block that followed and the whole clap
+  was swallowed, on 2-3 of 128 block phases and about one live run in
+  five. `loudBlocks` (one integer, a count of consecutive above-gate
+  blocks, never an array) makes "the signal only just rose" an attack
+  too. Verified at every one of the 128 phases against the suite's own
+  speech, hum, silence, single-clap and mistimed-pair fixtures: no false
+  pair, no false onset. The regression test renders the real worklet in
+  an `OfflineAudioContext` from the exact 16-bit PCM — its first version
+  synthesised the audio in JavaScript, never reached the 0.00043 edge,
+  and passed against the broken detector.
+- **A browser that will not start must say why.** `_OwnedBrowser` sent
+  the browser's stderr to `DEVNULL`, so fifteen CI failures read only
+  "The browser connection closed." The last few lines are now captured,
+  path-stripped and reported, and a browser that died at startup is
+  `ENGINE_UNAVAILABLE` rather than `FAILED`.
+- **Check the CI that actually runs.** `ci.yml` was red on every commit
+  of the Coding Workspace corrective pass — #148 to #155 — while only
+  `windows-installer.yml` was being inspected and local runs were being
+  reported as "the gate". A local pass is not a CI pass.
+- **A diagnostic may not perturb what it measures.** The first version of
+  `scripts/diagnose_clap_flake.py` observed the detector by replacing
+  `port.onmessage` with a JS accessor, which removed the implicit
+  `port.start()` that assigning to that attribute performs; the port
+  never started and a passing run was reported as a failure. Observe with
+  `addEventListener`.
+
+## Memory secret rules (non-negotiable)
+
+These exist because `memory add my key is sk-ant-…` stored the key
+verbatim, in plaintext, in a file that lives on the user's disk until
+they delete it.
+
+- **The check runs before the write, never after.** `app/core/secret_guard.py`
+  is consulted in `app/core/memory.py::add_memory()` *and* again in
+  `db/database.py::Database.add_memory()`, which is the only place a
+  memory row is ever inserted. The value must never reach the database,
+  so there is never anything to purge.
+- **A second INSERT INTO memories anywhere else is a defect**, enforced
+  by a test that greps `app/` and `db/` for one.
+- **The detected value is never echoed.** `find_secret()` returns a
+  label ("an Anthropic API key"), never the matched text, and
+  `SecretRejected` carries the same label. A guard that quotes what it
+  caught puts the secret in the API response, the event stream and the
+  log — the thing it exists to prevent.
+- **Rejection, never redaction.** A memory is refused, not rewritten.
+  Storing "my key is ***" would leave the user a memory they never
+  wrote, saying something they did not say.
+- **Ordinary sentences must still be storable.** "Remind me to change my
+  password on Friday" contains no secret and is saved. The bar for
+  refusal is a credential-shaped string, or a credential noun with a
+  value attached — not the mere mention of one.
+- **`app/core/redaction.py` is not this.** It redacts tool inputs headed
+  for a log line, the audit trail or a WebSocket event, and never runs
+  on the memory write path. Both exist; neither replaces the other.
+
+## Legacy data rules (non-negotiable)
+
+- **The v0.1 database is only ever read.** `app/core/legacy_migration.py`
+  never moves, modifies or deletes it — not even after a successful
+  import. Somebody who wants it gone deletes it themselves.
+- **Never overwrite data that is already here**, and never merge two
+  histories. An *empty* destination is fine to replace: that is a schema
+  `create_tables()` made a moment ago. Rows are not.
+- **Look, do not search.** Every candidate is one `exists()` call
+  against a documented or default location. No globbing, no `os.walk`,
+  no disk scanning — enforced by a test.
+- **Copy to a temporary name, then rename.** An interruption must never
+  leave a half-written file where JARVIS expects its database.
+- **Validate before trusting**: a SQLite integrity check *and* a look
+  for the tables a JARVIS database has, so an unrelated `.db` file in a
+  candidate location is never adopted as somebody's history.
+- **Decide once.** A marker records the outcome — including refusals —
+  so repeated launches cannot duplicate anything or re-run the work.
+- **Nothing here may raise.** It runs on the startup path of a windowed
+  build with no console, where an unhandled exception becomes a modal
+  dialog nobody can dismiss. Optional data is not worth that.
+
+## Process lifecycle rules (non-negotiable)
+
+These exist because a WebView2 process outlived JARVIS on cycle 2 of the
+installer's ten-cycle lifecycle test while cycle 1 — and an entire
+sibling run of the identical commit — passed. See
+`docs/webview2-lifecycle-defect.md`.
+
+- **JARVIS terminates only processes it can *prove* are descendants of a
+  process it started.** Targets come from walking down from a PID this
+  launcher spawned (`app/launcher/process_tree.py::capture_descendants`)
+  and from nowhere else. No `process_iter`, no `taskkill /IM`, no name
+  matching — an unrelated Edge or WebView2 the user is browsing in is
+  never ours to touch.
+- **A PID is not an identity.** Windows recycles PIDs, and cleanup holds
+  its targets across a grace period. Every target is a
+  `ProcessIdentity` (PID *plus* creation time), re-verified immediately
+  before it is signalled; a mismatch is reported as `pid_reused` and the
+  process is left alone. An identity captured without a creation time is
+  `inaccessible` and also left alone — unverifiable is not the same as
+  ours.
+- **Every escalation ends in a bounded wait, including after `kill()`.**
+  "Killed" must mean the process is gone, not that `kill()` did not
+  raise. Shutdown stays bounded by construction — one terminate grace
+  plus one kill grace, whatever the processes do — because JARVIS must
+  always be able to close.
+- **Cleanup returns a structured report and never raises.** Six
+  outcomes: `already_gone`, `terminated`, `killed`, `still_alive`,
+  `inaccessible`, `pid_reused`. A survivor is a logged warning naming
+  the process, never silence. Shutdown completes even if cleanup itself
+  fails.
+- **Diagnostics carry no paths.** PID, image name, parent PID and
+  booleans only. A full Windows path contains the account name, and
+  these records go into a log file.
+- **Capture before the poll, not after**, and expand each captured
+  identity to its own live descendants at cleanup time. WebView2 starts
+  helper processes lazily; one born in the last interval before the
+  window child exits is exactly the one that gets orphaned.
+- **The lifecycle test asserts on identities, and its wait may never
+  grow to cover a leak.** `scripts/test_clean_install.py` waits for the
+  exact captured processes to reach a terminal state within a bound
+  close to the product's own cleanup worst case. Never raise it to make
+  something pass: a leaked process never exits, so a longer wait cannot
+  turn a real leak green — it can only turn a slow one invisible.
+
+## Uninstall rules (non-negotiable)
+
+- **`app/core/ownership.py` is the manifest.** "Remove everything JARVIS
+  owns" is only a promise if there is a list, and the list distinguishes
+  what setup installed from what the application created while running.
+- **The application removes its own things**, via
+  `JARVIS.exe --uninstall-cleanup`, because only it knows how the API key
+  was stored. An installer guessing at a Credential Manager target name
+  is how an uninstall leaves a secret behind while reporting success.
+- **Data and credentials survive an ordinary uninstall.** `--purge-data`
+  is a choice, never an inference. The sign-in shortcut goes either way:
+  it points at an executable that is about to stop existing.
+- **Shared Windows components are never removed** (WebView2, the Visual
+  C++ runtime), nor Ollama and its models — even when JARVIS installed
+  it — nor anything in `Documents\JARVIS_Notes`.
+
 ## Phase 3 TTS rules (non-negotiable)
 
 - **Output only.** Phase 3 TTS is text-to-speech output. No microphone input,
   no speech-to-text, no always-listening behavior, no wake word — ever.
+  (v0.2 added push-to-talk input as a separate, explicitly user-triggered
+  feature in `app/voice/stt.py`; the TTS engine itself still never
+  captures audio.)
+- **One flag decides whether JARVIS speaks:** `tts_service.output_enabled`.
+  Every surface reads it — the `speak on`/`speak off` commands, the Voice
+  page toggle, the `/voice/speak` gate, `/voice/status` and the CLI. Two
+  flags is how the desktop app ended up never speaking at all.
+- **The speech gate is server-side.** A page left open before speech was
+  switched off elsewhere must not be able to make JARVIS talk.
+- **Approval prompts are never read aloud.** They are to be read and
+  decided on.
 - **TTS failures must never crash the app.** All pyttsx3 errors are caught and
   logged; the app continues normally without audio.
 - **Tests must mock the TTS engine.** No test may play real audio or require
@@ -124,6 +673,20 @@ how Claude Code sessions should work on this codebase.
 - **All Phase 6 tools are SAFE permission level.** None require approval or are blocked.
   No Phase 6 tool deletes files, modifies settings, or sends data externally.
 
+## Phase 7 action rules (non-negotiable)
+
+- **Notes are addressed by filename, never by path.** `read_note` refuses
+  a name containing a separator or `..` rather than sanitising it, and
+  re-checks containment after resolving, so a symlink planted in the
+  notes folder cannot read outside it. Notes are still never deleted.
+- **Locking is the only session action that will ever exist.** Sign out,
+  restart, sleep and shut down all end running programs and can lose
+  unsaved work in other applications; locking cannot. See
+  `app/desktop/session.py`, whose test asserts nothing else was added.
+- **Process information is a snapshot on request.** Nothing is sampled in
+  the background, recorded, or stored — that would be the monitoring this
+  file's Safety rules forbid.
+
 ## Phase 7 dashboard rules (non-negotiable)
 
 - **Sidebar layout only.** The dashboard uses a fixed 240 px sidebar replacing the
@@ -141,6 +704,46 @@ how Claude Code sessions should work on this codebase.
 - **Chat suggestions are client-side only.** Suggestion chips populate the input field
   only; they do not auto-submit or bypass the normal send flow.
 
+## v0.2 safe command center rules (non-negotiable)
+
+v0.2 ("Safe Voice Command Center and Windows Action Runtime") is an
+infrastructure milestone that runs across the phase numbering below, not
+a replacement for it — Phase 8/9/10's planned scope (OCR, browser
+automation, smart home) is unchanged. It added the pipeline future tools
+should be built on top of; see `docs/audit-v0.2.md` and
+`docs/THREAT_MODEL.md` for the full picture.
+
+- **The policy engine is the only place risk decisions are made.**
+  `app/core/policy.py::evaluate()` decides auto-execute / require-approval
+  / deny from a tool's `RiskLevel`. Do not add a second, ad-hoc
+  risk/permission check elsewhere — extend `evaluate()` or a tool's
+  declared `RiskLevel` instead of duplicating the decision in a route.
+- **New tools should declare a `RiskLevel` and, when they take arguments,
+  an `input_model`.** A tool that omits them still works (see
+  `policy.py::risk_for()`'s conservative legacy mapping from
+  `PermissionLevel`) but new tools should declare them explicitly rather
+  than rely on that fallback.
+- **The runtime state machine is the only source of truth for "what is
+  JARVIS doing right now."** Use `app/core/runtime_state.py`'s
+  `runtime.transition()` (or `try_transition()` from a request-handling
+  code path, which must never raise — see its docstring). Do not track
+  state ad hoc elsewhere.
+- **The `action_lifecycle` audit trail is additive.** It never replaces
+  or gates `app/core/pending_actions.py`'s live approval queue; it
+  records what happened. Execution must never depend on the audit write
+  succeeding.
+- **The WebSocket stream (`/ws/events`) is read-only.** It broadcasts
+  typed events; it must never accept a command or an action approval.
+  Command submission and approval stay on the REST endpoints.
+- **No raw tool input reaches a log line, the audit trail, or a
+  WebSocket event unredacted.** Use
+  `app/core/redaction.py::redact_params()` before persisting or
+  publishing anything derived from tool kwargs.
+- **`read_clipboard` is the only clipboard capability, and it is
+  SENSITIVE / approval-required, permanently.** No clipboard writing, no
+  history, no polling or monitoring — it must never grow into the
+  clipboard-sniffer this file's Safety rules already forbid.
+
 ## Phase guide
 
 | Phase | Status      | Scope |
@@ -156,6 +759,45 @@ how Claude Code sessions should work on this codebase.
 | 9     | Planned     | Browser automation (approval-gated, no autonomous browsing) |
 | 10    | Planned     | Smart home, health, trading integrations |
 
+> **v0.2** (infrastructure, not a numbered phase): Safe Voice Command
+> Center and Windows Action Runtime — runtime state machine, typed
+> tool/risk/policy contract, persisted `action_lifecycle` audit trail,
+> real-time WebSocket event stream, a new `read_clipboard` tool, a safe
+> error envelope, enforced tool-execution timeouts, per-session REST/WS
+> mutation protection, a minimum privacy mode, push-to-talk voice input,
+> an automated Playwright/axe browser-test suite, and a real Windows CI
+> smoke job. Wake-word/always-listening voice, a complete visual
+> redesign, an Ollama adapter, a full memory/retention redesign, and
+> real-microphone/real-Windows-hardware verification of push-to-talk
+> (verified so far only via mocked adapters and browser E2E with a fake
+> media device) remain deferred — see `docs/audit-v0.2.md`,
+> `docs/THREAT_MODEL.md`, and the PR description for the exact scope and
+> honest gaps.
+
+> **Coding Workspace** (infrastructure, not a numbered phase): a separate
+> explicitly-entered mode for working on the user's own code projects —
+> containment boundary, protected-path engine, patch-based editing with
+> stale-base detection, a three-tier command policy, process-tree
+> ownership, Git worktree isolation that never touches uncommitted work,
+> a closed proposal schema as the prompt-injection defence, a loopback
+> preview with real browser checks, and its own page. Pushing, pull
+> requests, merging, deployment, remote cloning and general web browsing
+> are all deliberately excluded — see `docs/desktop-capability-roadmap.md`
+> for each one's reason. Browser checks need Playwright, which the
+> packaged build does not carry; it reports that rather than reporting
+> zero problems.
+
+> **Desktop release-candidate pass** (also not a numbered phase, and
+> deliberately using its own numbering in the PR): the packaged Windows
+> desktop application. Three-process shell (tray parent, server child,
+> native window child) with authenticated IPC, an Inno Setup installer
+> and uninstaller, a first-run wizard, Settings and Diagnostics pages, a
+> Home overview, the AI provider pipeline above (streaming, stop,
+> conversation reset, selectable Anthropic/Ollama), spoken replies that
+> actually work in the desktop app, and the Phase 7 actions above.
+> Wake-word voice, OCR, browser automation and the Phase 8–10 scope
+> below are all still out.
+
 ## Do NOT implement in this repo (ever, without explicit separate design review)
 
 - Password extraction (browser, OS, WiFi)
@@ -166,6 +808,18 @@ how Claude Code sessions should work on this codebase.
 - Anything that could be used for surveillance
 
 ## Testing
+
+**Run the suite the way the installer build runs it.** `scripts/build-installer.ps1`
+sets `JARVIS_LOG_LEVEL=WARNING` and a temp `JARVIS_DB_PATH` before
+`pytest`, so a test that quietly assumes the default log level passes
+locally and fails the Windows Installer job. Worse, it can pass *both*
+while proving nothing: three redaction tests logged at INFO, wrote an
+empty file, and two of them asserted only "the secret is not in the
+file". Before calling a change done:
+
+```bash
+JARVIS_LOG_LEVEL=WARNING JARVIS_DB_PATH=/tmp/jarvis_gate.db pytest
+```
 
 ```bash
 # Run all tests
@@ -180,3 +834,24 @@ python -m app.main
 # Start API
 python -m app.api.server
 ```
+
+## Dado toolkit workflow
+
+This repository adopts the reviewed toolkit recorded in `.claude/TOOLKIT.md`.
+Repository-local skills and agents under `.claude/` are the reliable cloud fallback;
+the external plugin declarations in `.claude/settings.json` may still require an
+account-level trust step.
+
+For non-trivial work:
+
+1. Read `docs/ai/PROJECT_STATE.md` and verify it against the current branch, PR and
+   code before relying on it.
+2. Start with `/orient` (or `/dado-core:orient` when the external plugin is loaded).
+3. Use `/python-app-review`, `/packaging-verify` and `/ci-evidence` for their matching
+   work rather than treating a generic test pass as Windows or installer proof.
+4. Use `/verify-and-report` before the final report and disclose every not-run,
+   skipped, retried, flaky, inferred or manual-only check.
+
+**Existing JARVIS rules take precedence over generic toolkit recommendations.** The
+toolkit does not authorize changes, credential access, a merge, a tag, signing, a
+release or deployment. Only an explicit instruction in the current task can do that.

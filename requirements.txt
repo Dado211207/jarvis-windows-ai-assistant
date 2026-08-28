@@ -7,6 +7,21 @@ psutil>=5.9.0
 pillow>=10.0.0
 python-dotenv>=1.0.0
 anthropic>=0.20.0
+# The neural voice runs on ONNX Runtime (MIT), which brings numpy
+# (BSD-3-Clause). Both permissive; neither is optional. It is a core
+# requirement rather than an extra because the last two releases shipped
+# a speech feature whose engine was not installed, and the user-visible
+# result both times was a capability that could never work and no action
+# that could fix it. See app/voice/kokoro/engine.py.
+onnxruntime>=1.17.0
+# The last-resort speech tier only. The neural voice above and the
+# Windows natural voices are both preferred to it — see app/voice/engines.py.
 pyttsx3>=2.90
 pytest>=7.4.0
 httpx>=0.25.0
+# Named explicitly rather than left to httpx's own dependency tree.
+# packaging/jarvis.spec lists httpcore as a hidden import for the cloud
+# voice transport, and a package the frozen build requires must be one
+# this project declares — tests/test_packaging_spec.py fails otherwise.
+httpcore>=1.0.0
+python-multipart>=0.0.9
