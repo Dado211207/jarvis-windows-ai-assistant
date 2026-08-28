@@ -821,3 +821,24 @@ python -m app.main
 # Start API
 python -m app.api.server
 ```
+
+## Dado toolkit workflow
+
+This repository adopts the reviewed toolkit recorded in `.claude/TOOLKIT.md`.
+Repository-local skills and agents under `.claude/` are the reliable cloud fallback;
+the external plugin declarations in `.claude/settings.json` may still require an
+account-level trust step.
+
+For non-trivial work:
+
+1. Read `docs/ai/PROJECT_STATE.md` and verify it against the current branch, PR and
+   code before relying on it.
+2. Start with `/orient` (or `/dado-core:orient` when the external plugin is loaded).
+3. Use `/python-app-review`, `/packaging-verify` and `/ci-evidence` for their matching
+   work rather than treating a generic test pass as Windows or installer proof.
+4. Use `/verify-and-report` before the final report and disclose every not-run,
+   skipped, retried, flaky, inferred or manual-only check.
+
+**Existing JARVIS rules take precedence over generic toolkit recommendations.** The
+toolkit does not authorize changes, credential access, a merge, a tag, signing, a
+release or deployment. Only an explicit instruction in the current task can do that.
