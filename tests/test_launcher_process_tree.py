@@ -159,7 +159,11 @@ def test_a_captured_identity_never_carries_an_executable_path():
         identity = process_tree.capture_descendants(parent.pid)[0]
         fields = set(vars(identity))
         assert "exe" not in fields and "cmdline" not in fields and "cwd" not in fields
-        assert fields == {"pid", "create_time", "name", "ppid"}
+        # `source` is a short constant naming how we learned about the
+        # process ("captured"/"expanded"/"root"), never a location.
+        assert fields == {"pid", "create_time", "name", "ppid", "source"}
+        assert identity.source in {"", process_tree.FROM_CAPTURE,
+                                   process_tree.FROM_EXPANSION, process_tree.FROM_ROOT}
     finally:
         _cleanup(parent)
 
@@ -500,11 +504,24 @@ def test_the_report_carries_nothing_that_needs_redacting():
 
         assert set(payload) == {"duration_seconds", "outcomes", "processes"}
         for entry in payload["processes"]:
-            assert set(entry["identity"]) == {"pid", "create_time", "name", "ppid"}
+            assert set(entry["identity"]) == {"pid", "create_time", "name", "ppid", "source"}
             assert set(entry) == {
                 "identity", "outcome", "alive_before", "terminate_sent",
                 "exited_after_terminate", "kill_sent", "exited_after_kill",
+                # Diagnostic fields. Every one is a short constant, an
+                # exception *class* name or a bool — an exception's str()
+                # is excluded on purpose, because a credential-store or
+                # filesystem error can quote what it was looking for.
+                "source", "terminate_error", "kill_error", "wait_error",
+                "final_state", "final_checked",
             }
+            # The guard this test exists for, applied to the new fields
+            # too: nothing here may look like a filesystem location.
+            for key in ("source", "terminate_error", "kill_error",
+                        "wait_error", "final_state"):
+                value = entry[key]
+                assert isinstance(value, str), key
+                assert "/" not in value and "\\" not in value and ":" not in value, key
     finally:
         _cleanup(parent)
 
@@ -551,23 +568,45 @@ class _FakePsutil:
     class NoSuchProcess(Error):
         pass
 
-    def __init__(self, survives_terminate=False, survives_kill=False, raise_everything=False):
+    def __init__(self, survives_terminate=False, survives_kill=False, raise_everything=False,
+                 exits_unobserved=False, wait_raises=False, create_time=1000.0):
         self._survives_terminate = survives_terminate
         self._survives_kill = survives_kill
         self._raise_everything = raise_everything
+        # Models the hypothesis the Windows survivor investigation exists
+        # to test: the process really does exit, but `wait_procs` never
+        # observes it within the grace, so the pass reports `still_alive`
+        # for something that has actually gone.
+        self._exits_unobserved = exits_unobserved
+        self._wait_raises = wait_raises
+        self._create_time = create_time
         self._dead = set()
+        self.waits = 0
 
     def Process(self, pid):  # noqa: N802 — mirrors psutil's own name
         if self._raise_everything:
             raise self.Error("psutil is unhappy")
+        # A dead PID does not resolve, exactly as psutil's does not. This
+        # is what lets the final re-resolve tell "gone" from "still here".
+        if pid in self._dead:
+            raise self.NoSuchProcess(pid)
         return _FakeProcess(self, pid)
 
     def wait_procs(self, processes, timeout=None):
-        if self._raise_everything:
+        if self._raise_everything or self._wait_raises:
             raise self.Error("psutil is unhappy")
+        self.waits += 1
         time.sleep(min(timeout or 0.0, 0.25))
         gone = [process for process in processes if process.pid in self._dead]
         alive = [process for process in processes if process.pid not in self._dead]
+        if self._exits_unobserved and self.waits >= 2:
+            # It dies *as the kill grace returns*: reported alive by this
+            # call, absent to anything that looks afterwards. Gated on the
+            # second wait because dying during the terminate grace would
+            # simply be observed by the next one, which is the healthy
+            # path and not the case under investigation.
+            for process in alive:
+                self._dead.add(process.pid)
         return gone, alive
 
 
@@ -577,7 +616,7 @@ class _FakeProcess:
         self._owner = owner
 
     def create_time(self):
-        return 1000.0
+        return self._owner._create_time
 
     def name(self):
         return "msedgewebview2.exe"
@@ -601,3 +640,183 @@ class _FakeProcess:
 
 
 _REAL_PSUTIL_GETTER = process_tree._psutil
+
+
+# ---------------------------------------------------------------------------
+# Survivor diagnostics
+#
+# Temporary scaffolding for the Windows msedge.exe investigation on PR #17.
+# `still_alive` proved only that wait_procs did not observe an exit within
+# the shared deadline; it did not establish that the same PID *and*
+# create_time were still present afterwards. These pin the difference.
+# ---------------------------------------------------------------------------
+
+def test_a_survivor_that_actually_exited_is_re_resolved_as_gone():
+    """The reporting defect the final re-resolve exists to detect.
+
+    A process that exits just as the kill grace expires is reported alive
+    by `wait_procs` — that call computed its answer before the exit — and
+    nothing afterwards looked again. `final_state` looks.
+    """
+    # `survives_kill` so the kill does not itself mark it gone: the point
+    # is a process that outlives both signals *as far as the waits can
+    # see*, and has nonetheless exited by the time anything looks again.
+    fake = _FakePsutil(survives_terminate=True, survives_kill=True, exits_unobserved=True)
+    process_tree._psutil = lambda: fake  # noqa: SLF001
+    try:
+        identity = ProcessIdentity(pid=4296, create_time=1000.0, name="msedge.exe")
+        report = process_tree.terminate_identities(
+            [identity], terminate_grace_seconds=0.05, kill_grace_seconds=0.05
+        )
+    finally:
+        process_tree._psutil = _REAL_PSUTIL_GETTER
+
+    result = report.results[0]
+    assert result.final_checked is True
+    assert result.final_state == process_tree.GONE
+    # And the contract is deliberately unchanged: deciding what the
+    # outcome *should* be needs the evidence this check collects.
+    assert result.outcome == process_tree.STILL_ALIVE
+    assert report.survivors == [result]
+    assert report.ok is False
+
+
+def test_a_survivor_that_is_genuinely_running_is_re_resolved_as_still_alive():
+    fake = _FakePsutil(survives_terminate=True, survives_kill=True)
+    process_tree._psutil = lambda: fake  # noqa: SLF001
+    try:
+        identity = ProcessIdentity(pid=4296, create_time=1000.0, name="msedge.exe")
+        report = process_tree.terminate_identities(
+            [identity], terminate_grace_seconds=0.05, kill_grace_seconds=0.05
+        )
+    finally:
+        process_tree._psutil = _REAL_PSUTIL_GETTER
+
+    result = report.results[0]
+    assert result.final_checked is True
+    assert result.final_state == process_tree.STILL_ALIVE
+    assert result.terminate_sent and result.kill_sent
+
+
+def test_a_survivor_whose_pid_was_recycled_is_re_resolved_as_reused():
+    """The third answer. A PID that now belongs to something else is not
+    a leak, and must never be reported as one — or terminated as one."""
+    fake = _FakePsutil(survives_terminate=True, survives_kill=True)
+    process_tree._psutil = lambda: fake  # noqa: SLF001
+    try:
+        identity = ProcessIdentity(pid=4296, create_time=1000.0, name="msedge.exe")
+        report = process_tree.terminate_identities(
+            [identity], terminate_grace_seconds=0.05, kill_grace_seconds=0.05
+        )
+        # The PID is now a different process: same number, new birthday.
+        fake._create_time = 5000.0  # noqa: SLF001
+        recheck = process_tree._final_state(fake, identity)  # noqa: SLF001
+    finally:
+        process_tree._psutil = _REAL_PSUTIL_GETTER
+
+    assert report.results[0].final_state == process_tree.STILL_ALIVE
+    assert recheck == process_tree.REUSED
+
+
+def test_a_wait_that_raised_is_recorded_and_never_looks_like_no_exit():
+    """`except Exception: return live` made a broken wait indistinguishable
+    from a wait that completed and saw nothing exit."""
+    fake = _FakePsutil(wait_raises=True)
+    process_tree._psutil = lambda: fake  # noqa: SLF001
+    try:
+        identity = ProcessIdentity(pid=4296, create_time=1000.0, name="msedge.exe")
+        report = process_tree.terminate_identities(
+            [identity], terminate_grace_seconds=0.05, kill_grace_seconds=0.05
+        )
+    finally:
+        process_tree._psutil = _REAL_PSUTIL_GETTER
+
+    result = report.results[0]
+    assert result.wait_error == "Error", result.wait_error
+    assert result.final_checked is True
+
+
+def test_the_report_says_whether_a_target_was_captured_or_expanded():
+    """"One msedge.exe survived" does not say whether it was a process we
+    captured up front or one we only noticed at cleanup time."""
+    parent = _spawn_tree()
+    try:
+        captured = process_tree.capture_descendants(parent.pid)
+        report = process_tree.terminate_identities(captured)
+        sources = {result.source for result in report.results}
+        assert sources, "every result must say where its target came from"
+        assert sources <= {process_tree.FROM_CAPTURE, process_tree.FROM_EXPANSION,
+                           process_tree.FROM_ROOT}
+        assert process_tree.FROM_CAPTURE in sources
+    finally:
+        _cleanup(parent)
+
+
+def test_terminate_and_kill_failures_are_recorded_separately():
+    """Two different failures that used to produce the same silence."""
+    class _Refuses(_FakeProcess):
+        def terminate(self):
+            raise _FakePsutil.Error("terminate refused")
+
+        def kill(self):
+            raise _FakePsutil.Error("kill refused")
+
+    fake = _FakePsutil(survives_terminate=True, survives_kill=True)
+    fake.Process = lambda pid: _Refuses(fake, pid)  # noqa: SLF001
+    process_tree._psutil = lambda: fake  # noqa: SLF001
+    try:
+        identity = ProcessIdentity(pid=4296, create_time=1000.0, name="msedge.exe")
+        report = process_tree.terminate_identities(
+            [identity], terminate_grace_seconds=0.05, kill_grace_seconds=0.05
+        )
+    finally:
+        process_tree._psutil = _REAL_PSUTIL_GETTER
+
+    result = report.results[0]
+    assert result.terminate_sent is False and result.terminate_error == "Error"
+    assert result.kill_sent is False and result.kill_error == "Error"
+
+
+def test_diagnostics_are_written_only_when_explicitly_asked_for(tmp_path, monkeypatch):
+    """Opt-in. A cleanup pass runs on the shutdown path of a windowed build
+    with no console; a recorder that wrote by default could fill a disk."""
+    destination = tmp_path / "diag.jsonl"
+    parent = _spawn_tree()
+    try:
+        monkeypatch.delenv(process_tree.DIAGNOSTICS_ENV, raising=False)
+        process_tree.terminate_identities(process_tree.capture_descendants(parent.pid))
+        assert not destination.exists(), "nothing may be written without the opt-in"
+    finally:
+        _cleanup(parent)
+
+    parent = _spawn_tree()
+    try:
+        monkeypatch.setenv(process_tree.DIAGNOSTICS_ENV, str(destination))
+        process_tree.terminate_identities(process_tree.capture_descendants(parent.pid))
+    finally:
+        _cleanup(parent)
+
+    import json
+
+    lines = [line for line in destination.read_text(encoding="utf-8").splitlines() if line]
+    assert lines, "the opt-in must produce a record"
+    record = json.loads(lines[-1])
+    assert set(record) >= {"duration_seconds", "outcomes", "processes",
+                           "recorded_at", "platform"}
+    # The same redaction rule the rest of the module follows.
+    blob = json.dumps(record)
+    assert "\\\\" not in blob and "/home/" not in blob and "C:" not in blob
+
+
+def test_a_diagnostics_destination_that_cannot_be_written_never_breaks_cleanup(monkeypatch):
+    """A diagnostic must never be able to break the shutdown it explains."""
+    parent = _spawn_tree()
+    try:
+        monkeypatch.setenv(process_tree.DIAGNOSTICS_ENV,
+                           "/definitely/not/a/directory/diag.jsonl")
+        report = process_tree.terminate_identities(
+            process_tree.capture_descendants(parent.pid)
+        )
+        assert report.results, "cleanup still ran and still reported"
+    finally:
+        _cleanup(parent)

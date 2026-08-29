@@ -249,7 +249,16 @@ class _OwnedBrowser:
         try:
             targets = list(self._captured)
             if self._own is not None:
-                targets.append(self._own)   # the root last, so children stay reachable
+                # Labelled so a survivor report says whether the process
+                # that outlived cleanup was the browser we spawned or one
+                # of its children. `replace` because ProcessIdentity is
+                # frozen, and `source` is excluded from equality so this
+                # cannot affect the reuse check.
+                import dataclasses
+
+                targets.append(   # the root last, so children stay reachable
+                    dataclasses.replace(self._own, source=process_tree.FROM_ROOT)
+                )
             if targets:
                 from app.coding import limits
 

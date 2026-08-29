@@ -1,0 +1,88 @@
+# Temporary scaffolding for the `msedge.exe` survivor investigation (PR #17).
+#
+# Windows Installer run 33251235787 failed with one `msedge.exe` reported
+# `still_alive` after the six-second cleanup budget, on two routes:
+#
+#     test_no_browser_process_survives_any_fixture[alias.html]
+#     test_no_browser_process_survives_any_fixture[clean.html]
+#
+# Linux does not reproduce it, so the evidence has to be collected on a
+# Windows runner. This workflow loops those two tests with
+# JARVIS_PROCESS_DIAGNOSTICS set, and uploads the JSONL the cleanup path
+# writes — including the final PID+create_time re-resolve that tells
+# "gone" from "genuinely still running".
+#
+# `workflow_dispatch` only, on purpose. It is a diagnostic, not a gate: it
+# must never run on a pull request, never block a merge, and never be
+# mistaken for a check that proved something. It should be deleted once
+# the survivor question is answered.
+name: Windows Survivor Diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "How many times to repeat the two failing routes"
+        required: false
+        default: "12"
+      stop_on_capture:
+        description: "Stop as soon as one iteration fails"
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  diagnose:
+    name: "Survivor diagnostics / windows-latest"
+    runs-on: windows-latest
+    # Bounded by construction. The harness caps each iteration at 600s;
+    # this is the ceiling on the whole investigation so a hung browser
+    # cannot hold a runner indefinitely.
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Report the engine this runner will drive
+        # Which browser the checks attach to is part of the evidence: a
+        # survivor from Edge and a survivor from the WebView2 runtime are
+        # not necessarily the same defect.
+        #
+        # `Engine.as_dict()` rather than the fields by hand — it already
+        # reports `path_is_recorded: False` and omits the executable path,
+        # which on Windows carries the account name.
+        run: |
+          python -c "from app.coding import browser_engine as e; g = e.find_engine(); print('engine:', g.as_dict() if g else None)"
+        env:
+          JARVIS_LOG_LEVEL: WARNING
+
+      - name: Repeat the failing routes and record every cleanup pass
+        run: >-
+          python scripts/diagnose_survivor_flake.py
+          --iterations ${{ inputs.iterations }}
+          ${{ inputs.stop_on_capture && '--stop-on-capture' || '' }}
+          --diagnostics ${{ runner.temp }}/survivor-diagnostics.jsonl
+        env:
+          JARVIS_DB_PATH: ${{ runner.temp }}/survivor_jarvis_test.db
+          JARVIS_LOG_LEVEL: WARNING
+
+      - name: Upload the diagnostics record
+        # `always()` because a captured failure is the point: the record
+        # is most valuable exactly when the step above went red.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: survivor-diagnostics
+          path: ${{ runner.temp }}/survivor-diagnostics.jsonl
+          retention-days: 14
+          if-no-files-found: warn

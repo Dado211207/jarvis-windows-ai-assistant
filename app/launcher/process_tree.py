@@ -78,6 +78,14 @@ STILL_ALIVE = "still_alive"
 INACCESSIBLE = "inaccessible"
 REUSED = "pid_reused"
 
+# Where a target came from. Diagnostic only — nothing branches on these,
+# and they exist because "one msedge.exe survived" does not say whether
+# the survivor was a process we captured up front or one we only noticed
+# at cleanup time, and those are different defects.
+FROM_CAPTURE = "captured"      # present in the sequence handed to us
+FROM_EXPANSION = "expanded"    # found by expand_descendants, at cleanup time
+FROM_ROOT = "root"             # the process the caller itself spawned
+
 
 @dataclass(frozen=True)
 class ProcessIdentity:
@@ -100,6 +108,14 @@ class ProcessIdentity:
     create_time: Optional[float] = None
     name: str = ""
     ppid: Optional[int] = None
+
+    #: Where this identity was learned from — diagnostic only.
+    #: `compare=False` on purpose: this class is frozen and therefore
+    #: hashable, and `recapture()` and the reuse check both rely on two
+    #: identities for the same process comparing equal. A label about how
+    #: we found it must not be able to make the same process look like a
+    #: different one.
+    source: str = field(default="", compare=False)
 
     def is_verifiable(self) -> bool:
         """Whether this identity can prove itself later.
@@ -131,6 +147,28 @@ class CleanupResult:
     exited_after_terminate: bool = False
     kill_sent: bool = False
     exited_after_kill: bool = False
+
+    # --- diagnostic fields ---
+    #
+    # Added because `still_alive` did not previously distinguish "this
+    # process is running" from "wait_procs did not observe it exit", and
+    # those are different claims. Nothing branches on any of these: they
+    # are recorded, logged and reported, and the pass/fail contract
+    # (`CleanupReport.survivors`) is unchanged.
+    #
+    # Every one is a short constant, a class name or a bool — the same
+    # redaction rule the rest of this module follows. An exception's
+    # *class* is safe; its `str()` is not, because a credential-store or
+    # filesystem error can quote what it was looking for.
+    source: str = ""
+    terminate_error: str = ""
+    kill_error: str = ""
+    wait_error: str = ""
+    #: Result of re-resolving PID + create_time *after* the kill grace.
+    #: One of GONE / REUSED / INACCESSIBLE / STILL_ALIVE, or "" when the
+    #: process never reached that stage.
+    final_state: str = ""
+    final_checked: bool = False
 
     def as_dict(self) -> dict:
         data = asdict(self)
@@ -331,21 +369,32 @@ def terminate_identities(
         return report
 
     targets: List[ProcessIdentity] = list(identities)
+    # Which targets we were handed, and which we discovered ourselves.
+    # Recorded rather than inferred: a survivor that was expanded at
+    # cleanup time was never in the original capture, and a survivor that
+    # was captured up front was. Those point at different defects.
+    sources = {id(identity): identity.source or FROM_CAPTURE for identity in targets}
     if expand_descendants:
         seen = {identity.pid for identity in targets}
         for identity in list(targets):
             for extra in capture_descendants(identity.pid):
                 if extra.pid not in seen:
                     seen.add(extra.pid)
+                    sources[id(extra)] = FROM_EXPANSION
                     targets.append(extra)
 
     live: List[tuple] = []  # (CleanupResult, psutil.Process)
     for identity in targets:
+        source = sources.get(id(identity), FROM_CAPTURE)
         process, outcome = _resolve(psutil, identity)
         if process is None:
-            report.results.append(CleanupResult(identity=identity, outcome=outcome))
+            report.results.append(
+                CleanupResult(identity=identity, outcome=outcome, source=source)
+            )
             continue
-        result = CleanupResult(identity=identity, outcome=STILL_ALIVE, alive_before=True)
+        result = CleanupResult(
+            identity=identity, outcome=STILL_ALIVE, alive_before=True, source=source,
+        )
         report.results.append(result)
         live.append((result, process))
 
@@ -358,7 +407,8 @@ def terminate_identities(
         try:
             process.terminate()
             result.terminate_sent = True
-        except Exception:  # noqa: BLE001 — it may have exited between resolve and now
+        except Exception as exc:  # noqa: BLE001 — it may have exited between resolve and now
+            result.terminate_error = exc.__class__.__name__
             continue
 
     live = _settle(psutil, live, terminate_grace_seconds, TERMINATED, "exited_after_terminate")
@@ -367,16 +417,51 @@ def terminate_identities(
         try:
             process.kill()
             result.kill_sent = True
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            result.kill_error = exc.__class__.__name__
             continue
 
     # The wait that was missing. Without it "killed" meant "kill() did not
     # raise", which is not the same claim at all.
     live = _settle(psutil, live, kill_grace_seconds, KILLED, "exited_after_kill")
 
+    # And the check that was still missing after that. Reaching here means
+    # `wait_procs` did not observe these processes exit within the shared
+    # deadline — which is not the same claim as "this process is still
+    # running", and until now the two were reported identically. Each
+    # remaining target is re-resolved by PID *and* creation time, so the
+    # four possible answers are told apart: it has gone, its PID now
+    # belongs to something else, it cannot be verified, or it genuinely
+    # survived.
+    #
+    # Diagnostic only. `result.outcome` is deliberately not rewritten from
+    # this, so `CleanupReport.survivors` — and every caller and test that
+    # depends on it — behaves exactly as before. Deciding what the outcome
+    # *should* be needs evidence this check is being added to collect.
+    for result, _process in live:
+        result.final_checked = True
+        result.final_state = _final_state(psutil, result.identity)
+
     report.duration_seconds = time.monotonic() - started
     _log(report)
+    _record_diagnostics(report)
     return report
+
+
+def _final_state(psutil, identity: ProcessIdentity) -> str:
+    """Re-resolve one identity after the kill grace, and say what it is.
+
+    Bounded by construction: a couple of psutil calls, no wait. Total, as
+    everything in this module is — a diagnostic that could raise would
+    break the shutdown it was added to explain.
+    """
+    try:
+        process, outcome = _resolve(psutil, identity)
+    except Exception:  # noqa: BLE001
+        return INACCESSIBLE
+    if process is not None:
+        return STILL_ALIVE
+    return outcome or INACCESSIBLE
 
 
 def _settle(psutil, live: List[tuple], timeout: float, outcome: str, flag: str) -> List[tuple]:
@@ -387,7 +472,18 @@ def _settle(psutil, live: List[tuple], timeout: float, outcome: str, flag: str) 
     processes = [process for _result, process in live]
     try:
         gone, _alive = psutil.wait_procs(processes, timeout=timeout)
-    except Exception:  # noqa: BLE001 — a wait must never break shutdown
+    except Exception as exc:  # noqa: BLE001 — a wait must never break shutdown
+        # Still never breaks shutdown, but no longer indistinguishable
+        # from "the wait completed and nothing had exited". Those are
+        # different facts and only one of them is evidence about the
+        # process. The class name only — see CleanupResult.
+        for result, _process in live:
+            result.wait_error = exc.__class__.__name__
+        logger.warning(
+            "Leftover process cleanup: wait_procs raised %s over %d process(es); "
+            "treating none as exited.",
+            exc.__class__.__name__, len(live),
+        )
         return live
 
     finished = {process.pid for process in gone}
@@ -414,12 +510,20 @@ def _log(report: CleanupReport) -> None:
     logger.warning("Leftover process cleanup: %s", report.summary())
     for result in report.survivors:
         logger.warning(
-            "  survived cleanup: pid=%s name=%s ppid=%s terminate_sent=%s kill_sent=%s",
+            "  survived cleanup: pid=%s create_time=%s name=%s ppid=%s source=%s "
+            "terminate_sent=%s terminate_error=%s kill_sent=%s kill_error=%s "
+            "wait_error=%s final_state=%s",
             result.identity.pid,
+            result.identity.create_time,
             result.identity.name or "unknown",
             result.identity.ppid,
+            result.source or "unknown",
             result.terminate_sent,
+            result.terminate_error or "none",
             result.kill_sent,
+            result.kill_error or "none",
+            result.wait_error or "none",
+            result.final_state or "not_checked",
         )
     for result in report.unknown:
         logger.warning(
@@ -427,6 +531,45 @@ def _log(report: CleanupReport) -> None:
             result.identity.pid,
             result.identity.name or "unknown",
         )
+
+
+#: Name of the environment variable that turns the JSONL recorder on.
+#: Unset — which is every shipped build and every ordinary test run —
+#: means nothing is written and this module behaves exactly as before.
+DIAGNOSTICS_ENV = "JARVIS_PROCESS_DIAGNOSTICS"
+
+
+def _record_diagnostics(report: CleanupReport) -> None:
+    """Append one JSON line per cleanup pass, when explicitly asked to.
+
+    Temporary scaffolding for the Windows `msedge.exe` survivor
+    investigation, and deliberately opt-in: a cleanup pass runs on the
+    shutdown path of a windowed build with no console, and a diagnostic
+    that writes to disk by default is a diagnostic that can fill one.
+
+    Safe to write in full because `CleanupReport.as_dict()` is already
+    built from PIDs, image names, PPIDs, timestamps, booleans and short
+    constants — the redaction rule this module has always followed. No
+    executable path is ever recorded, because none is ever captured.
+
+    Total, like everything else here: a diagnostic must never be able to
+    break the shutdown it exists to explain.
+    """
+    import os
+
+    destination = os.environ.get(DIAGNOSTICS_ENV, "").strip()
+    if not destination:
+        return
+    try:
+        import json
+
+        payload = report.as_dict()
+        payload["recorded_at"] = time.time()
+        payload["platform"] = os.name
+        with open(destination, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    except Exception:  # noqa: BLE001 — never break shutdown for a diagnostic
+        logger.debug("Could not record process diagnostics.", exc_info=True)
 
 
 def terminate_pids(pids: Sequence[int]) -> CleanupReport:
