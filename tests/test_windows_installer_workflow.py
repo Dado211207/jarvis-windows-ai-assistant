@@ -132,6 +132,46 @@ def test_the_gate_treats_packaging_paths_as_relevant():
         assert required in script, f"{required} must count as a packaging-relevant change"
 
 
+def test_the_gate_watches_every_script_the_acceptance_phase_runs():
+    """The gate decides whether the installed-product acceptance runs at
+    all, so anything that acceptance executes has to count as relevant.
+
+    scripts/test_clean_install.py was watched but the modules it delegates
+    to were not, so a change to the acceptance logic skipped the only job
+    that runs it — and the check reported success without building. That is
+    the same "expensive half skipped while the build still reports success"
+    failure the gate exists to prevent, one level further out.
+
+    Derived from what test_clean_install.py actually references rather than
+    a hardcoded list, so a new acceptance module is covered on arrival.
+    """
+    import re
+
+    driver = (REPO_ROOT / "scripts" / "test_clean_install.py").read_text(encoding="utf-8")
+
+    referenced = {
+        f"scripts/{name}.py"
+        for name in re.findall(r"\b([a-z_][a-z0-9_]*_acceptance)\b", driver)
+        if (REPO_ROOT / "scripts" / f"{name}.py").exists()
+    }
+    assert referenced, "expected test_clean_install.py to delegate to an acceptance module"
+
+    gate = _jobs()["detect-relevant-changes"]
+    script = " ".join(str(step.get("run", "")) for step in gate["steps"])
+    data = _parsed()
+    on = data[True] if True in data else data["on"]
+
+    for path in sorted(referenced):
+        stem = path.rsplit("/", 1)[-1]
+        assert stem.replace(".py", "") in script, (
+            f"{path} runs inside the installer job but the gate does not treat "
+            "it as packaging-relevant, so changing it skips the build that runs it"
+        )
+        for event in ("pull_request", "push"):
+            declared = on[event]["paths"]
+            assert path in declared, f"{path} is missing from the {event} paths filter"
+
+
 def test_the_gate_fails_safe_and_builds_when_the_range_is_unknown():
     """A gate that skipped on uncertainty could silently drop a build that
     mattered. Unknown range, or a manual dispatch, must always build."""
