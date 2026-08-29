@@ -307,3 +307,45 @@ def test_a_failed_webview2_install_never_aborts_the_installation():
     assert "except" in body or "except" in content[:content.index("function PrepareToInstall")], (
         "the download must be wrapped so a failure cannot propagate"
     )
+
+
+# ---------------------------------------------------------------------------
+# ISPP directive placement
+# ---------------------------------------------------------------------------
+
+def test_no_line_starts_with_a_pascal_character_code_expression():
+    """The preprocessor runs over the whole file before the Pascal in
+    [Code] is ever parsed, and it is not Pascal-aware. Per the ISPP
+    documentation, "Simple directives occupy a whole line and begin with
+    the # symbol" — so a line whose first non-whitespace character is
+    ``#`` is a directive, full stop.
+
+    That makes a wrapped Pascal expression a compile error rather than a
+    style question. Breaking a string concatenation so a continuation
+    line begins with ``#13#10`` makes ISPP read ``13`` as the directive
+    name; Inno Setup 6.7.1 rejected exactly that with "Unknown
+    preprocessor directive" on line 415 and ISCC exited 2, so no
+    installer was produced. The same characters mid-line are fine — the
+    bug is purely positional, which is what makes it easy to
+    reintroduce.
+
+    Real compilation on Windows CI stays the authoritative check; this
+    catches the mistake on Linux, where ISCC cannot run at all.
+    """
+    offenders = []
+    for number, line in enumerate(_read().splitlines(), start=1):
+        stripped = line.lstrip()
+        if not stripped.startswith("#"):
+            continue
+        name = stripped[1:]
+        if not name[:1].isalpha() and not name.startswith("_"):
+            offenders.append((number, line.strip()))
+
+    assert not offenders, (
+        "every line-leading '#' in jarvis.iss is read by ISPP as a preprocessor "
+        "directive, so the character after it must begin a directive name. "
+        "Found line(s) where it does not — a Pascal character-code expression "
+        "such as #13#10 wrapped onto its own line is the usual cause; keep it "
+        "on the previous line instead: "
+        + "; ".join(f"line {n}: {text!r}" for n, text in offenders)
+    )
