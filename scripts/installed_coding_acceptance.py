@@ -408,12 +408,28 @@ def _start_preview(client, project_id: str, root: Path) -> dict:
     """Start the project's own declared dev server, through the product."""
     import httpx
 
-    started = client.post("/coding/preview/start", json={"project_id": project_id})
-    if started.status_code == 404:
+    # Starting a preview is a two-step review-then-confirm flow: /preview/plan
+    # describes the exact script body without running it, and /preview/start
+    # consumes that reviewed plan by id. Confirming by project_id instead
+    # would ask the product to run whatever the script says *now* rather than
+    # what was reviewed, which is the check this flow exists to make.
+    planned = client.post(
+        "/coding/preview/plan", json={"project_id": project_id, "script": "dev"}
+    )
+    if planned.status_code == 404:
         # The preview is driven by a task in this build. Start the fixture
         # server the way the product would and register it, so the browser
         # check still runs against an owned loopback preview.
         _fail("This build has no direct preview endpoint; the acceptance phase needs one.")
+    if planned.status_code != 200:
+        _fail(f"Planning the preview failed: {planned.status_code} {planned.text[:300]}")
+    plan = planned.json().get("plan", {})
+    plan_id = plan.get("plan_id")
+    if not plan_id:
+        _fail(f"The preview plan carried no plan_id: {planned.text[:300]}")
+    print(f"OK: preview plan {plan_id[:8]}… describes {plan.get('argv')}")
+
+    started = client.post("/coding/preview/start", json={"plan_id": plan_id})
     if started.status_code != 200:
         _fail(f"Starting the preview failed: {started.status_code} {started.text[:300]}")
     state = started.json().get("preview", started.json())
