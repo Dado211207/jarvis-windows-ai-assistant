@@ -172,6 +172,51 @@ def test_the_gate_watches_every_script_the_acceptance_phase_runs():
             assert path in declared, f"{path} is missing from the {event} paths filter"
 
 
+def test_the_gate_watches_the_workflows_that_gate_windows_verification():
+    """A change to a workflow that decides what Windows verification runs
+    must itself force the installer to build.
+
+    Observed on run 33272737324: a push touching only
+    `.github/workflows/windows-build.yml` left the pushed-range detector
+    with nothing it recognised, so it answered `relevant=false` and the
+    installer job was **skipped** while the check reported success. A
+    skipped installer is not a pass, and a gate that can be stepped around
+    by editing the very workflow that builds the Windows executable is a
+    false green.
+
+    Both directions matter, which is why every applicable filter is
+    asserted rather than just the detector: the `paths:` filters decide
+    whether the workflow starts at all, and the detector decides whether
+    the expensive job inside it runs.
+    """
+    gating_workflows = (
+        ".github/workflows/windows-installer.yml",
+        ".github/workflows/windows-build.yml",
+    )
+
+    gate = _jobs()["detect-relevant-changes"]
+    script = " ".join(str(step.get("run", "")) for step in gate["steps"])
+    data = _parsed()
+    on = data[True] if True in data else data["on"]
+
+    for path in gating_workflows:
+        assert (REPO_ROOT / path).exists(), f"{path} should exist to be worth gating on"
+
+        # The detector escapes dots for grep, so compare on that form.
+        assert path.replace(".", r"\.") in script, (
+            f"{path} decides what Windows verification runs, but the pushed-range "
+            "detector does not treat it as packaging-relevant — a push touching "
+            "only that file skips the installer and still reports success"
+        )
+
+        for event in ("pull_request", "push"):
+            declared = on[event]["paths"]
+            assert path in declared, (
+                f"{path} is missing from the {event} paths filter, so the installer "
+                "workflow would not even start for a change to it"
+            )
+
+
 def test_the_gate_fails_safe_and_builds_when_the_range_is_unknown():
     """A gate that skipped on uncertainty could silently drop a build that
     mattered. Unknown range, or a manual dispatch, must always build."""
