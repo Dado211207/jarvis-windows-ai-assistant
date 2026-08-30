@@ -473,3 +473,71 @@ def test_the_acceptance_phase_fails_when_no_browser_ran():
     assert "engine_unavailable" in source
     assert 'findings.get("opened")' in source
     assert "playwright" in source.lower()
+
+
+def test_the_acceptance_phase_posts_bodies_the_coding_api_actually_accepts():
+    """The acceptance phase drives the real HTTP API, so a request body that
+    no longer matches its endpoint's model is a 422 nothing catches until a
+    Windows installer run reaches that phase — roughly forty minutes in,
+    behind a full build.
+
+    That is exactly how the preview call broke: /coding/preview/start moved
+    to a review-then-confirm flow taking a reviewed `plan_id`, while this
+    script still confirmed by `project_id`. The mismatch stayed invisible
+    because an unrelated Inno Setup failure aborted every installer run
+    before this phase could execute.
+
+    Checking the literal bodies against the endpoints' own Pydantic models
+    keeps the two in step without running Windows.
+    """
+    import ast
+
+    from app.api.coding_routes import (
+        PreviewCheckRequest,
+        PreviewConfirmRequest,
+        PreviewPlanRequest,
+        PreviewStopRequest,
+    )
+
+    models = {
+        "/coding/preview/plan": PreviewPlanRequest,
+        "/coding/preview/start": PreviewConfirmRequest,
+        "/coding/preview/stop": PreviewStopRequest,
+        "/coding/preview/check": PreviewCheckRequest,
+    }
+
+    checked = set()
+    for node in ast.walk(ast.parse(_acceptance_source())):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "post"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)):
+            continue
+        route = node.args[0].value
+        model = models.get(route)
+        if model is None:
+            continue
+        body = next((kw.value for kw in node.keywords if kw.arg == "json"), None)
+        if not isinstance(body, ast.Dict):
+            continue
+        sent = {k.value for k in body.keys if isinstance(k, ast.Constant)}
+        required = {
+            name for name, field in model.model_fields.items() if field.is_required()
+        }
+        missing = required - sent
+        assert not missing, (
+            f"the acceptance phase posts {sorted(sent)} to {route}, but "
+            f"{model.__name__} requires {sorted(required)} — missing {sorted(missing)}. "
+            "This is a 422 that only a full Windows installer run would surface."
+        )
+        unknown = sent - set(model.model_fields)
+        assert not unknown, (
+            f"the acceptance phase sends {sorted(unknown)} to {route}, which "
+            f"{model.__name__} does not declare"
+        )
+        checked.add(route)
+
+    assert "/coding/preview/start" in checked, (
+        "the preview-start call was not found; this test must keep covering it"
+    )

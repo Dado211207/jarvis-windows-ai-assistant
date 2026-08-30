@@ -411,8 +411,7 @@ begin
       PreserveCleanupEvidence(DataDir);
       if not UninstallSilent() then
         MsgBox(
-          'JARVIS could not finish removing its Startup shortcut and/or saved credentials.' +
-          #13#10 + #13#10 +
+          'JARVIS could not finish removing its Startup shortcut and/or saved credentials.' + #13#10 + #13#10 +
           'Your data was kept for recovery at:' + #13#10 + DataDir + #13#10 + #13#10 +
           'Review uninstall-cleanup-report.json there. You may need to remove JARVIS entries ' +
           'from Windows Credential Manager manually.',

@@ -20,12 +20,24 @@ separate safe Coding Workspace for the owner's own repositories.
 
 ## Active work
 
-- Branch: `claude/jarvis-safe-command-center-v2`
-- Pull request: #15 — https://github.com/Dado211207/jarvis-windows-ai-assistant/pull/15
+- Branch: `claude/fix-v02-inno-installer`
+- Pull request: #17 — https://github.com/Dado211207/jarvis-windows-ai-assistant/pull/17
 - State: Draft, open, unmerged.
-- Base at toolkit adoption: `20fbe1ae55066594f1c0e5b0217dd38526aef486`
-- Toolkit-adoption baseline: `d8109650ecd89212e2a8b305e89b76462d483820`
+- Base: `main` at `a6eaeac282d4e873c6a3487b20ae4c8b42d82db9`
+- Purpose: repair the v0.2 installer build. See `docs/ai/WORK_LOG.md` for the
+  per-defect evidence, workflow run IDs and the open question.
 - Query GitHub again before changing, merging or reporting the current head.
+
+## Completed work
+
+- Pull request #15 (`claude/jarvis-safe-command-center-v2`) is **merged**, not
+  open — squash-merged into `main` on 2026-08-28 as
+  `a6eaeac282d4e873c6a3487b20ae4c8b42d82db9`. This file previously described it
+  as "Draft, open, unmerged"; that was stale. The source branch still exists at
+  `7b1543cd639ac4ecf7c4eaa45dd19512bec63f16` and must not be modified.
+- The post-merge `Windows Installer` run on `a6eaeac` **failed**, which is what
+  PR #17 exists to fix. A merged pull request is not the same as a verified
+  installer.
 
 ## Durable constraints
 

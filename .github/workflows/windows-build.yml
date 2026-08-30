@@ -2,6 +2,21 @@ name: Windows Build
 
 on:
   workflow_dispatch:
+    inputs:
+      survivor_iterations:
+        # Temporary scaffolding for the msedge.exe survivor investigation
+        # (PR #17). "0" — the default, and the value on every automatic
+        # trigger — skips the diagnostics step entirely, so ordinary runs
+        # of this workflow are unchanged.
+        #
+        # It lives here rather than in a workflow of its own because
+        # `workflow_dispatch` only registers from the default branch, and
+        # a diagnostic that cannot be dispatched until it is merged is not
+        # a diagnostic. Remove this input and the two steps below once the
+        # survivor question is answered.
+        description: "Survivor diagnostics: how many times to repeat the failing routes (0 = skip)"
+        required: false
+        default: "0"
   pull_request:
   push:
     branches:
@@ -38,6 +53,39 @@ jobs:
           # inside the checkout directory.
           JARVIS_DB_PATH: ${{ runner.temp }}/ci_jarvis_test.db
           JARVIS_LOG_LEVEL: WARNING
+
+      # --- temporary: msedge.exe survivor diagnostics (PR #17) ---------------
+      #
+      # Skipped unless dispatched with a non-zero iteration count, so every
+      # pull-request and push run of this workflow is unchanged. It repeats
+      # only the two routes that failed on Windows Installer run
+      # 33251235787, with the cleanup path's JSONL recorder switched on.
+      #
+      # `continue-on-error` because this is evidence, not a gate: whether
+      # the survivor reappears must never decide whether the build is
+      # publishable. Delete both steps once the question is answered.
+      - name: "Survivor diagnostics: repeat the failing routes"
+        if: inputs.survivor_iterations != '' && inputs.survivor_iterations != '0'
+        continue-on-error: true
+        run: >-
+          python scripts/diagnose_survivor_flake.py
+          --iterations ${{ inputs.survivor_iterations }}
+          --diagnostics ${{ runner.temp }}/survivor-diagnostics.jsonl
+        env:
+          JARVIS_DB_PATH: ${{ runner.temp }}/survivor_jarvis_test.db
+          JARVIS_LOG_LEVEL: WARNING
+
+      - name: "Survivor diagnostics: upload the record"
+        # `always()` because a captured failure is the point — the record
+        # is most valuable exactly when the step above went red.
+        if: always() && inputs.survivor_iterations != '' && inputs.survivor_iterations != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: survivor-diagnostics
+          path: ${{ runner.temp }}/survivor-diagnostics.jsonl
+          retention-days: 14
+          if-no-files-found: warn
+      # --- end temporary ------------------------------------------------------
 
       - name: Build Windows executable
         run: >-
