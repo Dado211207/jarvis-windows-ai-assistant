@@ -83,15 +83,34 @@ prescribes **no** hash or signature step, and:
 - Inno's `DownloadTemporaryFileWithISSigVerify` verifies an ISSig signature this
   project would have to produce, not Microsoft's Authenticode one;
 - `DownloadTemporaryFile` does validate TLS (it rejects expired and self-signed
-  certificates);
-- Windows 11 — the owner's target — ships the Evergreen Runtime, so
-  `WebView2Installed()` returns true and this path never executes there.
+  certificates).
+
+**What is *not* true: that this path cannot run on the owner's PC.** An earlier
+version of this log said Windows 11 ships the Evergreen Runtime, so
+`WebView2Installed()` returns true and the bootstrapper "never executes there".
+That was an overclaim. Microsoft's own distribution guide says the Runtime *is*
+included in Windows 11 **and**, in the same document, that "some devices might
+not have the Runtime pre-installed, so it's a good practice to check whether the
+Runtime is present on the client" — which is exactly why setup checks the
+registry instead of assuming. The owner also runs a customized Windows 11
+installation, so a Runtime that was removed, stripped or damaged cannot be ruled
+out. The accurate statement is:
+
+- Windows 11 normally includes WebView2;
+- JARVIS correctly checks the `pv` registry value rather than assuming;
+- the documented bootstrapper path **may still execute** when the Runtime is
+  missing, damaged or removed;
+- the download stays accepted as Microsoft's documented online deployment
+  method;
+- **presence must be checked on the real PC before installation** — see the
+  pre-install check in `docs/physical-pc-checklist.md`.
 
 A `WinVerifyTrust` `DLLImport` in Pascal Script was considered and rejected: the
 nested `WINTRUST_DATA`/`WINTRUST_FILE_INFO` marshalling cannot be exercised on
-Linux or in CI (the runners already have the runtime, so `EnsureWebView2()`
-returns early there too), and a subtly wrong struct layout can return a **false
-pass** — worse than an honest absence of a check.
+Linux, and not in CI either — the runners already have the Runtime, so
+`EnsureWebView2()` returns early there, which means the marshalling would ship
+having never run once. A subtly wrong struct layout can return a **false pass**,
+which is worse than an honest absence of a check.
 
 What was unpinned is now pinned:
 `test_setup_only_ever_downloads_over_https_from_a_microsoft_host` holds that
@@ -165,8 +184,14 @@ are untouched. Pre-existing defect, surfaced by this pass.
 
 1. Independent review of this branch.
 2. If accepted, the owner performs the real-PC acceptance in
-   `docs/physical-pc-checklist.md`, starting with item 4 (the window must
-   actually show the dashboard).
+   `docs/physical-pc-checklist.md`, in this order:
+   - **section A0 first — confirm the WebView2 `pv` value before installing
+     anything.** The owner's Windows 11 is customized, so a missing or damaged
+     Runtime cannot be ruled out, and a failed bootstrapper fetch deliberately
+     does not abort the install: an unchecked machine can end up with JARVIS
+     installed and no native window;
+   - then item 4, the window must actually *show the dashboard* — the gap in
+     finding 1 that no automated check can close.
 
 Do not tag, release, deploy, or install JARVIS on the owner's PC without a
 current explicit instruction.

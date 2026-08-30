@@ -66,11 +66,23 @@ VALID_COMMANDS = frozenset({
 
 # Child -> parent.
 #
-# EVENT_READY means "a native window exists on screen", not "this process
-# started". The distinction is load-bearing: the parent used to treat the
+# EVENT_READY means "create_window() returned an object and the window
+# child reached the point where its command pump could start" — not
+# "this process started", and **not** "a window is on screen".
+#
+# The first distinction is load-bearing: the parent used to treat the
 # control connection itself as proof the window worked, so a machine
 # where the window could never be created reported a healthy start and
 # showed the user nothing at all.
+#
+# The second is the limit of what this event can carry. The pump starts
+# as soon as `webview_window.current_window()` is non-None, and
+# `create_and_run()` publishes that object from `webview.create_window()`,
+# which returns *before* `webview.start()` is called. So READY proves
+# neither a successful WebView2 navigation, nor a rendered dashboard, nor
+# a single visible pixel. See app/launcher/desktop_ready.py for the full
+# reasoning, including why pywebview's `loaded` event is not the missing
+# proof — it fires on an error page too.
 EVENT_READY = "ready"
 EVENT_CLOSED = "closed"
 EVENT_ERROR = "error"
@@ -235,9 +247,10 @@ class ControlListener:
         """Waits for one specific event, returning it, or the first
         *error* event, or None on timeout.
 
-        Exists because "the child process connected" and "the child
-        actually has a window on screen" are different facts, and the
-        parent was treating the first as proof of the second. Events that
+        Exists because "the child process connected" and "the child got
+        as far as building a window object" are different facts, and the
+        parent was treating the first as proof of the second. Neither is
+        proof that anything is on screen — see EVENT_READY above. Events that
         are neither the one awaited nor an error are skipped rather than
         discarded silently — they are valid protocol traffic that simply
         arrived first.

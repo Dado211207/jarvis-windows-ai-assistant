@@ -131,14 +131,17 @@ class WindowProcess:
         return env
 
     def start(self, base_env: Optional[dict] = None) -> bool:
-        """Starts one window child and waits for a window to actually
-        exist. Never raises; see start_detailed() for why it also reports
-        a reason."""
+        """Starts one window child and waits for a window object to
+        actually exist. Never raises; see start_detailed() for why it also
+        reports a reason."""
         return self.start_detailed(base_env).ok
 
     def start_detailed(self, base_env: Optional[dict] = None) -> "WindowStartResult":
-        """Starts exactly one window child and waits for it to report a
-        real window on screen.
+        """Starts exactly one window child and waits for it to report
+        EVENT_READY — that a window object was built and its command pump
+        started. That is **not** proof the dashboard rendered: see
+        app/launcher/ipc.py's EVENT_READY comment and
+        app/launcher/desktop_ready.py.
 
         Returns *why* it failed, not just that it did. The parent needs
         that to tell "the WebView2 runtime is missing, here is the

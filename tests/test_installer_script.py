@@ -300,18 +300,32 @@ def test_setup_only_ever_downloads_over_https_from_a_microsoft_host():
     certificates), from a Microsoft host, and no plain-HTTP URL anywhere
     in the script. A second download site, a different host, or an
     `http://` downgrade all fail here.
+
+    Both of Inno Setup's file-fetching APIs are counted, not just the one
+    currently used. An earlier version matched `DownloadTemporaryFile\\s*\\(`
+    alone, which cannot match `DownloadTemporaryFileWithISSigVerify(` —
+    the name continues past the point the pattern expected `(` — so a
+    second download added through the ISSig variant would have slipped
+    past a test whose whole purpose is to notice one. `…FileSize` and
+    `…FileDate` are deliberately not counted: they retrieve metadata, not
+    a file that could then be executed.
     """
     import re
 
     content = _read()
 
-    call_sites = re.findall(r"DownloadTemporaryFile\s*\((.*?)\)", content, re.DOTALL)
+    # Longest name first: the alternation must not settle for the prefix.
+    download_apis = ("DownloadTemporaryFileWithISSigVerify", "DownloadTemporaryFile")
+    pattern = r"\b(" + "|".join(download_apis) + r")\s*\((.*?)\)"
+    call_sites = re.findall(pattern, content, re.DOTALL)
+
     assert len(call_sites) == 1, (
-        f"expected exactly one download in setup, found {len(call_sites)} — "
-        "a new one needs its own review, not this test's silence"
+        f"expected exactly one download in setup, found {len(call_sites)}: "
+        + ", ".join(sorted(name for name, _args in call_sites))
+        + " — a new one needs its own review, not this test's silence"
     )
 
-    first_argument = call_sites[0].split(",")[0].strip()
+    first_argument = call_sites[0][1].split(",")[0].strip()
     constant = re.search(
         rf"^\s*{re.escape(first_argument)}\s*=\s*'([^']*)'\s*;",
         content,
