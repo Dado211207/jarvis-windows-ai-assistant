@@ -46,6 +46,51 @@ def test_all_four_facts_are_required():
     assert DesktopReadyState(**{name: True for name in facts}).ready is True
 
 
+def test_ready_is_four_process_facts_and_claims_nothing_about_rendering():
+    """`ready` is about processes, not pixels — a documented limit, not an
+    oversight, and this pins it so it cannot be widened silently.
+
+    Two findings sit behind it. `window_alive` is answered by the window
+    child's IPC pump, which starts as soon as
+    `webview_window.current_window()` is non-None — and `create_and_run()`
+    publishes that object from `webview.create_window()`, which returns
+    *before* `webview.start()`. And pywebview's `window.events.loaded` is
+    not the missing evidence: in 6.2.1's edgechromium backend
+    `on_navigation_completed(self, sender, _)` throws away the
+    `NavigationCompletedEventArgs` without reading `IsSuccess` and calls
+    `inject_pywebview()` regardless, while `util.py` sets `events.loaded`
+    both at the end of the injection and inside its own `except` handler.
+    An error page fires it exactly like a healthy dashboard.
+
+    So a state can be fully ready with no evidence whatsoever that the
+    dashboard rendered. Adding such evidence means proving it at the page
+    (an in-page beacon or an `evaluate_js` probe for a known element),
+    never inferring it here. Until then it is a manual real-PC check —
+    see docs/physical-pc-checklist.md.
+    """
+    import inspect
+
+    facts = ("server_healthy", "window_alive", "tray_listening", "parent_running")
+    source = inspect.getsource(DesktopReadyState.ready.fget)
+
+    assert {name for name in facts if name in source} == set(facts), (
+        "ready must be derived from all four proved process facts"
+    )
+
+    other_fields = set(vars(DesktopReadyState())) - set(facts)
+    for name in sorted(other_fields):
+        assert name not in source, (
+            f"{name!r} now feeds `ready`. If that is a rendering claim, it must be "
+            "proved at the page, and this module's docstring plus "
+            "docs/physical-pc-checklist.md must stop calling it unverified."
+        )
+
+    # The limitation, stated as an assertion rather than a comment.
+    assert DesktopReadyState(**{name: True for name in facts}).ready is True, (
+        "ready is reachable with zero evidence that WebView2 painted anything"
+    )
+
+
 def test_ready_cannot_be_set_directly():
     """A flag the parent sets because it believes it started correctly
     would report exactly the state that already failed on real hardware."""

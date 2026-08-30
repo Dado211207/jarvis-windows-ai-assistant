@@ -155,8 +155,18 @@ device is not a room.
 3. **Upgrade directly over the previously installed RC**, without
    uninstalling first. Settings, chat history and any downloaded voice or
    speech model must survive.
-4. The **native JARVIS window opens**, and no unwanted browser tab opens
-   with it.
+4. The **native JARVIS window opens and actually shows the dashboard** —
+   not a blank panel, not a WebView2 error page — and no unwanted browser
+   tab opens with it.
+
+   Check this with your eyes, because nothing in the product can.
+   `GET /desktop/ready` proves four *process* facts — the server answered
+   `/health`, the window child answered a ping on its control channel,
+   the tray's message loop dispatched, the parent owns the lock — and
+   **none of them is evidence that WebView2 painted anything**. A blank
+   window reporting `ready: true` is a state the automated suite cannot
+   tell apart from success. See `app/launcher/desktop_ready.py` for why
+   pywebview's `loaded` event is not the missing proof either.
 5. A **second launch brings the existing window forward** rather than
    starting anything new.
 6. **Start with Windows**, if you switch it on: reboot and confirm JARVIS

@@ -281,6 +281,54 @@ def test_setup_installs_webview2_when_it_is_missing():
     assert "/silent /install" in content
 
 
+def test_setup_only_ever_downloads_over_https_from_a_microsoft_host():
+    """The one thing setup fetches and then *runs* is Microsoft's Evergreen
+    bootstrapper, and this pins the properties that make that acceptable.
+
+    It is deliberately not a SHA-256 pin. Microsoft's distribution guide
+    documents this exact workflow — check the `pv` regkey, fetch the
+    bootstrapper from the permanent fwlink, run
+    `MicrosoftEdgeWebview2Setup.exe /silent /install` — and the file
+    behind that link is *meant* to change as the Evergreen Runtime moves,
+    so a pinned hash would fail on the first Microsoft update rather than
+    catch anything. Inno's `DownloadTemporaryFileWithISSigVerify` cannot
+    help either: ISSig verifies a signature this project would have to
+    make, not Microsoft's Authenticode one.
+
+    What is left, and what this test holds: exactly one download, over
+    HTTPS (`DownloadTemporaryFile` rejects expired and self-signed
+    certificates), from a Microsoft host, and no plain-HTTP URL anywhere
+    in the script. A second download site, a different host, or an
+    `http://` downgrade all fail here.
+    """
+    import re
+
+    content = _read()
+
+    call_sites = re.findall(r"DownloadTemporaryFile\s*\((.*?)\)", content, re.DOTALL)
+    assert len(call_sites) == 1, (
+        f"expected exactly one download in setup, found {len(call_sites)} — "
+        "a new one needs its own review, not this test's silence"
+    )
+
+    first_argument = call_sites[0].split(",")[0].strip()
+    constant = re.search(
+        rf"^\s*{re.escape(first_argument)}\s*=\s*'([^']*)'\s*;",
+        content,
+        re.MULTILINE,
+    )
+    assert constant, f"could not resolve {first_argument!r} to a literal URL"
+
+    url = constant.group(1)
+    assert url.startswith("https://"), f"setup downloads over plain HTTP: {url}"
+    host = url.split("//", 1)[1].split("/", 1)[0].lower()
+    assert host in {"go.microsoft.com", "msedge.sf.dl.delivery.mp.microsoft.com"}, (
+        f"setup downloads an executable from {host!r}, which is not a Microsoft host"
+    )
+
+    assert "http://" not in content, "no URL in the installer may be plain HTTP"
+
+
 def test_the_webview2_step_runs_on_a_silent_install_too():
     """NextButtonClick never fires without a wizard, so a /VERYSILENT
     install — CI's, and any unattended deployment — would silently skip

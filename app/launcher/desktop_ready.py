@@ -25,6 +25,34 @@ Each is *proved*, never assumed. A flag the parent sets because it
 believes it started correctly would report exactly the state that already
 failed on real hardware.
 
+**What `ready` deliberately does not claim.** All four facts are about
+processes, not pixels. None of them is evidence that WebView2 painted the
+dashboard, and `ready` must never be read as "the user can see JARVIS":
+
+  * `window_alive` is answered by the window child's IPC pump. The pump
+    starts as soon as `webview_window.current_window()` stops being None
+    — and `create_and_run()` publishes that object from
+    `webview.create_window()`, which returns *before* `webview.start()`
+    is called. So READY can precede the native window's own creation,
+    never mind its navigation.
+  * pywebview's `window.events.loaded` is **not** the missing evidence,
+    and wiring it here would be a false signal rather than a fix. In
+    pywebview 6.2.1's edgechromium backend,
+    `EdgeChrome.on_navigation_completed(self, sender, _)` discards the
+    `NavigationCompletedEventArgs` without ever reading `IsSuccess`, then
+    calls `inject_pywebview()` unconditionally; `util.py` sets
+    `events.loaded` at the end of that injection *and again inside its
+    own `except` handler*. A WebView2 error page and a thrown injection
+    therefore both fire `loaded` exactly like a healthy dashboard.
+
+Anything that needs "the dashboard is really on screen" has to establish
+it at the page — an in-page beacon, or an `evaluate_js` probe for a known
+element driven by the code that owns the window — in the spirit of
+app/coding/browser_qa.py, which records `opened` in the code that opened
+the page rather than inferring it from state. Until such a probe exists,
+visible rendering is a manual real-PC check; see
+docs/physical-pc-checklist.md.
+
 **Authentication.** The parent publishes to the server child over
 loopback, presenting the per-session secret the two of them already share
 (app/launcher/server_process.py passes it by inherited environment,
