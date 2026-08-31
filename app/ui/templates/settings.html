@@ -137,10 +137,27 @@
       <span class="status-row-label">Status</span>
       <span id="settings-key-status" class="status-row-value loading">&#8230;</span>
     </div>
+    <div class="status-row mt-3">
+      <span class="status-row-label">Workspace ID</span>
+      <span id="settings-workspace-status" class="status-row-value loading">&#8230;</span>
+    </div>
     <div class="btn-row mt-3">
       <input id="settings-key-input" class="input" type="password" placeholder="Paste your Anthropic API key" autocomplete="off" aria-label="Anthropic API key">
       <button id="settings-key-save" class="btn btn-primary" type="button">Save</button>
       <button id="settings-key-remove" class="btn btn-danger" type="button">Remove</button>
+    </div>
+    <div class="form-field mt-3">
+      <label class="form-label" for="settings-workspace-input">Workspace ID <span class="text-muted">(optional)</span></label>
+      <input id="settings-workspace-input" class="input" type="text" placeholder="wrkspc_…" autocomplete="off"
+             aria-describedby="settings-workspace-hint">
+      <p class="text-xs text-muted mt-2" id="settings-workspace-hint">
+        Only needed for a key linked to your account rather than to a single
+        workspace — Anthropic rejects those without it. Find it in the
+        <strong>ID</strong> column of Settings &rarr; Workspaces in the Claude Console,
+        then save the key and this together. Leave it empty for a key that is already
+        scoped to one workspace. It is stored on this PC as account metadata, never sent
+        anywhere but Anthropic, and never shown in diagnostics.
+      </p>
     </div>
     <p id="settings-key-message" class="text-xs mt-2" aria-live="polite"></p>
   </div>

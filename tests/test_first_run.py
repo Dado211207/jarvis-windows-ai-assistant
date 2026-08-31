@@ -37,6 +37,23 @@ def _js() -> str:
 # What first run asks
 # ---------------------------------------------------------------------------
 
+#: Every input first run is allowed to contain, by id. Adding to this
+#: list is a product decision about what someone must face before they
+#: have a working assistant — not a convenience.
+ALLOWED_SETUP_INPUTS = (
+    "setup-name-input",
+    "setup-key-input",
+    # Raised from two to three by the owner's instruction after a real-PC
+    # failure: an Anthropic *identity-linked* key (a personal or service
+    # account key not scoped to one workspace) is rejected on every
+    # request without a Workspace ID, so a first run that cannot accept
+    # one is a first run that cannot finish for those keys. Optional, and
+    # correctly left blank for a legacy workspace-scoped key — see
+    # app/core/ai/workspace.py.
+    "setup-workspace-input",
+)
+
+
 def test_first_run_asks_for_a_preferred_name_and_an_api_key():
     html = _html()
     assert 'id="setup-name-input"' in html
@@ -46,10 +63,33 @@ def test_first_run_asks_for_a_preferred_name_and_an_api_key():
 def test_first_run_asks_for_nothing_else():
     """The ceiling, not the floor. Every input on this page is one more
     thing between someone and a working assistant, and the six-step
-    version is what the owner rejected."""
+    version is what the owner rejected.
+
+    The count alone was the guard before; it is now the count *and* the
+    identity of each field, which is strictly harder to creep past — a
+    fourth card cannot arrive by swapping one input for another.
+    """
     html = _html()
-    inputs = re.findall(r"<(input|select|textarea)\b[^>]*>", html)
-    assert len(inputs) == 2, f"first run must ask exactly two things, found {len(inputs)}"
+    inputs = re.findall(r"<(?:input|select|textarea)\b[^>]*>", html)
+    assert len(inputs) == len(ALLOWED_SETUP_INPUTS), (
+        f"first run must ask exactly {len(ALLOWED_SETUP_INPUTS)} things, found {len(inputs)}"
+    )
+    for field_id in ALLOWED_SETUP_INPUTS:
+        assert f'id="{field_id}"' in html, f"first run lost its {field_id!r} field"
+
+
+def test_the_only_optional_first_run_field_is_the_workspace_id():
+    """The name and the key are what first run is *for*. Anything else on
+    this page has to justify itself, and this pins the one that did."""
+    html = _html()
+    at = html.index('id="setup-workspace-input"')
+    # A window either side: the "(optional)" marker is in the <label> that
+    # precedes the input, the placeholder is on the input itself, and the
+    # hint follows it.
+    block = html[max(0, at - 400):at + 800].lower()
+    assert "optional" in block
+    assert "wrkspc_" in block
+    assert "claude console" in block
 
 
 def test_first_run_is_a_single_screen():

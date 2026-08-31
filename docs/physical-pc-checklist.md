@@ -232,6 +232,18 @@ surprise.
 13. Ask JARVIS a real question and get a **real Anthropic response**.
 14. Deliberately save a **wrong key** and confirm the error says the key
     was rejected — not "add an API key", and not "offline".
+14a. **Identity-linked key.** With a personal or service account key that
+    is *not* scoped to a single workspace, save it with the **Workspace ID
+    box empty**. It must be refused with *"This Anthropic API key requires
+    a Workspace ID"*, and the Settings status must **not** afterwards
+    claim the key is working. Then paste the Workspace ID from the
+    Console's Settings → Workspaces **ID** column, save again, and confirm
+    chat works. Confirm the Workspace ID appears in no log line, no
+    Diagnostics field and no API response — only "Set"/"Not set".
+14b. **Legacy workspace-scoped key**, if you have one: it must still work
+    with the Workspace ID box left empty. Nothing about it changed.
+14c. **Remove the key** and confirm the Workspace ID clears with it, so
+    the next key does not inherit it.
 15. On a machine without Ollama, run the **guided local-AI install**.
     Confirm the plan screen names source, publisher, licence, size and
     free space *before* anything is fetched; that the **Authenticode

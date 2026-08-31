@@ -43,13 +43,43 @@ class _Client:
 # Anthropic
 # ---------------------------------------------------------------------------
 
-def test_anthropic_is_available_only_when_a_key_is_configured(monkeypatch):
+def test_anthropic_is_available_only_when_the_key_was_actually_checked(monkeypatch):
+    """`available` means the provider answered — not that a key exists.
+
+    This assertion used to read "available iff a key is configured", and
+    that is exactly what went wrong on a real Windows 11 machine: an
+    identity-linked key was stored, Anthropic rejected every request with
+    HTTP 400 for a missing `anthropic-workspace-id` header, and the
+    dashboard went on reporting "natural-language chat is available"
+    because a credential was present. A key that exists and a key that
+    works are different facts.
+    """
     from app.config import settings
     monkeypatch.setattr(type(settings), "has_anthropic_key", property(lambda self: True))
+    monkeypatch.setattr(providers, "anthropic_credential_state", lambda: providers.CREDENTIAL_VERIFIED)
     assert providers.anthropic_status().available is True
 
-    monkeypatch.setattr(type(settings), "has_anthropic_key", property(lambda self: False))
+    # The defect, stated as an assertion: present but never checked is
+    # not available, and neither is present but rejected.
+    monkeypatch.setattr(providers, "anthropic_credential_state", lambda: providers.CREDENTIAL_UNVERIFIED)
     assert providers.anthropic_status().available is False
+
+    monkeypatch.setattr(providers, "anthropic_credential_state", lambda: providers.CREDENTIAL_FAILED)
+    assert providers.anthropic_status().available is False
+
+    monkeypatch.setattr(providers, "anthropic_credential_state", lambda: providers.CREDENTIAL_NOT_CONFIGURED)
+    assert providers.anthropic_status().available is False
+
+
+def test_no_credential_state_claims_chat_is_available_except_the_verified_one(monkeypatch):
+    """The sentence the dashboard renders, held to the same rule as the
+    boolean beside it."""
+    for state, detail in providers._CREDENTIAL_DETAIL.items():
+        if state == providers.CREDENTIAL_VERIFIED:
+            continue
+        assert "is available" not in detail, (
+            f"the {state!r} detail tells the user chat works: {detail!r}"
+        )
 
 
 def test_anthropic_status_never_contains_the_key(monkeypatch):

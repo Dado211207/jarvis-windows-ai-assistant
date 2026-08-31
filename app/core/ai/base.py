@@ -53,6 +53,12 @@ class ProviderConfig:
     timeout_seconds: float = 20.0
     api_key: str = ""
     ollama_model: str = ""
+    # Anthropic only. Blank for a legacy workspace-scoped key, which needs
+    # no header; required by Anthropic for an identity-linked (personal or
+    # service account) key, which is rejected with HTTP 400 without it.
+    # Not a secret, but still never logged or returned — see
+    # app/core/ai/workspace.py.
+    anthropic_workspace_id: str = ""
 
 
 @dataclass

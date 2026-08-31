@@ -20,12 +20,13 @@ separate safe Coding Workspace for the owner's own repositories.
 
 ## Active work
 
-- Branch: `claude/pre-install-audit-hardening`
-- Base: `main` at `22e419da530b18d37f9d9aa5416aed5dc3b28894`
-- Purpose: the final pre-install audit before the owner runs JARVIS on a real
-  Windows 11 PC. See `docs/ai/WORK_LOG.md` for the findings, the two that were
-  determined to need no code change and why, and the one real defect that is
-  documented rather than fixed.
+- Branch: `claude/anthropic-workspace-id`
+- Base: `main` at `884c737d465afddeaee31ba99567345861602026`
+- Purpose: JARVIS could not authenticate with an Anthropic **identity-linked**
+  API key (a personal or service account key that is not scoped to one
+  workspace). Anthropic requires the `anthropic-workspace-id` header for those,
+  and JARVIS stored only a key. Reproduced on the owner's real Windows 11 PC and
+  independently outside JARVIS. See `docs/ai/WORK_LOG.md`.
 - State: awaiting independent review. Nothing installed, merged, tagged,
   released or deployed.
 - Query GitHub again before changing, merging or reporting the current head.
@@ -35,6 +36,15 @@ separate safe Coding Workspace for the owner's own repositories.
 - Pull request #15 (`claude/jarvis-safe-command-center-v2`) is **merged** —
   squash-merged into `main` on 2026-08-28 as `a6eaeac`. The source branch still
   exists at `7b1543cd639ac4ecf7c4eaa45dd19512bec63f16` and must not be modified.
+- Pull request #18 (`claude/pre-install-audit-hardening`) is **merged** —
+  squash-merged into `main` on 2026-08-31 as
+  `884c737d465afddeaee31ba99567345861602026`. Its post-merge CI, Windows Build
+  and a genuinely non-skipped Windows Installer job were all green at attempt 1.
+- **Real-PC acceptance reached the AI provider and stopped there.** WebView2
+  151.0.4129.59, checksum match, install, native window rendering the real
+  dashboard, healthy database and health, and a working Anthropic account all
+  passed. An identity-linked API key then failed every request — the defect the
+  active branch fixes.
 - Pull request #17 (`claude/fix-v02-inno-installer`) is **merged** —
   squash-merged into `main` on 2026-08-30 as
   `22e419da530b18d37f9d9aa5416aed5dc3b28894`. It repaired the v0.2 installer
@@ -57,6 +67,13 @@ separate safe Coding Workspace for the owner's own repositories.
   `app/core/runtime_state.py`.
 - Coding Workspace is isolated from the ordinary assistant and stays inside its
   explicit project boundary.
+- The Anthropic API key lives in Windows Credential Manager; the **Workspace ID**
+  is account metadata in `preferences.py`, never the credential store, and
+  neither is ever returned by an endpoint, logged or put in a diagnostic. An
+  identity-linked key without its workspace cannot authenticate — see
+  `app/core/ai/workspace.py`.
+- Provider status has four states. "A credential exists" is never reported as
+  "chat is available"; only a credential the provider actually answered for is.
 - `GET /desktop/ready` proves four *process* facts and is never evidence that
   WebView2 rendered the dashboard. pywebview's `loaded` event is not that
   evidence either — it fires on an error page too. Anything claiming visible

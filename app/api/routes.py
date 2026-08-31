@@ -620,10 +620,21 @@ def stored_data() -> StoredDataResponse:
 
 class ApiKeyStatusResponse(BaseModel):
     configured: bool
+    # Whether a Workspace ID is stored — never which one. The page needs
+    # to render "set"/"not set" and nothing more.
+    workspace_configured: bool = False
+    # One of app/core/providers.py's four CREDENTIAL_* state names, so the
+    # page can stop describing a merely-present key as a working one.
+    state: str = "not_configured"
 
 
 class SetApiKeyRequest(BaseModel):
     api_key: str
+    # Optional: blank is correct for a legacy workspace-scoped key, and
+    # required by Anthropic for an identity-linked one. Validated for
+    # shape in app/core/ai/workspace.py, then verified for real against
+    # the provider together with the key.
+    workspace_id: str = ""
 
     @field_validator("api_key")
     @classmethod
@@ -649,7 +660,15 @@ class ApiKeyActionResponse(BaseModel):
 @router.get("/settings/api-key-status", response_model=ApiKeyStatusResponse)
 def api_key_status() -> ApiKeyStatusResponse:
     from app.config import settings
-    return ApiKeyStatusResponse(configured=settings.has_anthropic_key)
+    from app.core.ai.workspace import PREFERENCE_KEY as WORKSPACE_PREFERENCE
+    from app.core.preferences import get as get_preference
+    from app.core.providers import anthropic_credential_state
+
+    return ApiKeyStatusResponse(
+        configured=settings.has_anthropic_key,
+        workspace_configured=bool((get_preference(WORKSPACE_PREFERENCE) or "").strip()),
+        state=anthropic_credential_state(),
+    )
 
 
 @router.post(
@@ -671,12 +690,28 @@ def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
     it afterwards would be punishing them for their network.
     """
     from app.core.ai.key_check import verify_anthropic_key
+    from app.core.ai.workspace import PREFERENCE_KEY as WORKSPACE_PREFERENCE
+    from app.core.ai.workspace import normalise_workspace_id
     from app.core.credentials import set_stored_api_key
+    from app.core.preferences import store_many as store_preferences
+    from app.core.providers import (
+        CREDENTIAL_FAILED,
+        CREDENTIAL_VERIFIED,
+        VERIFICATION_PREFERENCE,
+    )
 
     key = req.api_key.strip()
-    verification = verify_anthropic_key(key)
+    workspace = normalise_workspace_id(req.workspace_id)
+
+    # Verified as a pair. An identity-linked key is rejected without the
+    # workspace header, so checking the key on its own would either fail a
+    # good key or bless one that has never made a successful request.
+    verification = verify_anthropic_key(key, workspace)
 
     if not verification.ok and not verification.worth_storing:
+        # Nothing is written: not the key, not the workspace ID, not the
+        # state. A refused attempt must leave the previous configuration
+        # exactly as it was rather than half-replacing it.
         return ApiKeyActionResponse(
             success=False,
             message=verification.message,
@@ -692,7 +727,20 @@ def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
             stored=False,
         )
 
-    logger.info("Anthropic API key stored via the OS credential store.")
+    # Written only after the key is safely in the credential store, so the
+    # two can never disagree about which workspace the stored key acts in
+    # — and written together, because a half-applied pair is a workspace
+    # that belongs to one key and a verdict that belongs to another.
+    store_preferences({
+        WORKSPACE_PREFERENCE: workspace,
+        VERIFICATION_PREFERENCE: CREDENTIAL_VERIFIED if verification.ok else CREDENTIAL_FAILED,
+    })
+
+    logger.info(
+        "Anthropic API key stored via the OS credential store. workspace_configured=%s verified=%s",
+        bool(workspace),
+        verification.ok,
+    )
     if verification.ok:
         return ApiKeyActionResponse(success=True, message="API key saved and verified.", stored=True)
     return ApiKeyActionResponse(
@@ -709,9 +757,26 @@ def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
     dependencies=[Depends(require_session_token)],
 )
 def remove_api_key() -> ApiKeyActionResponse:
+    """Remove the key, and the metadata that only described that key.
+
+    The workspace ID and the verification state are properties *of the
+    credential*, not standing preferences: leaving them behind would mean
+    the next key entered inherits the workspace of the one before it, and
+    the status page would go on reporting a verification that belonged to
+    a credential that no longer exists. They are cleared here rather than
+    by the uninstaller because this is the moment the thing they describe
+    stops existing.
+    """
+    from app.core.ai.workspace import PREFERENCE_KEY as WORKSPACE_PREFERENCE
     from app.core.credentials import clear_stored_api_key
+    from app.core.preferences import store_many as store_preferences
+    from app.core.providers import VERIFICATION_PREFERENCE
+
     if clear_stored_api_key():
-        logger.info("Anthropic API key removed from the OS credential store.")
+        # Cleared after the credential is gone, so a failure above leaves
+        # a consistent pair rather than a key with no workspace.
+        store_preferences({WORKSPACE_PREFERENCE: "", VERIFICATION_PREFERENCE: ""})
+        logger.info("Anthropic API key removed from the OS credential store; workspace metadata cleared.")
         return ApiKeyActionResponse(success=True, message="API key removed.")
     return ApiKeyActionResponse(success=False, message="Could not remove the key from the OS credential store.")
 

@@ -51,6 +51,12 @@ VERIFY_SYSTEM = "You are a connectivity check. Reply with one word."
 
 # Categories that say nothing bad about the key itself, so the key is
 # still worth storing.
+#
+# PROVIDER_WORKSPACE_REQUIRED is deliberately absent. That failure means
+# the pair as entered cannot make a request, so storing it would leave an
+# installation whose Settings page shows a key that has never worked —
+# exactly the misleading state this pass exists to remove. It fails
+# closed, and the message tells the owner precisely what to add.
 _KEY_IS_PROBABLY_FINE = (
     ErrorCategory.PROVIDER_BILLING,
     ErrorCategory.PROVIDER_RATE_LIMIT,
@@ -74,8 +80,23 @@ class KeyVerification:
     worth_storing: bool = False
 
 
-def verify_anthropic_key(api_key: str, provider_factory=None) -> KeyVerification:
-    """Try *api_key* once and report what happened.
+def verify_anthropic_key(
+    api_key: str,
+    workspace_id: str = "",
+    provider_factory=None,
+) -> KeyVerification:
+    """Try *api_key* — together with *workspace_id* — once, and report what
+    happened.
+
+    The pair is verified **atomically**, and deliberately: an identity-linked
+    key is rejected by Anthropic without the workspace header, so checking
+    the key alone would either fail a perfectly good key or store one that
+    has never made a successful request. The request made here carries the
+    same header every later request will carry, because it is built by the
+    same `AnthropicProvider._client()`.
+
+    A blank *workspace_id* is normal and correct for a legacy
+    workspace-scoped key, and sends no header at all.
 
     *provider_factory* is a test seam; production passes nothing and gets
     the real AnthropicProvider. Never raises: a failure to verify is a
@@ -83,12 +104,27 @@ def verify_anthropic_key(api_key: str, provider_factory=None) -> KeyVerification
     where an unhandled error would be the user's first impression of the
     product.
     """
+    from app.core.ai.workspace import normalise_workspace_id, validate_workspace_id
+
     key = (api_key or "").strip()
     if not key:
         return KeyVerification(
             ok=False,
             message="Enter your Anthropic API key to continue.",
             category=None,
+            worth_storing=False,
+        )
+
+    workspace = normalise_workspace_id(workspace_id)
+    shape_problem = validate_workspace_id(workspace)
+    if shape_problem is not None:
+        # Refused before spending a request: a value that cannot be a
+        # workspace ID cannot become one by being sent.
+        logger.info("API key verification refused a malformed workspace ID.")
+        return KeyVerification(
+            ok=False,
+            message=shape_problem,
+            category=ErrorCategory.PROVIDER_WORKSPACE_REQUIRED,
             worth_storing=False,
         )
 
@@ -105,6 +141,7 @@ def verify_anthropic_key(api_key: str, provider_factory=None) -> KeyVerification
         provider = provider_factory(
             ProviderConfig(
                 api_key=key,
+                anthropic_workspace_id=workspace,
                 max_tokens=VERIFY_MAX_TOKENS,
                 timeout_seconds=VERIFY_TIMEOUT_SECONDS,
             )

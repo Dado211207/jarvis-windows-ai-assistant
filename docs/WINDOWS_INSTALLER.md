@@ -118,9 +118,38 @@ Run the installer and follow it. Then, on first launch, JARVIS asks for:
 2. **An Anthropic API key** — optional, and only needed for conversational
    AI replies. Commands work without one.
 
+3. **A Workspace ID** — optional, and only needed for some keys. See below.
+
 The key is stored in **Windows Credential Manager**, never in a file in
 your profile, never in the database, and never in a log. You can add,
 change or remove it later from **Settings**.
+
+### When you need a Workspace ID
+
+Anthropic has two kinds of API key, and only one of them needs this:
+
+- A key **scoped to a single workspace** works on its own. Leave the
+  Workspace ID empty.
+- A key **linked to your account** — a personal key or a service account
+  key that is not tied to one workspace — must say which workspace each
+  request acts in. Without it Anthropic rejects every request with
+  *"anthropic-workspace-id is required when authenticating with an
+  identity-linked API key"*, and JARVIS will tell you so in one sentence.
+
+**Where to find it:** in the [Claude Console](https://platform.claude.com/settings/workspaces),
+go to **Settings → Workspaces** and copy the value from the **ID**
+column. It starts with `wrkspc_`.
+
+The Default Workspace is not listed there. The simplest way to avoid the
+question entirely is to create a key scoped to a named workspace, which
+needs no Workspace ID at all.
+
+Enter the key and the Workspace ID together and press **Save** — JARVIS
+checks the pair against Anthropic before storing either, so a
+combination that cannot work is never saved. The Workspace ID is stored
+on this PC as account metadata (it identifies a workspace; it does not
+authenticate anything), and like the key it never appears in a log, a
+diagnostic or an API response. Removing the key clears it too.
 
 Everything else is set up from inside the application, when and if you
 want it:

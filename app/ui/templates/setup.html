@@ -48,6 +48,18 @@
       <p id="setup-key-message" class="text-xs mt-2" aria-live="polite"></p>
     </div>
 
+    <div class="form-field mt-4">
+      <label class="form-label" for="setup-workspace-input">Workspace ID <span class="text-muted">(optional)</span></label>
+      <input id="setup-workspace-input" class="input" type="text" autocomplete="off"
+             placeholder="wrkspc_…" aria-describedby="setup-workspace-hint">
+      <p class="text-xs text-muted mt-2" id="setup-workspace-hint">
+        Leave this empty first. If your key is tied to one workspace, it isn't needed.
+        Newer keys linked to your account need it — Anthropic then rejects the request
+        and JARVIS will tell you to come back and fill this in. You'll find it in the
+        <strong>ID</strong> column of Settings &rarr; Workspaces in the Claude Console.
+      </p>
+    </div>
+
     <div class="btn-row mt-4">
       <button id="setup-continue" class="btn btn-primary" type="button">Start using JARVIS</button>
       <button id="setup-skip" class="btn btn-ghost" type="button">Skip for now</button>

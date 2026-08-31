@@ -113,12 +113,17 @@ class Brain:
         provider's own availability check and this class's is_configured()
         can never disagree about whether credentials exist."""
         from app.core.ai import ProviderConfig
+        from app.core.ai.workspace import PREFERENCE_KEY as WORKSPACE_PREFERENCE
+        from app.core.preferences import get as get_preference
 
         return ProviderConfig(
             model=settings.jarvis_ai_model or "",
             max_tokens=settings.jarvis_ai_max_tokens,
             timeout_seconds=float(settings.jarvis_ai_timeout_seconds),
             api_key=settings.effective_api_key if settings.has_anthropic_key else "",
+            # Resolved here rather than in the provider so that the one
+            # place settings become configuration stays the one place.
+            anthropic_workspace_id=get_preference(WORKSPACE_PREFERENCE) or "",
             ollama_model=self._ollama_model(),
         )
 
@@ -235,6 +240,8 @@ class Brain:
         correlation ID; the user gets the category's fixed safe message,
         plus the provider's own credential-free detail when it wrote one
         (e.g. which local models are actually installed)."""
+        from app.core.ai.events import record_provider_failure
+
         safe_error: SafeError = to_safe_error(
             exc.cause or exc,
             category=exc.category,
@@ -243,6 +250,16 @@ class Brain:
         message = safe_error.message
         if getattr(exc, "detail", ""):
             message = exc.detail
+        # One safe row on the Logs page, sharing the correlation id with
+        # the server-side entry. Without this, a user whose provider is
+        # rejecting every request sees one generic sentence in chat and
+        # an empty Logs page — which is what actually happened.
+        record_provider_failure(
+            provider=provider.name,
+            category=exc.category,
+            correlation_id=safe_error.correlation_id,
+            detail=getattr(exc, "detail", "") or None,
+        )
         return BrainResponse(
             content=message,
             provider=provider.name,

@@ -28,6 +28,7 @@ logger = get_logger("errors")
 class ErrorCategory(str, Enum):
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     PROVIDER_AUTH = "provider_auth"
+    PROVIDER_WORKSPACE_REQUIRED = "provider_workspace_required"
     PROVIDER_BILLING = "provider_billing"
     PROVIDER_RATE_LIMIT = "provider_rate_limit"
     PROVIDER_TIMEOUT = "provider_timeout"
@@ -40,6 +41,7 @@ class ErrorCategory(str, Enum):
 _SAFE_MESSAGES = {
     ErrorCategory.PROVIDER_UNAVAILABLE: "The AI provider could not be reached. Check your internet connection — local commands still work normally.",
     ErrorCategory.PROVIDER_AUTH: "The AI provider rejected that API key. Check it was copied in full, or create a new one, and enter it again in Settings.",
+    ErrorCategory.PROVIDER_WORKSPACE_REQUIRED: "This Anthropic API key requires a Workspace ID. Enter the Workspace ID from your Claude Console and try again.",
     ErrorCategory.PROVIDER_BILLING: "That API key is valid, but the account has no credit available. Add credit or a payment method to your Anthropic account and try again.",
     ErrorCategory.PROVIDER_RATE_LIMIT: "The AI provider is rate-limiting requests right now. Please try again shortly.",
     ErrorCategory.PROVIDER_TIMEOUT: "The AI provider did not respond in time. Please try again.",
@@ -79,6 +81,29 @@ def safe_message(category: ErrorCategory) -> str:
 # type-name-only rule, and it stays that way.
 _BILLING_MARKERS = ("credit balance", "billing", "insufficient funds", "quota")
 
+# The second — and only other — containment test, added for the same
+# reason and under the same rules. Anthropic documents two 400s that a
+# user fixes by entering a Workspace ID:
+#
+#   "anthropic-workspace-id is required when authenticating with an
+#    identity-linked API key; send the id of the workspace this request
+#    acts in."
+#   "anthropic-workspace-id header must be a valid workspace ID."
+#
+# Both name the header, and nothing else does. Classifying these from the
+# type name alone is impossible: the SDK raises BadRequestError for them
+# and for a dozen unrelated malformed-request problems, so "the AI
+# provider returned an error" is what the owner actually saw on a real
+# machine — a dead end for a defect with a thirty-second fix.
+#
+# The marker is the header name we wrote here, the only output is one of
+# our own fixed sentences, and nothing from the response is stored,
+# echoed, logged as user-visible text or returned. A workspace that does
+# not exist answers 404 instead, and is deliberately *not* matched here:
+# that message quotes the id back, and it already fails closed as
+# PROVIDER_ERROR.
+_WORKSPACE_REQUIRED_MARKER = "anthropic-workspace-id"
+
 
 class SafeError(BaseModel):
     """Everything that's safe to send to a client. No raw exception text,
@@ -102,11 +127,27 @@ def _looks_like_a_billing_problem(exc: Exception) -> bool:
     return any(marker in text for marker in _BILLING_MARKERS)
 
 
+def _needs_a_workspace_id(exc: Exception) -> bool:
+    """Whether *exc* is Anthropic asking for the `anthropic-workspace-id`
+    header. Reads the message, and only ever answers True/False — see
+    _WORKSPACE_REQUIRED_MARKER above for why and how narrowly."""
+    try:
+        text = str(exc).lower()
+    except Exception:  # noqa: BLE001 — an exception whose __str__ raises
+        return False
+    return _WORKSPACE_REQUIRED_MARKER in text
+
+
 def classify_anthropic_exception(exc: Exception) -> ErrorCategory:
     """Best-effort classification from the exception's TYPE NAME — never
-    its message, which may hold request/response detail. The single,
-    documented exception is the billing check below."""
+    its message, which may hold request/response detail. The two
+    documented exceptions are the billing and workspace checks below."""
     name = type(exc).__name__
+    # Before the type-name branches: Anthropic returns this as a
+    # BadRequest, which would otherwise fall through to the generic
+    # PROVIDER_ERROR and tell the owner nothing they can act on.
+    if _needs_a_workspace_id(exc):
+        return ErrorCategory.PROVIDER_WORKSPACE_REQUIRED
     if "Authentication" in name:
         return ErrorCategory.PROVIDER_AUTH
     if "PermissionDenied" in name:

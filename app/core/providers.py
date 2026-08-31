@@ -57,23 +57,74 @@ class ProviderStatus:
     requires_credentials: bool = False
 
 
-def anthropic_status() -> ProviderStatus:
-    """Available iff a key is actually configured. The key itself is
-    never read into the result — only the boolean."""
-    from app.config import settings
+#: What is actually known about the stored Anthropic credential. Four
+#: states, not two, because "a key exists" and "a key works" are
+#: different facts and reporting the first as the second is what told the
+#: owner "natural-language chat is available" while every request was
+#: being rejected with HTTP 400.
+CREDENTIAL_NOT_CONFIGURED = "not_configured"
+CREDENTIAL_UNVERIFIED = "configured_unverified"
+CREDENTIAL_VERIFIED = "verified"
+CREDENTIAL_FAILED = "verification_failed"
 
-    configured = settings.has_anthropic_key
+#: The preference recording what the key-save path observed. Not a
+#: credential and not a secret — a one-word state name.
+VERIFICATION_PREFERENCE = "anthropic_key_state"
+
+_CREDENTIAL_DETAIL = {
+    CREDENTIAL_NOT_CONFIGURED: (
+        "No API key configured yet. JARVIS still works without one; "
+        "deterministic commands do not need a provider."
+    ),
+    CREDENTIAL_UNVERIFIED: (
+        "An API key is saved but has not been checked against Anthropic on "
+        "this installation. Open Settings and save it again to check it."
+    ),
+    CREDENTIAL_VERIFIED: "API key checked against Anthropic — natural-language chat is available.",
+    CREDENTIAL_FAILED: (
+        "The saved API key was rejected by Anthropic the last time it was "
+        "checked. Open Settings to correct it — an identity-linked key also "
+        "needs its Workspace ID."
+    ),
+}
+
+
+def anthropic_credential_state() -> str:
+    """Which of the four states the stored Anthropic credential is in.
+
+    Verification is recorded by the key-save path, which is the only code
+    that has ever seen the provider answer. A key that predates this
+    record — an upgrade from a build that stored keys without one — reads
+    as `configured_unverified`, which is the honest answer: it may well
+    work, and nothing here has watched it do so.
+    """
+    from app.config import settings
+    from app.core.preferences import get as get_preference
+
+    if not settings.has_anthropic_key:
+        return CREDENTIAL_NOT_CONFIGURED
+    recorded = (get_preference(VERIFICATION_PREFERENCE) or "").strip()
+    if recorded == CREDENTIAL_VERIFIED:
+        return CREDENTIAL_VERIFIED
+    if recorded == CREDENTIAL_FAILED:
+        return CREDENTIAL_FAILED
+    return CREDENTIAL_UNVERIFIED
+
+
+def anthropic_status() -> ProviderStatus:
+    """Reports what is known, never more.
+
+    `available` means the provider answered for this credential — not that
+    a credential exists. Neither the key nor the workspace ID is read into
+    the result; only the state name and a fixed sentence for it.
+    """
+    state = anthropic_credential_state()
     return ProviderStatus(
         name=PROVIDER_ANTHROPIC,
         display_name="Anthropic (Claude)",
         kind="cloud",
-        available=configured,
-        detail=(
-            "API key configured — natural-language chat is available."
-            if configured
-            else "No API key configured yet. JARVIS still works without one; "
-                 "deterministic commands do not need a provider."
-        ),
+        available=state == CREDENTIAL_VERIFIED,
+        detail=_CREDENTIAL_DETAIL[state],
         requires_credentials=True,
     )
 

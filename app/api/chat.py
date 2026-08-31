@@ -146,11 +146,21 @@ def _stream_events(command: str) -> Iterator[str]:
     except GenerationCancelled:
         stopped = True
     except ProviderError as exc:
+        from app.core.ai.events import record_provider_failure
+
         failed = True
         safe = to_safe_error(
             exc.cause or exc, category=exc.category, context=f"{provider.name} streaming generation"
         )
         message = exc.detail or safe.message
+        # The streaming path gets the same safe Logs row as /command —
+        # the failure is identical; only the transport differs.
+        record_provider_failure(
+            provider=provider.name,
+            category=exc.category,
+            correlation_id=safe.correlation_id,
+            detail=exc.detail or None,
+        )
         yield _event({"type": "error", "message": message, "error": safe.model_dump()})
     except Exception as exc:  # noqa: BLE001 — a provider that broke its own contract
         failed = True

@@ -71,6 +71,20 @@ STORABLE_KEYS = (
     # removing software somebody else installed — because JARVIS happened
     # to be uninstalled — is the wrong answer every time.
     "ollama_installed_by_jarvis",
+    # The Anthropic workspace an identity-linked key acts in. Account
+    # metadata, not a credential: it identifies a workspace, it does not
+    # authenticate anything, and Anthropic prints it in a Console table.
+    # The key itself stays in the OS credential store, where it belongs —
+    # see app/core/ai/workspace.py for the full reasoning, and note that
+    # "not a secret" still does not make it something an endpoint, a log
+    # or a diagnostic may return.
+    "anthropic_workspace_id",
+    # What the key-save path observed the last time it asked Anthropic:
+    # one of providers.CREDENTIAL_VERIFIED / CREDENTIAL_FAILED. Absent
+    # means "never checked on this installation", which is what an
+    # upgrade from an older build reads as. A state name, never a
+    # credential.
+    "anthropic_key_state",
     # The optional cloud voice. Which engine was chosen, which voice, its
     # tuning, and whether the local voice may cover for it.
     #

@@ -57,11 +57,30 @@ class AnthropicProvider(AIProvider):
     # --- generation ---
 
     def _client(self):
+        """The one place an Anthropic client is built.
+
+        Both generate() and stream() come through here, and so does key
+        verification (app/core/ai/key_check.py constructs this provider and
+        calls generate()). That matters for the workspace header: adding it
+        on one path and not another would produce a key that verifies and
+        then fails in conversation, or the reverse.
+
+        `default_headers` is the mechanism Anthropic's own Python example
+        uses for exactly this — "Or set it once for every request from this
+        client" — and it is present on `anthropic.Anthropic.__init__` in the
+        installed SDK. An unset or malformed workspace ID contributes no
+        header at all, so a legacy workspace-scoped key sends precisely what
+        it sent before this existed.
+        """
         import anthropic
 
+        from app.core.ai.workspace import workspace_headers
+
+        headers = workspace_headers(self._config.anthropic_workspace_id)
         return anthropic.Anthropic(
             api_key=self._config.api_key,
             timeout=float(self._config.timeout_seconds),
+            **({"default_headers": headers} if headers else {}),
         )
 
     def _payload(self, messages: List[Message], system: str) -> dict:

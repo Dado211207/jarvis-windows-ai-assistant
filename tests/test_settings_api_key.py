@@ -49,14 +49,20 @@ def test_status_not_configured_when_no_key_anywhere(api_client):
          patch("app.core.credentials.get_stored_api_key", return_value=""):
         r = api_client.get("/settings/api-key-status")
     assert r.status_code == 200
-    assert r.json() == {"configured": False}
+    body = r.json()
+    assert body["configured"] is False
+    assert body["workspace_configured"] is False
+    assert body["state"] == "not_configured"
 
 
 def test_status_configured_when_env_var_set(api_client):
     with patch("app.config.settings.anthropic_api_key", "sk-ant-from-env"):
         r = api_client.get("/settings/api-key-status")
     assert r.status_code == 200
-    assert r.json() == {"configured": True}
+    body = r.json()
+    assert body["configured"] is True
+    # A key that exists but was never checked here is not "verified".
+    assert body["state"] in {"configured_unverified", "verification_failed", "verified"}
 
 
 def test_status_configured_when_only_credential_store_has_it(api_client):
@@ -64,7 +70,10 @@ def test_status_configured_when_only_credential_store_has_it(api_client):
          patch("app.core.credentials.get_stored_api_key", return_value="sk-ant-from-store"):
         r = api_client.get("/settings/api-key-status")
     assert r.status_code == 200
-    assert r.json() == {"configured": True}
+    body = r.json()
+    assert body["configured"] is True
+    # A key that exists but was never checked here is not "verified".
+    assert body["state"] in {"configured_unverified", "verification_failed", "verified"}
 
 
 def test_status_response_never_contains_the_key_value(api_client):
@@ -130,7 +139,12 @@ def test_the_key_is_verified_before_it_is_stored(api_client):
     screen where it was typed."""
     with _verifies() as verify, patch("app.core.credentials.set_stored_api_key", return_value=True):
         api_client.post("/settings/api-key", json={"api_key": "sk-ant-x"})
-    verify.assert_called_once_with("sk-ant-x")
+    # The workspace ID travels with the key because Anthropic treats an
+    # identity-linked key and its workspace as one credential: verifying
+    # the key alone would either fail a good key or bless a pair that has
+    # never made a successful request. Blank here is a legacy
+    # workspace-scoped key, which sends no header at all.
+    verify.assert_called_once_with("sk-ant-x", "")
 
 
 def test_a_rejected_key_is_never_stored(api_client):
