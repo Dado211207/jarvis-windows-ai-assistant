@@ -87,15 +87,36 @@ def test_vendored_skill_links_use_repository_names_not_plugin_namespaces():
 
 
 def test_provenance_and_project_state_are_explicit_about_the_limits():
+    """PROJECT_STATE.md must name the state of its own work, not imply it.
+
+    This previously asserted the literal string ``"Draft, open, unmerged"``.
+    That pinned a *transient* status: the moment PR #17 was squash-merged the
+    only way to keep this test green was to leave the file describing a merged
+    pull request as an open draft — the test compelled the staleness it was
+    meant to guard against. The durable property is asserted instead: an
+    explicit ``State:`` line, and no pull request named without saying where
+    it stands.
+    """
+    import re
+
     provenance = (CLAUDE / "TOOLKIT.md").read_text(encoding="utf-8")
     state = (ROOT / "docs" / "ai" / "PROJECT_STATE.md").read_text(encoding="utf-8")
 
     assert TOOLKIT_COMMIT in provenance
     assert UI_UPSTREAM_COMMIT in provenance
     assert "not authorization" in " ".join(state.split())
-    assert "Draft, open, unmerged" in state
     assert "Real microphone" in state
     assert "No tag, release, signing, merge or deployment" in state
+
+    assert re.search(r"^- State: \S", state, re.MULTILINE), (
+        "the Active work section must carry an explicit `State:` line"
+    )
+
+    for line in state.splitlines():
+        if re.search(r"\b(?:[Pp]ull request|PR) #\d+", line):
+            assert re.search(r"merged|open|closed|[Dd]raft", line), (
+                f"a pull request is named without its state: {line.strip()!r}"
+            )
 
 
 def test_ui_design_fallback_is_complete_local_and_dependency_free():

@@ -56,8 +56,10 @@ class _FakeListener:
         self.closed = False
         self._accept_result = accept_result
         # What the child reports once connected. The default models a
-        # healthy child: a real window appeared. None models a child that
-        # connected and then never showed one.
+        # healthy child: it got as far as building a window object and
+        # starting its command pump. (That is all EVENT_READY proves —
+        # not that anything rendered; see app/launcher/ipc.py.) None
+        # models a child that connected and then reported nothing.
         self._ready_event = {"event": ipc.EVENT_READY} if ready_event is _UNSET else ready_event
         self.accept_timeouts = []
         self.wait_timeouts = []

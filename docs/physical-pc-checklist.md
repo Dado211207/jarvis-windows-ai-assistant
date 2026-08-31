@@ -143,6 +143,47 @@ audio item complete on the strength of a synthetic signal** — the whole
 reason these are here is that synthesised audio through a fake capture
 device is not a room.
 
+## A0. Before you install — confirm the WebView2 Runtime is present
+
+JARVIS's native window **is** a WebView2 control. Windows 11 normally
+includes the Evergreen Runtime, but Microsoft's own distribution guide
+says in the same breath that *"some devices might not have the Runtime
+pre-installed, so it's a good practice to check whether the Runtime is
+present on the client"* — and a customized or stripped Windows
+installation can be missing or have a damaged one. Setup checks the
+registry rather than assuming; do the same before you start.
+
+Run these three read-only queries. Microsoft documents these exact
+locations, and they are the ones `packaging/jarvis.iss` and
+`app/launcher/runtime_check.py` both read:
+
+```bat
+reg query "HKLM\Software\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" /v pv
+reg query "HKLM\Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" /v pv
+reg query "HKCU\Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" /v pv
+```
+
+- **Installed** means at least one of them returns a `pv` value that is
+  **neither empty nor `0.0.0.0`**. Microsoft documents `0.0.0.0` as
+  explicitly meaning *not installed*, so a key that exists is not on its
+  own an answer.
+- **Looking in Settings → Installed Apps is not sufficient.** An entry
+  can be present while the Runtime is broken or partially removed, and it
+  can be absent while a per-user install is fine. The `pv` value is what
+  both JARVIS and Microsoft's own detection use.
+
+**If no query returns a usable `pv`, stop — do not run JARVIS yet.**
+Install the Runtime from Microsoft's official page,
+<https://developer.microsoft.com/microsoft-edge/webview2/>, then **repeat
+the three queries above** and only continue once one returns a real
+version.
+
+Setup will also try to fetch Microsoft's bootstrapper itself if the
+Runtime is missing, and a failure there never aborts the installation —
+so an unchecked machine can end up with JARVIS installed and no native
+window. Checking first is what turns that into a decision instead of a
+surprise.
+
 ## A. Install and lifecycle
 
 1. Verify the downloaded installer against **its own** `.sha256` file.
@@ -155,8 +196,18 @@ device is not a room.
 3. **Upgrade directly over the previously installed RC**, without
    uninstalling first. Settings, chat history and any downloaded voice or
    speech model must survive.
-4. The **native JARVIS window opens**, and no unwanted browser tab opens
-   with it.
+4. The **native JARVIS window opens and actually shows the dashboard** —
+   not a blank panel, not a WebView2 error page — and no unwanted browser
+   tab opens with it.
+
+   Check this with your eyes, because nothing in the product can.
+   `GET /desktop/ready` proves four *process* facts — the server answered
+   `/health`, the window child answered a ping on its control channel,
+   the tray's message loop dispatched, the parent owns the lock — and
+   **none of them is evidence that WebView2 painted anything**. A blank
+   window reporting `ready: true` is a state the automated suite cannot
+   tell apart from success. See `app/launcher/desktop_ready.py` for why
+   pywebview's `loaded` event is not the missing proof either.
 5. A **second launch brings the existing window forward** rather than
    starting anything new.
 6. **Start with Windows**, if you switch it on: reboot and confirm JARVIS
