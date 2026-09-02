@@ -3,7 +3,8 @@
 {% block topbar_title %}Welcome{% endblock %}
 {% block content %}
 {#
-  First run asks two questions and nothing else.
+  First run asks for a name, an API key, and — only for keys that need
+  one — a Workspace ID. Nothing else, and none of the three is required.
 
   The previous version was a six-step wizard covering privacy notes,
   provider discovery, speech-model installation, startup and close
@@ -12,6 +13,12 @@
   optional moved to where it belongs — Settings for preferences and the
   key, Voice for the speech model — and none of it blocks getting
   started.
+
+  The Workspace ID field was added afterwards, on the owner's instruction,
+  because an Anthropic identity-linked key is rejected on every request
+  without it: a first run that cannot accept one is a first run that
+  cannot finish for those keys. tests/test_first_run.py holds the ceiling
+  at these three by id, not by count.
 #}
 <div id="setup-root" class="setup-simple">
 
@@ -19,7 +26,8 @@
     <div class="page-header">
       <h1 class="page-title" id="setup-heading">Welcome to JARVIS</h1>
       <p class="page-subtitle">
-        Two quick things and you're ready. Both can be changed later in Settings.
+        A few quick things and you're ready &mdash; none of them required, and all of
+        them changeable later in Settings.
       </p>
     </div>
 
@@ -39,7 +47,9 @@
              placeholder="Paste your key here" aria-describedby="setup-key-hint">
       <p class="text-xs text-muted mt-2" id="setup-key-hint">
         Stored in the Windows credential store, never in a file, and never shown again.
-        JARVIS checks it works before saving it.
+        JARVIS tries it against Anthropic first: a key Anthropic rejects is not saved,
+        and one that can't be checked right now &mdash; you're offline, or rate-limited
+        &mdash; is saved and marked unconfirmed.
       </p>
       <div class="status-row mt-3">
         <span class="status-row-label">Status</span>
@@ -53,10 +63,14 @@
       <input id="setup-workspace-input" class="input" type="text" autocomplete="off"
              placeholder="wrkspc_…" aria-describedby="setup-workspace-hint">
       <p class="text-xs text-muted mt-2" id="setup-workspace-hint">
-        Leave this empty first. If your key is tied to one workspace, it isn't needed.
-        Newer keys linked to your account need it — Anthropic then rejects the request
-        and JARVIS will tell you to come back and fill this in. You'll find it in the
+        Leave this blank first. A key scoped to a single workspace when you created it
+        needs no ID at all &mdash; that includes a key scoped to your Default Workspace,
+        and it is the simplest setup. If Anthropic rejects the key asking for a workspace,
+        come back and fill this in: non-default workspaces are listed in the
         <strong>ID</strong> column of Settings &rarr; Workspaces in the Claude Console.
+        The Default Workspace is <em>not</em> listed there &mdash; Anthropic returns its ID
+        in the <code>anthropic-workspace-id</code> header of any response from a request
+        that runs in it.
       </p>
     </div>
 

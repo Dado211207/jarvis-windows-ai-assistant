@@ -3,12 +3,17 @@
 Real hardware testing rejected the six-step wizard this replaced: it
 exposed provider discovery, speech-runtime preparation and a readiness
 table full of "Not ready" rows to someone who had just double-clicked an
-installer. First run now asks two questions — what to call you, and your
-API key — and everything else moved to the page that owns it.
+installer. First run now asks what to call you, for your API key, and —
+only for keys that need one — for a Workspace ID; everything else moved to
+the page that owns it.
 
-These tests guard that shape. A test file that only asserted the two
-fields exist would not notice the wizard creeping back one card at a
-time, so the ceiling is asserted too.
+These tests guard that shape. A test file that only asserted the fields
+exist would not notice the wizard creeping back one card at a time, so the
+ceiling is asserted too — by identity, not just by count.
+
+What the *copy* on this screen is allowed to claim lives in
+tests/test_workspace_guidance.py, which exists because this page went on
+describing itself as two questions after it grew a third field.
 """
 
 import re
@@ -246,8 +251,13 @@ def test_a_rejected_key_keeps_the_user_on_the_page_to_fix_it():
 
 def test_a_stored_key_clears_the_field_and_a_rejected_one_does_not():
     """Leaving a rejected key in the box is what lets someone fix a typo
-    instead of retyping the whole thing."""
-    assert "if (r.stored && input) input.value = \"\";" in _js()
+    instead of retyping the whole thing.
+
+    `consistent` joined the condition because a key whose workspace and
+    verdict could not be written is stored but not finished with — see
+    app/core/ai/credential_pair.py's partial-failure states.
+    """
+    assert 'if (r.stored && r.consistent !== false && input) input.value = "";' in _js()
 
 
 def test_the_save_button_says_it_is_working():

@@ -111,27 +111,98 @@ a diagnostic — callers learn only *whether* a workspace is configured.
 
 **Lifecycle.** Removing the Anthropic credential clears both, because they
 describe that credential: leaving them would give the next key the workspace of
-the one before it. A failed credential removal deliberately leaves them alone. An
-ordinary uninstall keeps them, exactly as it keeps the credential;
-`/DELETEDATA=yes` removes the data directory and therefore both. An upgrade from a
-build that stored a key without a verification record reads as
-`configured_unverified` — the honest answer, neither "verified" (which would
-reinstate the defect) nor "failed" (which would libel a working key).
+the one before it. A failed credential removal deliberately leaves them alone,
+and a removal that clears the credential but *cannot* clear the metadata is
+reported as exactly that rather than as a clean removal. An ordinary uninstall
+keeps them, exactly as it keeps the credential; `/DELETEDATA=yes` removes the
+data directory and therefore both. An upgrade from a build that stored a key
+without a verification record reads as `configured_unverified` — the honest
+answer, neither "verified" (which would reinstate the defect) nor "failed" (which
+would libel a working key).
 
 ## Where to find the Workspace ID
 
-In the Claude Console: **Settings → Workspaces**, the **ID** column. It starts
-`wrkspc_`.
+**The route that needs no ID at all, and the one to recommend.** Anthropic:
+"You can also scope the key to a specific workspace, which lets you skip setting
+a workspace ID manually in future requests." The Default Workspace can be that
+workspace like any other — the FAQ notes that for a key belonging to it, the
+key's `scope` field "carries its real ID" — so this works on an account that has
+never created a second workspace. **Nobody has to create an extra workspace to
+use JARVIS.**
 
-The Default Workspace is deliberately not listed there. Anthropic's guide gives
-two ways to read it: from the `anthropic-workspace-id` **response header** of any
-request that runs in it, or from `scope.workspace_id` on such a key in the Admin
-API's List API Keys. A simpler route for most people is to create a key scoped to
-a named workspace, which needs no header at all.
+**A non-default workspace:** Claude Console, **Settings → Workspaces**, the
+**ID** column. It starts `wrkspc_`.
 
-If the field is left blank and the key turns out to need one, JARVIS now says so
-in one sentence and points at the Console, instead of "The AI provider returned an
-error".
+**The Default Workspace is not in that table**, and this is the correction the
+first draft of this branch needed. Anthropic states it twice:
+
+> Default Workspace has a `wrkspc_` ID like any other workspace (returned in the
+> `anthropic-workspace-id` response header … and accepted by Get Workspace), but
+> it doesn't appear in List Workspaces results
+
+> List Workspaces omits the Default Workspace; its ID is in the
+> `anthropic-workspace-id` response header of any request that runs there.
+
+The response header is therefore the documented, reproducible route, and
+`docs/WINDOWS_INSTALLER.md` carries the exact PowerShell command. (`scope` on
+List API Keys is a second documented route but needs an Admin API key, so it is
+not offered to end users.) The header is absent exactly when it would be most
+wanted — a multi-workspace key with no header fails before resolving to a
+workspace — which is why the scoped-key route is the recommended one rather than
+a footnote.
+
+`tests/test_workspace_guidance.py` fails if any surface names the table without
+the exception, claims List Workspaces returns Default, drops the scoped-key
+route, or tells the owner to create a workspace.
+
+If the field is left blank and the key turns out to need one, JARVIS says so in
+one sentence instead of "The AI provider returned an error".
+
+## Independent review, second pass — six blockers
+
+The `anthropic-workspace-id` implementation was found directionally correct, and
+six defects were found around it. All are fixed on this branch; each has
+regression tests written against the failure first.
+
+1. **Default Workspace guidance was not actionable** — the section above.
+2. **The two stores were not one operation.** The key goes to Credential Manager
+   and the workspace ID to `preferences.json`; the second write's result was
+   discarded, so replacing a key could leave the new credential beside the
+   *previous* key's workspace and verdict and still answer "saved and verified".
+   `app/core/ai/credential_pair.py` now snapshots, writes, and compensates:
+   rollback on a failed metadata write, a metadata clear if the rollback itself
+   fails, and a precise partial-failure report if that fails too. It deliberately
+   does **not** claim atomicity — there is no transaction spanning a credential
+   store and a JSON file — it claims that every failure ordering ends in a state
+   that is either correct or described. An unreadable snapshot never authorises a
+   destructive rollback, so a failed replacement cannot delete a working key.
+3. **The path that exposed the original defect wrote no Logs row.**
+   `verify_anthropic_key()` now records one safe `ai_provider` event per failure,
+   with a reference id and nothing else.
+4. **`to_safe_error()` logged the raw exception.** Anthropic's documented 404 is
+   ``Workspace `<id>` not found.``, so `exc_info=exc` wrote a workspace ID into
+   `jarvis.log`. `app/core/safe_traceback.py` describes an exception — type
+   chain, traceback frames, trimmed paths — and never renders its value. The same
+   pass removed `exc_info=True` from `credentials._mutate()`, where a keyring
+   backend exception may quote the key it was asked to store; that file's own
+   `_run_isolated()` had refused `str(exc)` for exactly this reason since it was
+   written.
+5. **A check that could not run was recorded as a rejection.** `verified if ok
+   else failed` meant an offline save produced "The saved API key was rejected by
+   Anthropic". `providers.state_for_verification()` now distinguishes answered /
+   could-not-complete / unfunded, `note_runtime_failure()` downgrades a stored
+   "verified" when a *live* request is explicitly rejected, and "verified" is
+   worded as "answered successfully the last time Anthropic was asked".
+6. **First-run copy still described a two-field screen** and claimed every key is
+   checked before saving, which is false by design for a key that could not be
+   checked at all.
+
+All installer evidence from the previous head is **superseded**: this commit
+changes runtime, Setup/Settings, credential persistence and packaged behaviour.
+The workflow run IDs, job IDs and the artifact's size and SHA-256 for the new
+head live in the pull request rather than here — writing a digest into a tracked
+file changes the commit it describes, so the file could never hold its own
+artifact's hash.
 
 ## The owner's current installation must not be patched manually
 

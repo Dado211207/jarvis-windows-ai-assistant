@@ -161,6 +161,12 @@ def _stream_events(command: str) -> Iterator[str]:
             correlation_id=safe.correlation_id,
             detail=exc.detail or None,
         )
+        # Same live-rejection downgrade as /command — see the note in
+        # app/core/brain.py::_provider_failed for why it is here rather
+        # than inside record_provider_failure().
+        from app.core.providers import note_runtime_failure
+
+        note_runtime_failure(provider.name, exc.category)
         yield _event({"type": "error", "message": message, "error": safe.model_dump()})
     except Exception as exc:  # noqa: BLE001 — a provider that broke its own contract
         failed = True

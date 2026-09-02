@@ -27,8 +27,17 @@ separate safe Coding Workspace for the owner's own repositories.
   workspace). Anthropic requires the `anthropic-workspace-id` header for those,
   and JARVIS stored only a key. Reproduced on the owner's real Windows 11 PC and
   independently outside JARVIS. See `docs/ai/WORK_LOG.md`.
-- State: awaiting independent review. Nothing installed, merged, tagged,
-  released or deployed.
+- A second independent review accepted the header work and found **six
+  blockers** around it: unactionable Default Workspace guidance, a non-atomic
+  two-store write with no compensation, no Logs event on the key-verification
+  path, a workspace ID reachable through `to_safe_error`'s raw exception log, a
+  transient check recorded as a rejection, and stale first-run copy. All six are
+  corrected on this branch, each with regression tests written against the
+  failure first.
+- State: awaiting a further independent review. Nothing installed, merged,
+  tagged, released or deployed. **All installer evidence from the previous head
+  is superseded** — the corrective commit changes runtime, Setup/Settings,
+  credential persistence and packaged behaviour.
 - Query GitHub again before changing, merging or reporting the current head.
 
 ## Completed work
@@ -72,8 +81,20 @@ separate safe Coding Workspace for the owner's own repositories.
   neither is ever returned by an endpoint, logged or put in a diagnostic. An
   identity-linked key without its workspace cannot authenticate — see
   `app/core/ai/workspace.py`.
-- Provider status has four states. "A credential exists" is never reported as
+- The key and its metadata are written through `app/core/ai/credential_pair.py`
+  and nowhere else. Two stores are involved, so success is never reported unless
+  both reached the intended state; a failed metadata write rolls the credential
+  back, and a failed rollback is reported precisely rather than as success. An
+  unreadable credential snapshot never authorises a destructive rollback.
+- Provider status has five states. "A credential exists" is never reported as
   "chat is available"; only a credential the provider actually answered for is.
+  A check that could not run is `configured_unverified`, never
+  `verification_failed` — an offline machine has not rejected anything.
+- No raw provider exception is written to any log. `app/core/safe_traceback.py`
+  describes one — type chain and frames — because Anthropic's documented 404 for
+  an inaccessible workspace quotes the workspace ID inside the response body.
+- Every surface that names the Console's Workspaces table must also say the
+  Default Workspace is not in it (`tests/test_workspace_guidance.py`).
 - `GET /desktop/ready` proves four *process* facts and is never evidence that
   WebView2 rendered the dashboard. pywebview's `loaded` event is not that
   evidence either — it fires on an error page too. Anything claiming visible

@@ -7,11 +7,16 @@ reach a REST response, a WebSocket event, or a rendered page: stack
 frames, local file paths, SDK internals, occasionally a still-identifiable
 fragment of a request or response. Never put str(exc) directly into
 anything the browser receives — call to_safe_error() and use the
-returned SafeError instead. The original exception is always still
-logged in full, server-side only (data/logs/jarvis.log), tagged with the
-same correlation_id the client sees, so a developer can find the real
-cause from a user's bug report without the user, or the response body,
-ever holding the raw detail.
+returned SafeError instead.
+
+The exception is still recorded server-side (data/logs/jarvis.log) under
+the same correlation_id the client sees, so a developer can find the real
+cause from a user's bug report — but it is **described, not rendered**.
+That distinction is the whole of app/core/safe_traceback.py: the type
+chain and the traceback's frames are ours and are kept; str(exc) is the
+provider's and is dropped, because for the Anthropic SDK it is the
+response body, and Anthropic's documented 404 for an inaccessible
+workspace quotes the workspace ID back inside it.
 """
 
 import uuid
@@ -20,6 +25,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from app.core.safe_traceback import describe
 from app.logging_config import get_logger
 
 logger = get_logger("errors")
@@ -176,17 +182,24 @@ def to_safe_error(
     response, WebSocket event, or rendered page.
     """
     correlation_id = str(uuid.uuid4())
+    # Described, never rendered. This used to pass `exc_info=exc`, which
+    # writes str(exc) into the log — and for the Anthropic SDK that string
+    # is the provider's response body. Anthropic documents the
+    # inaccessible-workspace response as ``Workspace `<id>` not found.``,
+    # so one keyword put a workspace ID in jarvis.log, a file that outlives
+    # the request and gets quoted into bug reports. An SDK exception can
+    # carry request headers with it too.
+    #
+    # app/core/safe_traceback.py keeps the parts that are ours — the type
+    # chain and the traceback's frames — and drops the only part the
+    # provider wrote. The correlation id below is still the join to
+    # whatever the user saw on screen.
     logger.error(
-        "Unhandled error [correlation_id=%s] category=%s type=%s%s",
+        "Unhandled error [correlation_id=%s] category=%s %s%s",
         correlation_id,
         category.value,
-        type(exc).__name__,
+        describe(exc),
         f" context={context}" if context else "",
-        exc_info=exc,  # the exception object itself, not exc_info=True — correct
-        # whether or not we're still inside the original except block (True
-        # relies on ambient sys.exc_info(), which can be empty by the time
-        # this runs, e.g. if a caller stores the exception and calls this
-        # later; passing exc directly is unambiguous either way).
     )
     return SafeError(
         category=category,

@@ -167,8 +167,13 @@ class Brain:
         try:
             availability = self.provider().availability()
             return bool(availability.ready), availability.reason
-        except Exception:  # noqa: BLE001
-            logger.warning("Provider availability check failed.", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            # Described, not rendered — the same rule the rest of this
+            # module's provider handling follows. See
+            # app/core/safe_traceback.py.
+            from app.core.safe_traceback import describe
+
+            logger.warning("Provider availability check failed. %s", describe(exc))
             return False, "The AI provider could not be checked. Local commands still work normally."
 
     # --- generation ---
@@ -260,6 +265,14 @@ class Brain:
             correlation_id=safe_error.correlation_id,
             detail=getattr(exc, "detail", "") or None,
         )
+        # A live rejection is the only thing that can disprove a stored
+        # "verified". Deliberately not inside record_provider_failure():
+        # that function also runs while *verifying a proposed key*, where
+        # downgrading would let a mistyped key in Settings mark the key
+        # that is actually stored as rejected.
+        from app.core.providers import note_runtime_failure
+
+        note_runtime_failure(provider.name, exc.category)
         return BrainResponse(
             content=message,
             provider=provider.name,

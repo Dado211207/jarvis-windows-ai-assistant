@@ -193,9 +193,14 @@ def _mutate(username: str, value: Optional[str]) -> bool:
         future.result(timeout=TIMEOUT_SECONDS)
         return True
     except BaseException as exc:
-        logger.warning(
-            "OS credential mutation failed: %s", type(exc).__name__, exc_info=True,
-        )
+        # Class name only, and deliberately no traceback. _run_isolated
+        # above already refuses to log str(exc) because a backend
+        # exception may quote the value it was asked to store; exc_info
+        # renders exactly that string, so it was the same leak by another
+        # route. What is lost is a stack through keyring internals; what
+        # is kept is the contract that a credential value never reaches a
+        # log file.
+        logger.warning("OS credential mutation failed: %s", type(exc).__name__)
         if value is not None:
             # A failed/timed-out save is not owned by JARVIS. Make absence
             # the newest desired state and enqueue a cleanup behind the late
@@ -252,6 +257,27 @@ def clear_stored_api_key() -> bool:
     either way (already-absent counts as success), False only if the
     store genuinely could not be reached."""
     return _clear(USERNAME)
+
+
+def stored_api_key_snapshot() -> Tuple[bool, str]:
+    """``(store_reached, value)`` for the Anthropic key.
+
+    For **rollback only** — see app/core/ai/credential_pair.py. Saving a
+    key writes two stores (this one and the preferences file), and the
+    second write can fail, so the first has to be undoable. Undoing it
+    needs the previous value, and it needs to know whether that value was
+    actually observed.
+
+    That second half is the point of returning a pair rather than a
+    string. get_stored_api_key() answers "" both for "there is no key" and
+    for "the store could not be reached", and a rollback that treats the
+    second as the first would *delete* a key it simply could not read.
+
+    The value is held in memory for the length of one request and never
+    logged, echoed, returned by an endpoint or written anywhere but back
+    into this same store.
+    """
+    return _read(USERNAME)
 
 
 # ---------------------------------------------------------------------------

@@ -126,30 +126,86 @@ change or remove it later from **Settings**.
 
 ### When you need a Workspace ID
 
-Anthropic has two kinds of API key, and only one of them needs this:
+Anthropic decides this by how the key was created, not by what kind of
+account you have:
 
 - A key **scoped to a single workspace** works on its own. Leave the
-  Workspace ID empty.
-- A key **linked to your account** — a personal key or a service account
-  key that is not tied to one workspace — must say which workspace each
-  request acts in. Without it Anthropic rejects every request with
-  *"anthropic-workspace-id is required when authenticating with an
-  identity-linked API key"*, and JARVIS will tell you so in one sentence.
+  Workspace ID **blank**.
+- A key that can act in **more than one workspace** — a personal or
+  service account key that was not tied to one workspace when it was
+  created — must say which workspace each request acts in. Without it
+  Anthropic rejects every request with *"anthropic-workspace-id is
+  required when authenticating with an identity-linked API key"*, and
+  JARVIS says so in one sentence.
 
-**Where to find it:** in the [Claude Console](https://platform.claude.com/settings/workspaces),
-go to **Settings → Workspaces** and copy the value from the **ID**
-column. It starts with `wrkspc_`.
+#### The simplest route: scope the key, and skip this field
 
-The Default Workspace is not listed there. The simplest way to avoid the
-question entirely is to create a key scoped to a named workspace, which
-needs no Workspace ID at all.
+When you create the key in the Claude Console (**Settings → API keys →
+Create key**) you can choose a single workspace for it. Anthropic:
 
-Enter the key and the Workspace ID together and press **Save** — JARVIS
-checks the pair against Anthropic before storing either, so a
-combination that cannot work is never saved. The Workspace ID is stored
-on this PC as account metadata (it identifies a workspace; it does not
-authenticate anything), and like the key it never appears in a log, a
-diagnostic or an API response. Removing the key clears it too.
+> You can also scope the key to a specific workspace, which lets you skip
+> setting a workspace ID manually in future requests.
+
+Your **Default Workspace** counts as that workspace like any other, so
+this works on an account that has never created another one. **You do not
+need to create an extra workspace to use JARVIS.** A key scoped this way
+needs nothing in the Workspace ID field, ever.
+
+#### If your key is not scoped to one workspace
+
+Then JARVIS needs the ID of the workspace you want it to act in, and where
+you find it depends on which workspace that is:
+
+- **Any workspace other than Default** — the **ID** column of
+  [Settings → Workspaces](https://platform.claude.com/settings/workspaces)
+  in the Claude Console. It starts with `wrkspc_`.
+- **The Default Workspace** — **it is not in that table.** Anthropic
+  documents this explicitly: *"List Workspaces omits the Default
+  Workspace; its ID is in the `anthropic-workspace-id` response header of
+  any request that runs there."* It has a normal `wrkspc_` ID; it is just
+  never listed.
+
+  To read that header, send one request with a key that already runs in
+  that workspace and look at the response headers. From PowerShell, with
+  your key in `$env:ANTHROPIC_API_KEY`:
+
+  ```powershell
+  $r = Invoke-WebRequest -Uri https://api.anthropic.com/v1/messages -Method POST `
+    -Headers @{ "x-api-key" = $env:ANTHROPIC_API_KEY
+                "anthropic-version" = "2023-06-01"
+                "content-type" = "application/json" } `
+    -Body '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"ok"}]}'
+  $r.Headers["anthropic-workspace-id"]
+  ```
+
+  That prints the `wrkspc_…` value. If the request fails with the
+  workspace-required error instead, the key is a multi-workspace key and
+  the header is absent — scope a key to the workspace (above) and use that
+  one, which needs no ID here at all.
+
+#### What happens when you save
+
+Enter the key and the Workspace ID together and press **Save**. JARVIS
+tries the pair against Anthropic once before storing anything, and the
+outcome decides what is kept:
+
+| What Anthropic said | What JARVIS does |
+|---|---|
+| It worked | Both are saved, and the key is marked **verified** |
+| The key is invalid, or the pair needs a Workspace ID | **Nothing is saved** — not the key, not the Workspace ID |
+| The account has no credit | Both are saved, marked **account has no credit** |
+| Nothing — offline, timed out, rate-limited | Both are saved, marked **not yet confirmed**, so you do not have to type the key again |
+
+That last row is why "JARVIS checks it works before saving it" would be
+too strong a claim: a pair that could not be checked *at all* is stored
+and labelled honestly, rather than thrown away because your network was
+down for ten seconds.
+
+The Workspace ID is stored on this PC as account metadata (it identifies
+a workspace; it does not authenticate anything), and like the key it
+never appears in a log, a diagnostic or an API response. Removing the key
+clears it too — and if it cannot be cleared, JARVIS says so rather than
+reporting a clean removal.
 
 Everything else is set up from inside the application, when and if you
 want it:

@@ -31,11 +31,31 @@ character is refused here rather than handed to the SDK. A local check
 cannot tell whether a workspace *exists* — only the API can, and it says so
 with a 404 — so this is a shape gate, never a claim of validity.
 
+**Where a person actually finds one.** Anthropic documents two routes and
+one exception, and the exception is the whole reason this docstring exists:
+
+    You can find a workspace's ID in the **ID** column of Settings →
+    Workspaces in the Claude Console, or by calling the List Workspaces
+    endpoint. **List Workspaces omits the Default Workspace; its ID is in
+    the `anthropic-workspace-id` response header of any request that runs
+    there.**
+
+The first version of this feature named only the table. For an account
+that has never created an additional workspace — which is the common case,
+and was the owner's — that is a page which does not contain the value being
+asked for. The simplest route avoids the question entirely: "You can also
+scope the key to a specific workspace, which lets you skip setting a
+workspace ID manually in future requests", and the Default Workspace can be
+that workspace like any other. Every surface that mentions the table has to
+mention the exception too; `tests/test_workspace_guidance.py` enforces it.
+
 **Not a secret, but not public either.** The workspace ID identifies part of
 the owner's Anthropic account. It is stored as local account metadata via
 `app/core/preferences.py` (never the credential store, which is for secrets),
 and it is never returned by an endpoint, written to a log, or included in a
-diagnostic — callers learn only whether one is configured.
+diagnostic — callers learn only whether one is configured. Note that
+Anthropic's own 404 for an inaccessible workspace quotes the ID back inside
+the response body, which is why `app/core/safe_traceback.py` exists.
 """
 
 import re
@@ -55,10 +75,12 @@ _WORKSPACE_ID = re.compile(rf"^{WORKSPACE_ID_PREFIX}[A-Za-z0-9]+$")
 PREFERENCE_KEY = "anthropic_workspace_id"
 
 INVALID_MESSAGE = (
-    "That doesn't look like a Workspace ID. It starts with "
-    f"'{WORKSPACE_ID_PREFIX}' and you'll find it in the ID column of "
-    "Settings → Workspaces in the Claude Console. Leave the field empty if "
-    "your key is tied to a single workspace."
+    "That doesn't look like a Workspace ID — it starts with "
+    f"'{WORKSPACE_ID_PREFIX}'. Leave the field blank if your key was scoped "
+    "to a single workspace when you created it. Otherwise, non-default "
+    "workspaces are in the ID column of Settings → Workspaces in the Claude "
+    "Console; the Default Workspace is not listed there, and Anthropic "
+    "returns its ID in the anthropic-workspace-id response header instead."
 )
 
 

@@ -79,10 +79,12 @@ STORABLE_KEYS = (
     # "not a secret" still does not make it something an endpoint, a log
     # or a diagnostic may return.
     "anthropic_workspace_id",
-    # What the key-save path observed the last time it asked Anthropic:
-    # one of providers.CREDENTIAL_VERIFIED / CREDENTIAL_FAILED. Absent
-    # means "never checked on this installation", which is what an
-    # upgrade from an older build reads as. A state name, never a
+    # What was last observed about the stored key: one of
+    # providers.CREDENTIAL_VERIFIED / CREDENTIAL_FAILED /
+    # CREDENTIAL_UNFUNDED. Absent means "never successfully checked on
+    # this installation", which is what both an upgrade from an older
+    # build and a check that could not complete read as — those are not
+    # rejections and must never be recorded as one. A state name, never a
     # credential.
     "anthropic_key_state",
     # The optional cloud voice. Which engine was chosen, which voice, its

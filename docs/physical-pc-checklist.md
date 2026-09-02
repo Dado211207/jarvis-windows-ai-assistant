@@ -236,14 +236,29 @@ surprise.
     is *not* scoped to a single workspace, save it with the **Workspace ID
     box empty**. It must be refused with *"This Anthropic API key requires
     a Workspace ID"*, and the Settings status must **not** afterwards
-    claim the key is working. Then paste the Workspace ID from the
-    Console's Settings → Workspaces **ID** column, save again, and confirm
-    chat works. Confirm the Workspace ID appears in no log line, no
-    Diagnostics field and no API response — only "Set"/"Not set".
-14b. **Legacy workspace-scoped key**, if you have one: it must still work
+    claim the key is working. Then supply the workspace and save again:
+    for a **non-default** workspace the ID is in the Console's
+    Settings → Workspaces **ID** column; the **Default Workspace is not
+    listed there**, and its ID comes from the `anthropic-workspace-id`
+    response header (see `docs/WINDOWS_INSTALLER.md`). Confirm chat works,
+    and that the Workspace ID appears in no log line, no Diagnostics field
+    and no API response — only "Set"/"Not set".
+14b. **Scoped key — the route that needs no ID.** Create a key scoped to a
+    single workspace (the Default Workspace is fine) and confirm it works
+    with the Workspace ID box **blank**. This is the setup the docs
+    recommend, and it must not require creating an extra workspace.
+14c. **Legacy workspace-scoped key**, if you have one: it must still work
     with the Workspace ID box left empty. Nothing about it changed.
-14c. **Remove the key** and confirm the Workspace ID clears with it, so
+14d. **Remove the key** and confirm the Workspace ID clears with it, so
     the next key does not inherit it.
+14e. **A check that cannot run is not a rejection.** Disconnect the
+    network and save a key. It must be stored and reported as *not yet
+    confirmed* — the Settings status must **not** say Anthropic rejected
+    it, and must **not** say chat is available.
+14f. **The Logs page must show the failure.** After any failed key save
+    in 14a or 14e, open **Logs** and confirm there is one `ai_provider`
+    row naming the category with a reference id — and that it contains no
+    key, no Workspace ID and no Anthropic response text.
 15. On a machine without Ollama, run the **guided local-AI install**.
     Confirm the plan screen names source, publisher, licence, size and
     free space *before* anything is fetched; that the **Authenticode

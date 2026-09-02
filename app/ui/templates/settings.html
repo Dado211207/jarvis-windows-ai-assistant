@@ -151,12 +151,16 @@
       <input id="settings-workspace-input" class="input" type="text" placeholder="wrkspc_…" autocomplete="off"
              aria-describedby="settings-workspace-hint">
       <p class="text-xs text-muted mt-2" id="settings-workspace-hint">
-        Only needed for a key linked to your account rather than to a single
-        workspace — Anthropic rejects those without it. Find it in the
+        Only needed for a key that can act in more than one workspace &mdash; Anthropic
+        rejects those without it. Leave it blank for a key scoped to a single workspace
+        when it was created, your Default Workspace included; that is the setup with
+        nothing to look up. Otherwise: non-default workspaces are in the
         <strong>ID</strong> column of Settings &rarr; Workspaces in the Claude Console,
-        then save the key and this together. Leave it empty for a key that is already
-        scoped to one workspace. It is stored on this PC as account metadata, never sent
-        anywhere but Anthropic, and never shown in diagnostics.
+        and the Default Workspace is deliberately <em>not</em> listed there &mdash;
+        Anthropic returns its ID in the <code>anthropic-workspace-id</code> header of any
+        response from a request that runs in it. Save the key and this together. It is
+        stored on this PC as account metadata, never sent anywhere but Anthropic, and
+        never shown in diagnostics.
       </p>
     </div>
     <p id="settings-key-message" class="text-xs mt-2" aria-live="polite"></p>

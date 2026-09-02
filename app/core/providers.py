@@ -57,15 +57,21 @@ class ProviderStatus:
     requires_credentials: bool = False
 
 
-#: What is actually known about the stored Anthropic credential. Four
-#: states, not two, because "a key exists" and "a key works" are
-#: different facts and reporting the first as the second is what told the
-#: owner "natural-language chat is available" while every request was
-#: being rejected with HTTP 400.
+#: What is actually known about the stored Anthropic credential. Five
+#: states, not two, because "a key exists", "a key works" and "a key was
+#: never successfully checked" are different facts, and reporting the
+#: first as the second is what told the owner "natural-language chat is
+#: available" while every request was being rejected with HTTP 400.
+#:
+#: The fifth, ACCOUNT_UNFUNDED, exists because collapsing it into either
+#: neighbour states something false: it is not unchecked (Anthropic
+#: answered) and it is not a rejected key (Anthropic accepted the key and
+#: declined to bill it).
 CREDENTIAL_NOT_CONFIGURED = "not_configured"
 CREDENTIAL_UNVERIFIED = "configured_unverified"
 CREDENTIAL_VERIFIED = "verified"
 CREDENTIAL_FAILED = "verification_failed"
+CREDENTIAL_UNFUNDED = "account_unfunded"
 
 #: The preference recording what the key-save path observed. Not a
 #: credential and not a secret — a one-word state name.
@@ -77,26 +83,113 @@ _CREDENTIAL_DETAIL = {
         "deterministic commands do not need a provider."
     ),
     CREDENTIAL_UNVERIFIED: (
-        "An API key is saved but has not been checked against Anthropic on "
-        "this installation. Open Settings and save it again to check it."
+        "An API key is saved but has not been confirmed with Anthropic on this "
+        "installation — either it was never checked, or the check could not "
+        "complete. It may well work. Open Settings and save it again to check."
     ),
-    CREDENTIAL_VERIFIED: "API key checked against Anthropic — natural-language chat is available.",
+    CREDENTIAL_VERIFIED: (
+        "API key answered successfully the last time Anthropic was asked. A key "
+        "can still expire or be revoked; JARVIS reports that the next time it "
+        "is used."
+    ),
     CREDENTIAL_FAILED: (
-        "The saved API key was rejected by Anthropic the last time it was "
-        "checked. Open Settings to correct it — an identity-linked key also "
-        "needs its Workspace ID."
+        "Anthropic rejected the saved API key the last time it was used. Open "
+        "Settings to correct it — an identity-linked key also needs its "
+        "Workspace ID."
+    ),
+    CREDENTIAL_UNFUNDED: (
+        "Anthropic accepted the API key but the account has no credit "
+        "available. Add credit or a payment method to your Anthropic account; "
+        "the key itself is fine."
     ),
 }
 
+#: The states that may be recorded against a stored credential. Anything
+#: else read back from the preferences file is treated as "unverified",
+#: which is the honest reading of a value this code did not write.
+_RECORDED_STATES = (CREDENTIAL_VERIFIED, CREDENTIAL_FAILED, CREDENTIAL_UNFUNDED)
+
+
+def state_for_verification(ok: bool, category=None) -> str:
+    """The state to record for one verification attempt.
+
+    The distinction this makes is the reason it exists. The previous
+    version wrote `CREDENTIAL_VERIFIED if ok else CREDENTIAL_FAILED`, so a
+    machine that was merely offline during setup ended up with a Settings
+    page reading "The saved API key was rejected by Anthropic" — a false
+    diagnosis that sends someone to replace a key that was never the
+    problem.
+
+      * the provider answered            -> verified
+      * the provider was never reached,
+        timed out, or rate-limited       -> configured_unverified
+      * the provider answered about
+        credit                           -> account_unfunded
+
+    An outright rejection (auth, workspace-required) never reaches here:
+    app/core/ai/key_check.py refuses to store that pair at all, so there
+    is no state to record for it.
+    """
+    from app.core.errors import ErrorCategory
+
+    if ok:
+        return CREDENTIAL_VERIFIED
+    if category == ErrorCategory.PROVIDER_BILLING:
+        return CREDENTIAL_UNFUNDED
+    return CREDENTIAL_UNVERIFIED
+
+
+def note_runtime_failure(provider: str, category) -> None:
+    """Downgrade a recorded verification when a *live* request is rejected.
+
+    "Verified" has to mean "answered successfully the last time Anthropic
+    was asked", not a permanent promise. A key that is revoked, expires, or
+    loses access to its workspace an hour after it was saved would
+    otherwise go on being reported as working until somebody re-saved it.
+
+    Only an explicit rejection downgrades. A timeout, a rate limit and an
+    unreachable provider say nothing about the credential, and treating
+    them as a rejection would recreate the defect this replaces in the
+    opposite direction.
+
+    Never raises, never records success — a live *failure* cannot be
+    evidence that a credential works — and never touches anything for a
+    provider other than Anthropic. It can move between two negative states
+    (a key that was rejected yesterday and is merely unfunded today is
+    described by the newer observation, not the older one).
+    """
+    from app.core.errors import ErrorCategory
+
+    try:
+        if normalise_provider(provider) != PROVIDER_ANTHROPIC:
+            return
+        if category == ErrorCategory.PROVIDER_AUTH or category == ErrorCategory.PROVIDER_WORKSPACE_REQUIRED:
+            downgraded = CREDENTIAL_FAILED
+        elif category == ErrorCategory.PROVIDER_BILLING:
+            downgraded = CREDENTIAL_UNFUNDED
+        else:
+            return
+
+        from app.core.preferences import get as get_preference
+        from app.core.preferences import store_many as store_preferences
+
+        if (get_preference(VERIFICATION_PREFERENCE) or "").strip() == downgraded:
+            return  # already says this; a rewrite would only churn the file
+        store_preferences({VERIFICATION_PREFERENCE: downgraded})
+        logger.info("Anthropic credential state downgraded to %s after a live rejection.", downgraded)
+    except Exception:  # noqa: BLE001 — bookkeeping must never break a request
+        logger.warning("Could not record the provider's runtime rejection.", exc_info=True)
+
 
 def anthropic_credential_state() -> str:
-    """Which of the four states the stored Anthropic credential is in.
+    """Which of the five states the stored Anthropic credential is in.
 
-    Verification is recorded by the key-save path, which is the only code
-    that has ever seen the provider answer. A key that predates this
-    record — an upgrade from a build that stored keys without one — reads
-    as `configured_unverified`, which is the honest answer: it may well
-    work, and nothing here has watched it do so.
+    Verification is recorded by the key-save path and by
+    `note_runtime_failure()` — the only two places that have ever seen the
+    provider answer. A key that predates the record — an upgrade from a
+    build that stored keys without one — reads as `configured_unverified`,
+    which is the honest answer: it may well work, and nothing here has
+    watched it do so.
     """
     from app.config import settings
     from app.core.preferences import get as get_preference
@@ -104,11 +197,7 @@ def anthropic_credential_state() -> str:
     if not settings.has_anthropic_key:
         return CREDENTIAL_NOT_CONFIGURED
     recorded = (get_preference(VERIFICATION_PREFERENCE) or "").strip()
-    if recorded == CREDENTIAL_VERIFIED:
-        return CREDENTIAL_VERIFIED
-    if recorded == CREDENTIAL_FAILED:
-        return CREDENTIAL_FAILED
-    return CREDENTIAL_UNVERIFIED
+    return recorded if recorded in _RECORDED_STATES else CREDENTIAL_UNVERIFIED
 
 
 def anthropic_status() -> ProviderStatus:
@@ -124,7 +213,7 @@ def anthropic_status() -> ProviderStatus:
         display_name="Anthropic (Claude)",
         kind="cloud",
         available=state == CREDENTIAL_VERIFIED,
-        detail=_CREDENTIAL_DETAIL[state],
+        detail=_CREDENTIAL_DETAIL.get(state, _CREDENTIAL_DETAIL[CREDENTIAL_UNVERIFIED]),
         requires_credentials=True,
     )
 

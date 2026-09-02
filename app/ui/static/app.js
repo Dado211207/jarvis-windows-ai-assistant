@@ -2287,14 +2287,20 @@ async function saveProviderSelection() {
   }
 }
 
-// The four states the server can report, and the one phrase each is
+// The five states the server can report, and the one phrase each is
 // allowed. "Configured" used to be shown for all of them, which is how a
 // key Anthropic was rejecting on every request read as working.
+//
+// "Rejected by Anthropic" belongs to verification_failed alone. An
+// offline or rate-limited check reads "Saved, not confirmed", because
+// nothing rejected anything — and an unfunded account gets its own row
+// rather than being called either.
 const KEY_STATE_LABELS = {
   not_configured: ["Not configured", "text-muted"],
-  configured_unverified: ["Saved, not checked", "text-warn"],
-  verified: ["Checked and working", "text-ok"],
+  configured_unverified: ["Saved, not confirmed", "text-warn"],
+  verified: ["Worked when last checked", "text-ok"],
   verification_failed: ["Rejected by Anthropic", "text-err"],
+  account_unfunded: ["Key accepted, account has no credit", "text-warn"],
 };
 
 async function refreshSettingsKeyStatus() {
@@ -2966,11 +2972,13 @@ async function saveApiKeyFrom(inputId, buttonId, setMessage, workspaceInputId) {
   try {
     const r = await API.post("/settings/api-key", { api_key: value, workspace_id: workspace });
     setMessage(r.message, r.success);
-    // Cleared only when it was actually stored: leaving a rejected key in
-    // the box is what lets someone fix a typo instead of retyping it.
+    // Cleared only when it was actually stored *and* its workspace and
+    // verdict were stored with it: leaving a rejected key in the box is
+    // what lets someone fix a typo instead of retyping it, and a key whose
+    // metadata could not be written still needs saving again.
     // The workspace box is deliberately left alone either way — it is not
     // a secret, and retyping it after a failed attempt is pure friction.
-    if (r.stored && input) input.value = "";
+    if (r.stored && r.consistent !== false && input) input.value = "";
     return r.success;
   } catch (e) {
     setMessage("Could not reach JARVIS's local service.", false);
