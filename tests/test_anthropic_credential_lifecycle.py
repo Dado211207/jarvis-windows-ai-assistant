@@ -59,6 +59,24 @@ def api_client():
         yield prime_session(client)
 
 
+def _applied():
+    """A credential-store write that the backend confirmed."""
+    from app.core import credentials
+    return credentials.MutationResult(credentials.MUTATION_APPLIED)
+
+
+def _refused():
+    """A write the backend refused outright: provably nothing changed, which
+    is what every "nothing was changed" assertion in this file depends on.
+
+    A write that merely *timed out* is a third outcome — it may still land —
+    and the messages that separate the two are proven in
+    tests/test_credential_replacement_safety.py.
+    """
+    from app.core import credentials
+    return credentials.MutationResult(credentials.MUTATION_UNCHANGED, "backend_refused")
+
+
 class _Store:
     """A stand-in for Windows Credential Manager that can be made to fail
     on a chosen call, so a failure *ordering* can be tested rather than
@@ -76,18 +94,24 @@ class _Store:
         return (True, self.value) if self.reachable else (False, "")
 
     def set(self, value):
-        self.writes.append(value)
-        if len(self.writes) in self.fail_on:
-            return False
-        self.value = value
-        return True
+        return self.set_detailed(value).ok
 
     def clear(self):
+        return self.clear_detailed().ok
+
+    def set_detailed(self, value):
+        self.writes.append(value)
+        if len(self.writes) in self.fail_on:
+            return _refused()
+        self.value = value
+        return _applied()
+
+    def clear_detailed(self):
         self.writes.append(None)
         if len(self.writes) in self.fail_on:
-            return False
+            return _refused()
         self.value = ""
-        return True
+        return _applied()
 
 
 class _Preferences:
@@ -121,6 +145,8 @@ def _wired(store, preferences):
         patch("app.core.credentials.stored_api_key_snapshot", store.snapshot),
         patch("app.core.credentials.set_stored_api_key", store.set),
         patch("app.core.credentials.clear_stored_api_key", store.clear),
+        patch("app.core.credentials.set_stored_api_key_detailed", store.set_detailed),
+        patch("app.core.credentials.clear_stored_api_key_detailed", store.clear_detailed),
         patch("app.core.preferences.store_many", preferences.store_many),
         patch("app.core.preferences.get", preferences.get),
     )
@@ -363,8 +389,8 @@ def test_the_endpoint_reports_the_partial_state_rather_than_success(api_client):
     verification = KeyVerification(ok=True, message="API key verified.", worth_storing=True)
     with patch("app.core.ai.key_check.verify_anthropic_key", return_value=verification), \
          patch("app.core.credentials.stored_api_key_snapshot", return_value=(True, OLD_KEY)), \
-         patch("app.core.credentials.set_stored_api_key", side_effect=[True, False]), \
-         patch("app.core.credentials.clear_stored_api_key", return_value=False), \
+         patch("app.core.credentials.set_stored_api_key_detailed", side_effect=[_applied(), _refused()]), \
+         patch("app.core.credentials.clear_stored_api_key_detailed", return_value=_refused()), \
          patch("app.core.preferences.store_many", return_value=False):
         response = api_client.post(
             "/settings/api-key",
@@ -388,7 +414,7 @@ def test_an_ordinary_save_reports_a_consistent_pair(api_client):
     verification = KeyVerification(ok=True, message="API key verified.", worth_storing=True)
     with patch("app.core.ai.key_check.verify_anthropic_key", return_value=verification), \
          patch("app.core.credentials.stored_api_key_snapshot", return_value=(True, "")), \
-         patch("app.core.credentials.set_stored_api_key", return_value=True):
+         patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()):
         response = api_client.post(
             "/settings/api-key", json={"api_key": FAKE_KEY, "workspace_id": FAKE_WORKSPACE},
         )
@@ -399,7 +425,7 @@ def test_an_ordinary_save_reports_a_consistent_pair(api_client):
 
 
 def test_a_partial_removal_is_reported_through_the_endpoint(api_client):
-    with patch("app.core.credentials.clear_stored_api_key", return_value=True), \
+    with patch("app.core.credentials.clear_stored_api_key_detailed", return_value=_applied()), \
          patch("app.core.preferences.store_many", return_value=False):
         response = api_client.post("/settings/api-key/remove")
 

@@ -35,12 +35,25 @@ described:
     that clear fails too        reported precisely, as an inconsistent
                                 state, and never as success
 
-**A failed replacement never destroys a working pair.** The rollback needs
-the previous key, and `credentials.stored_api_key_snapshot()` reports
-whether the store was actually *reached* rather than collapsing
-"unreachable" into "there was no key". A rollback that cleared the
-credential on the strength of an unread snapshot would delete the only
-working key on the machine because a *different* write failed.
+**A failed replacement never destroys a working pair**, and that claim
+needed two corrections before it was true. The first version read the
+previous key for its own rollback but *began the replacement anyway* when
+the snapshot had not reached the store — leaving the one case it could not
+undo as the one case it entered blind. Worse, the layer underneath it
+reconciled every failed write to *absence*, so a replacement that failed or
+timed out deleted the key it was replacing while this module answered
+"Nothing was changed" (see `app/core/credentials.py`).
+
+So: a store that cannot be read is a store this module will not write to,
+and it says so instead of trying. `credentials.stored_api_key_snapshot()`
+reports whether the store was actually *reached* rather than collapsing
+"unreachable" into "there was no key", and an unreachable snapshot is now a
+refusal rather than a rollback JARVIS is unable to perform.
+
+**"Nothing was changed" is a postcondition, not a consolation.** A write
+that timed out may still complete inside the backend, so it earns a
+different sentence from one the backend refused outright. `MutationResult`
+carries that distinction and every message below is chosen from it.
 
 **The previous metadata needs no snapshot, and that is a property of the
 preferences store rather than an oversight.** `preferences.store_many()`
@@ -66,6 +79,9 @@ logger = get_logger("core.ai.credential_pair")
 #: whole point of this module is that they are not the same thing.
 APPLIED = "applied"
 CREDENTIAL_STORE_FAILED = "credential_store_failed"
+CREDENTIAL_STORE_UNREADABLE = "credential_store_unreadable"
+CREDENTIAL_WRITE_UNCONFIRMED = "credential_write_unconfirmed"
+REMOVAL_UNCONFIRMED = "removal_unconfirmed"
 ROLLED_BACK = "rolled_back"
 METADATA_ORPHANED = "metadata_orphaned"
 INCONSISTENT = "inconsistent"
@@ -83,6 +99,11 @@ class PairOutcome:
 
     outcome: str
     message: str
+    #: Whether JARVIS *established* that the new key is in the store. Not
+    #: "the key is definitely absent": after a write that never came back
+    #: nobody knows, and this reads False because nothing was established.
+    #: The message says which of the two happened; no message claims a
+    #: postcondition that was only predicted.
     stored: bool
     consistent: bool
     rolled_back: bool = False
@@ -101,6 +122,19 @@ def _credentials():
 def _preferences():
     from app.core import preferences
     return preferences
+
+
+def _forget_runtime_downgrade() -> None:
+    """Drop the process-local "this credential was rejected" note.
+
+    That note describes *the credential that was in the store*. Once a
+    different one is there — or none at all — it describes nothing, and
+    leaving it would report a new key as rejected before it had ever been
+    used. Called on every path where the stored credential actually
+    changed, and on no other.
+    """
+    from app.core.providers import clear_runtime_downgrade
+    clear_runtime_downgrade()
 
 
 def _metadata_keys():
@@ -128,17 +162,57 @@ def save(api_key: str, workspace: str, state: str) -> PairOutcome:
     # Read before writing. Held in memory for the length of this call and
     # never logged, echoed or returned — see the module docstring.
     reachable, previous_key = credentials.stored_api_key_snapshot()
-
-    if not credentials.set_stored_api_key(api_key):
+    if not reachable:
+        # The one situation this module cannot recover from is the one it
+        # must therefore not enter. Without a proven previous value there is
+        # no rollback target, and "the entry read as empty" cannot be told
+        # from "the entry could not be read" — so a failure here would be
+        # indistinguishable from a machine that never had a key, and the
+        # recovery would delete one that did.
         return PairOutcome(
-            outcome=CREDENTIAL_STORE_FAILED,
-            message="Could not save the key to the Windows credential store. Nothing was changed.",
+            outcome=CREDENTIAL_STORE_UNREADABLE,
+            message=(
+                "JARVIS could not read this PC's credential store, so it will not write to "
+                "it either — a failed write could not then be undone, and that could lose "
+                "the key you already have. Nothing was changed. Sign in to Windows normally "
+                "and try again; if it keeps happening, Credential Manager may be unavailable "
+                "on this account."
+            ),
             stored=False,
             consistent=True,          # nothing was written, so nothing can disagree
             category="credential_store",
         )
 
+    write = credentials.set_stored_api_key_detailed(api_key)
+    if not write.ok:
+        if write.provably_unchanged:
+            return PairOutcome(
+                outcome=CREDENTIAL_STORE_FAILED,
+                message=(
+                    "Could not save the key to the Windows credential store. "
+                    "Nothing was changed."
+                ),
+                stored=False,
+                consistent=True,
+                category="credential_store",
+            )
+        # The call never came back. It may still complete, so nothing here
+        # may claim the store is as it was; what JARVIS *has* done is ask
+        # for the previous key to be put back behind it.
+        return PairOutcome(
+            outcome=CREDENTIAL_WRITE_UNCONFIRMED,
+            message=(
+                "Windows did not confirm the new key was saved, so JARVIS cannot tell you "
+                "whether it was. It has asked for your previous key to be put back and has "
+                "changed nothing else. Check Settings, then try saving again."
+            ),
+            stored=False,
+            consistent=True,          # the metadata was never touched
+            category="credential_store",
+        )
+
     if _write_metadata(workspace, state):
+        _forget_runtime_downgrade()
         logger.info(
             "Anthropic credential saved. workspace_configured=%s state=%s",
             bool(workspace), state,
@@ -148,22 +222,15 @@ def save(api_key: str, workspace: str, state: str) -> PairOutcome:
     # The credential moved and its description did not. Put the credential
     # back, so the pair that was there before is the pair that is there
     # now — the previous metadata was never touched, so restoring the key
-    # restores the whole pair.
+    # restores the whole pair. The snapshot was proven above, so there is
+    # a real target for this and no guessing involved.
     logger.warning("Could not save the Anthropic credential's metadata; rolling the credential back.")
-    if reachable:
-        restored = (
-            credentials.set_stored_api_key(previous_key) if previous_key
-            else credentials.clear_stored_api_key()
-        )
-    else:
-        # The snapshot never reached the store, so there is no previous
-        # value to restore and no way to tell "there was no key" from
-        # "could not read one". Clearing here would destroy a credential
-        # that may be the only working one on the machine.
-        restored = False
-        logger.warning("The previous credential could not be read, so it is not being rolled back.")
+    restore = (
+        credentials.set_stored_api_key_detailed(previous_key) if previous_key
+        else credentials.clear_stored_api_key_detailed()
+    )
 
-    if restored:
+    if restore.ok:
         return PairOutcome(
             outcome=ROLLED_BACK,
             message=(
@@ -182,6 +249,7 @@ def save(api_key: str, workspace: str, state: str) -> PairOutcome:
     # move: it leaves the new key reading as configured-but-unchecked
     # instead of inheriting a workspace and a verdict that are not its own.
     if _write_metadata("", ""):
+        _forget_runtime_downgrade()
         return PairOutcome(
             outcome=METADATA_ORPHANED,
             message=(
@@ -194,6 +262,7 @@ def save(api_key: str, workspace: str, state: str) -> PairOutcome:
             category="preferences",
         )
 
+    _forget_runtime_downgrade()
     return PairOutcome(
         outcome=INCONSISTENT,
         message=(
@@ -221,19 +290,49 @@ def clear() -> PairOutcome:
     beforehand would otherwise leave a key with no workspace, which is a
     worse state than a workspace with no key. If the metadata write fails
     afterwards, that is reported — never folded into "API key removed."
+
+    **Repeating this is safe, and repeating it is the recovery.** Deleting a
+    credential that is already absent succeeds, so a second Remove goes
+    straight on to the metadata clear that failed the first time. That
+    matters because the advice this used to give — clear the Workspace ID
+    field and save — cannot be carried out: `SetApiKeyRequest` refuses a
+    blank API key, so there is no such request to make. Every partial
+    outcome below therefore names Remove, which is a button that exists.
     """
     credentials = _credentials()
 
-    if not credentials.clear_stored_api_key():
+    removal = credentials.clear_stored_api_key_detailed()
+    if not removal.ok:
+        if removal.provably_unchanged:
+            return PairOutcome(
+                outcome=CREDENTIAL_STORE_FAILED,
+                message=(
+                    "Could not remove the key from the OS credential store. "
+                    "Nothing was changed."
+                ),
+                stored=True,
+                consistent=True,
+                category="credential_store",
+            )
+        # The delete never came back and may still complete, so the key may
+        # be gone by the time this is read. The metadata is deliberately
+        # left alone: clearing it while the key may still be there produces
+        # a key with no workspace, which is the worse of the two states.
+        logger.warning("The Anthropic API key removal was not confirmed by the credential store.")
         return PairOutcome(
-            outcome=CREDENTIAL_STORE_FAILED,
-            message="Could not remove the key from the OS credential store. Nothing was changed.",
-            stored=True,
-            consistent=True,
+            outcome=REMOVAL_UNCONFIRMED,
+            message=(
+                "Windows did not confirm the key was removed, so JARVIS cannot tell you "
+                "whether it is gone. The Workspace ID has been left as it was. Press Remove "
+                "again — repeating it is safe, and it finishes the job either way."
+            ),
+            stored=False,
+            consistent=False,
             category="credential_store",
         )
 
     if _write_metadata("", ""):
+        _forget_runtime_downgrade()
         logger.info("Anthropic API key removed; workspace metadata cleared.")
         return PairOutcome(
             outcome=APPLIED, message="API key removed.", stored=False, consistent=True,
@@ -244,8 +343,8 @@ def clear() -> PairOutcome:
         outcome=METADATA_ORPHANED,
         message=(
             "The API key was removed, but its Workspace ID could not be cleared from this PC's "
-            "settings. Clear the Workspace ID field and save before entering a different key, "
-            "so the new one does not inherit it."
+            "settings. Press Remove again to finish — the key is already gone, so repeating it "
+            "only clears the Workspace ID, and a new key entered before then would inherit it."
         ),
         stored=False,
         consistent=False,

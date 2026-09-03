@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from app.core.app_paths import config_dir
+from app.core.safe_traceback import describe
 from app.logging_config import get_logger
 
 logger = get_logger("core.preferences")
@@ -137,8 +138,10 @@ def _path_or_none() -> Optional[Path]:
     to include that, not only the read."""
     try:
         return preferences_path()
-    except Exception:  # noqa: BLE001
-        logger.warning("Preferences location could not be resolved.", exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        # Described, never rendered: an OSError from resolving an AppData
+        # path quotes that path, which begins with the account name.
+        logger.warning("Preferences location could not be resolved. %s", describe(exc))
         return None
 
 
@@ -151,8 +154,10 @@ def load() -> Dict[str, Any]:
         if not path.exists():
             return {}
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — a corrupt file is "nothing saved"
-        logger.warning("Preferences file could not be read; using defaults.", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — a corrupt file is "nothing saved"
+        # A JSONDecodeError quotes the offending document, and this file
+        # holds the workspace ID. An OSError quotes the full path.
+        logger.warning("Preferences file could not be read; using defaults. %s", describe(exc))
         return {}
 
     if not isinstance(raw, dict):
@@ -225,8 +230,8 @@ def store_many(values: Mapping[str, Optional[str]]) -> bool:
         temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
         temporary.replace(path)
         return True
-    except Exception:  # noqa: BLE001
-        logger.warning("Could not write the preferences file.", exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not write the preferences file. %s", describe(exc))
         try:
             temporary.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001

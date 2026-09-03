@@ -37,6 +37,7 @@ failure path.
 from typing import Optional
 
 from app.core.errors import ErrorCategory, safe_message
+from app.core.safe_traceback import describe
 from app.logging_config import get_logger
 
 logger = get_logger("core.ai.events")
@@ -69,5 +70,12 @@ def record_provider_failure(
             status=category.value,
             message=f"{message} (reference {correlation_id})",
         )
-    except Exception:  # noqa: BLE001 — a diagnostic must not break the failure path
-        logger.warning("Could not record the provider failure event.", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must not break the failure path
+        # Described, never rendered. The values handed to log_action above
+        # are all JARVIS's own, but the exception caught here is SQLite's:
+        # "unable to open database file: C:\\Users\\<account>\\AppData\\…"
+        # is an ordinary sqlite3 message, and `exc_info` would also print
+        # every full path in the traceback. A module whose entire purpose
+        # is a row that carries nothing sensitive cannot make an exception
+        # to that for its own failure.
+        logger.warning("Could not record the provider failure event. %s", describe(exc))

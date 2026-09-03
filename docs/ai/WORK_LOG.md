@@ -204,6 +204,76 @@ head live in the pull request rather than here — writing a digest into a track
 file changes the commit it describes, so the file could never hold its own
 artifact's hash.
 
+## Independent review, third pass — four blockers in the correction itself
+
+The corrective commit was reviewed again and four defects were found **in it**.
+Each has regression tests written against the failure first: 27 of the 41 new
+tests in `tests/test_credential_replacement_safety.py` failed on the previous
+head, and the two that matter most failed with `a failed replacement destroyed
+the key it was replacing`.
+
+### 1. A failed replacement could delete the key it was replacing
+
+`credentials._mutate()` reconciled *every* failed non-None write to absence:
+
+```python
+if value is not None:
+    cleanup_generation = _record_desired(username, None)   # queue a delete
+```
+
+That is correct for a first-time save — a late `set_password` would otherwise
+leave a credential the user was told had not been saved. It is destructive for a
+replacement, because the old key and the new key are the same Credential Manager
+entry. Save B over A, have the write fail or time out, and the reconciler
+deletes A while `credential_pair.save()` answers "Nothing was changed."
+
+The reconciliation target is now the value that was **proven** to be there
+beforehand. Establishing it is a precondition of attempting the write: a store
+JARVIS cannot read is a store it will not write to, because a failure there
+could not be undone. An unreadable entry is never treated as an empty one.
+`credential_pair.save()` refuses for the same reason rather than starting a
+replacement whose rollback it knows it cannot perform.
+
+### 2. Removal claimed postconditions it had not established
+
+A delete that timed out may still complete, so "Nothing was changed" was a
+prediction. `MutationResult` now separates *applied*, *provably unchanged* and
+*uncertain*, and each gets its own sentence.
+
+The recovery advice was also impossible: "clear the Workspace ID field and save"
+cannot be carried out, because `SetApiKeyRequest` rejects a blank API key. Every
+partial outcome now names **Remove**, which is idempotent — deleting an
+already-absent credential succeeds, so a second press goes straight on to the
+metadata clear that failed the first time. There is a test that presses it twice.
+
+### 3. `exc_info=True` on three more failure paths
+
+`events.py`, `providers.py` and `preferences.py` still logged raw tracebacks. The
+argument that `events.py` was safe because *its own inputs* are fixed did not
+address the exception it catches: `unable to open database file:
+C:\Users\<account>\AppData\...` is an ordinary sqlite3 message, a
+JSONDecodeError quotes the document it failed on — and that document holds the
+workspace ID — and `exc_info` renders every full path in the traceback besides.
+All five call sites now use `safe_traceback.describe()`, and the AST test covers
+ten modules rather than five, `logger.exception()` included.
+
+### 4. A downgrade that was never written was logged as though it had been
+
+`note_runtime_failure()` discarded `store_many()`'s result. On a machine that
+cannot write its settings file the log said "downgraded", the preference still
+said `verified`, and the dashboard went on offering Claude for the rest of the
+session — the exact failure the downgrade exists to prevent, with a log line
+claiming otherwise.
+
+Persisting is still attempted first and is still what survives a restart. When it
+fails, the observation is kept in this process instead, because "Anthropic
+rejected this key thirty seconds ago" is knowledge JARVIS genuinely has. Its
+lifecycle is deliberately small enough to state in full: set only by an explicit
+live rejection and only ever to a negative state, read only while a key is
+configured, cleared the moment the stored credential changes, and lost on
+restart — which is correct, because it was never persisted, and saying otherwise
+is what this replaces.
+
 ## The owner's current installation must not be patched manually
 
 The installed build predates this fix. Do **not** hand-edit files under the
@@ -228,7 +298,7 @@ verified — see the verification gate in the pull request.
 
 ## Next action
 
-1. Independent review of this branch.
+1. Independent review of this branch — the fourth.
 2. The verification gate in the pull request, including two sequential Windows
    Installer acceptance runs.
 3. Only then, a real-PC upgrade-in-place by the owner, entering the Workspace ID

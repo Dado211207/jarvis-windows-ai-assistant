@@ -26,8 +26,10 @@ server is the normal case for most users, so it must be an ordinary
 """
 
 from dataclasses import dataclass, field
+import threading
 from typing import List, Optional
 
+from app.core.safe_traceback import describe
 from app.logging_config import get_logger
 
 logger = get_logger("core.providers")
@@ -109,6 +111,67 @@ _CREDENTIAL_DETAIL = {
 #: which is the honest reading of a value this code did not write.
 _RECORDED_STATES = (CREDENTIAL_VERIFIED, CREDENTIAL_FAILED, CREDENTIAL_UNFUNDED)
 
+#: The only states a *live rejection* can put a credential into. The
+#: process-local note below is restricted to these by construction, which is
+#: what makes "it can never upgrade a credential" a property of the code
+#: rather than a promise about how it is called.
+_NEGATIVE_STATES = (CREDENTIAL_FAILED, CREDENTIAL_UNFUNDED)
+
+# ---------------------------------------------------------------------------
+# The downgrade that could not be written down.
+#
+# `note_runtime_failure()` records a live rejection by writing a preference,
+# and it used to discard `store_many()`'s result: on a machine that could
+# not write its settings file the log said "downgraded", the preference
+# still said "verified", and the dashboard went on offering Claude as
+# available for the rest of the session — which is the exact failure the
+# downgrade exists to prevent, with a log line claiming otherwise.
+#
+# Persisting is still attempted first and is still what survives a restart.
+# When it fails, the observation is kept in this process instead, because
+# "Anthropic rejected this key thirty seconds ago" is knowledge JARVIS
+# genuinely has and must not act against. Its lifecycle is deliberately
+# small enough to state in full:
+#
+#   set     only by note_runtime_failure(), only from an explicit live
+#           rejection, and only ever to a value in _NEGATIVE_STATES
+#   read    only by anthropic_credential_state(), and only while a key is
+#           configured at all
+#   cleared only when the credential it describes stops being the stored
+#           one — app/core/ai/credential_pair.py calls
+#           clear_runtime_downgrade() on save and on removal
+#   lost    on restart, which is correct: it was never persisted, and
+#           claiming otherwise is what this replaces
+#
+# There is no path that sets it to a positive state, so it cannot report a
+# rejected credential as working, and it cannot report a working one as
+# rejected without a provider having said so.
+# ---------------------------------------------------------------------------
+_runtime_downgrade_lock = threading.Lock()
+_runtime_downgrade: Optional[str] = None
+
+
+def _remember_runtime_downgrade(state: str) -> None:
+    """Note a live rejection for the rest of this process. Negative only."""
+    global _runtime_downgrade
+    if state not in _NEGATIVE_STATES:
+        return
+    with _runtime_downgrade_lock:
+        _runtime_downgrade = state
+
+
+def clear_runtime_downgrade() -> None:
+    """Forget the note, because the credential it described is gone."""
+    global _runtime_downgrade
+    with _runtime_downgrade_lock:
+        _runtime_downgrade = None
+
+
+def runtime_downgrade() -> Optional[str]:
+    """The note, or None. Always one of `_NEGATIVE_STATES` when set."""
+    with _runtime_downgrade_lock:
+        return _runtime_downgrade
+
 
 def state_for_verification(ok: bool, category=None) -> str:
     """The state to record for one verification attempt.
@@ -173,12 +236,21 @@ def note_runtime_failure(provider: str, category) -> None:
         from app.core.preferences import get as get_preference
         from app.core.preferences import store_many as store_preferences
 
+        # Held in this process first, so the observation applies even if
+        # nothing below can be written. See the block above for why.
+        _remember_runtime_downgrade(downgraded)
+
         if (get_preference(VERIFICATION_PREFERENCE) or "").strip() == downgraded:
             return  # already says this; a rewrite would only churn the file
-        store_preferences({VERIFICATION_PREFERENCE: downgraded})
+        if not store_preferences({VERIFICATION_PREFERENCE: downgraded}):
+            logger.warning(
+                "Could not write the Anthropic credential downgrade to this PC's settings. "
+                "It applies for this session and will not survive a restart.",
+            )
+            return
         logger.info("Anthropic credential state downgraded to %s after a live rejection.", downgraded)
-    except Exception:  # noqa: BLE001 — bookkeeping must never break a request
-        logger.warning("Could not record the provider's runtime rejection.", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — bookkeeping must never break a request
+        logger.warning("Could not record the provider's runtime rejection. %s", describe(exc))
 
 
 def anthropic_credential_state() -> str:
@@ -196,6 +268,13 @@ def anthropic_credential_state() -> str:
 
     if not settings.has_anthropic_key:
         return CREDENTIAL_NOT_CONFIGURED
+    # A live rejection this process saw but could not write down still
+    # happened. It is only ever a negative state and is dropped the moment
+    # the credential changes, so it can neither claim a rejected key works
+    # nor outlive the key it describes.
+    live = runtime_downgrade()
+    if live:
+        return live
     recorded = (get_preference(VERIFICATION_PREFERENCE) or "").strip()
     return recorded if recorded in _RECORDED_STATES else CREDENTIAL_UNVERIFIED
 

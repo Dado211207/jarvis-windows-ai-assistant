@@ -34,10 +34,27 @@ separate safe Coding Workspace for the owner's own repositories.
   transient check recorded as a rejection, and stale first-run copy. All six are
   corrected on this branch, each with regression tests written against the
   failure first.
+- A **third** review found four more, all in the corrective commit itself, and
+  all four are now corrected:
+  1. `credentials._mutate()` reconciled every failed non-None write to
+     *absence*, so a replacement that failed or timed out **deleted the key it
+     was replacing** while the route answered "Nothing was changed". The
+     reconciliation target is now the proven previous value, and a store that
+     cannot be read is not written to at all.
+  2. Removal reported "unchanged" for a delete that may still land, and told
+     the user to clear the Workspace ID and save — impossible, because
+     `SetApiKeyRequest` refuses a blank key. Removal is now truthful about what
+     it established, and every partial outcome names Remove, which is
+     idempotent and finishes the metadata cleanup.
+  3. `exc_info=True` survived in `events.py`, `providers.py` and
+     `preferences.py`. SQLite and filesystem exceptions quote AppData paths
+     containing the account name, so all five are now `safe_traceback.describe`.
+  4. `note_runtime_failure()` discarded `store_many()`'s result and logged a
+     downgrade that may never have been written.
 - State: awaiting a further independent review. Nothing installed, merged,
-  tagged, released or deployed. **All installer evidence from the previous head
-  is superseded** — the corrective commit changes runtime, Setup/Settings,
-  credential persistence and packaged behaviour.
+  tagged, released or deployed. **All installer evidence from every previous
+  head is superseded** — each corrective commit changes runtime,
+  Setup/Settings, credential persistence and packaged behaviour.
 - Query GitHub again before changing, merging or reporting the current head.
 
 ## Completed work
@@ -85,14 +102,35 @@ separate safe Coding Workspace for the owner's own repositories.
   and nowhere else. Two stores are involved, so success is never reported unless
   both reached the intended state; a failed metadata write rolls the credential
   back, and a failed rollback is reported precisely rather than as success. An
-  unreadable credential snapshot never authorises a destructive rollback.
+  unreadable credential snapshot never authorises a destructive rollback — and
+  never authorises a *replacement* either, because a write that could not be
+  undone is a write that must not be started.
+- **A failed credential write reconciles to the value that was proven to be
+  there, never to absence.** The old and new Anthropic keys are the same
+  Credential Manager entry, so "clean up after a failed save by deleting it"
+  destroys a working key on every replacement. `credentials._mutate_detailed()`
+  reads the entry first and that read is a precondition of writing at all.
+- **"Nothing was changed" is a postcondition, never a consolation.**
+  `MutationResult` separates *applied*, *provably unchanged* and *uncertain*; a
+  call that never returned may still complete, and no message may describe it
+  as having changed nothing. Every recovery instruction must be an action the
+  UI can actually perform — Remove is idempotent and is the one named.
+- A live rejection JARVIS could not write to disk is still applied for the rest
+  of the process (`providers.runtime_downgrade()`), is only ever a *negative*
+  state, and is dropped the moment the credential it describes changes. It is
+  never claimed to have been persisted when it was not.
 - Provider status has five states. "A credential exists" is never reported as
   "chat is available"; only a credential the provider actually answered for is.
   A check that could not run is `configured_unverified`, never
   `verification_failed` — an offline machine has not rejected anything.
-- No raw provider exception is written to any log. `app/core/safe_traceback.py`
-  describes one — type chain and frames — because Anthropic's documented 404 for
-  an inaccessible workspace quotes the workspace ID inside the response body.
+- No raw exception is written to any log on a credential, provider or
+  preferences failure path — not `exc_info`, not `logger.exception()`, not
+  `str(exc)`. `app/core/safe_traceback.py` describes one instead (type chain and
+  trimmed frames), because Anthropic's documented 404 for an inaccessible
+  workspace quotes the workspace ID inside the response body, and a SQLite or
+  filesystem error quotes an AppData path containing the account name. Ten
+  modules are held to this by an AST test in
+  `tests/test_credential_replacement_safety.py`.
 - Every surface that names the Console's Workspaces table must also say the
   Default Workspace is not in it (`tests/test_workspace_guidance.py`).
 - `GET /desktop/ready` proves four *process* facts and is never evidence that

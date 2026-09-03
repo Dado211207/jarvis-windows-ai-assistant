@@ -28,6 +28,24 @@ def isolated_preferences(tmp_path, monkeypatch):
     yield tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _forget_runtime_credential_downgrade():
+    """Reset app/core/providers.py's process-local "this credential was
+    rejected" note between tests.
+
+    It is deliberately module-global — it has to outlive a request, because
+    it exists for the case where the observation could not be written to
+    disk — and anything module-global is shared state a test can leak into
+    the next one. Cleared on both sides so neither the test that sets it nor
+    the test that runs after it depends on ordering.
+    """
+    from app.core.providers import clear_runtime_downgrade
+
+    clear_runtime_downgrade()
+    yield
+    clear_runtime_downgrade()
+
+
 def prime_session(client):
     """Perform a GET to receive the v0.2 CSRF/mutation session cookie
     (see app/api/session.py), then set the matching header as a default

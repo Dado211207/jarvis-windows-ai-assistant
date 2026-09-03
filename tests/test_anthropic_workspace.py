@@ -40,6 +40,36 @@ from app.core.ai.workspace import (
 )
 from app.core.errors import ErrorCategory, classify_anthropic_exception, safe_message
 
+
+def _applied():
+    """A credential-store write the backend confirmed."""
+    from app.core import credentials
+    return credentials.MutationResult(credentials.MUTATION_APPLIED)
+
+
+def _refused():
+    """A write the backend refused: provably nothing changed."""
+    from app.core import credentials
+    return credentials.MutationResult(credentials.MUTATION_UNCHANGED, "backend_refused")
+
+
+@pytest.fixture(autouse=True)
+def _readable_credential_store():
+    """Make the OS credential store answer, and answer "empty".
+
+    Every test below is about a *route*, and the route now declines to write
+    to a credential store it could not read first — deliberately, because a
+    write it cannot undo can destroy a working key (see
+    app/core/ai/credential_pair.py). On Linux CI there is no reachable
+    backend at all, so without this the routes would be exercising that
+    refusal instead of the behaviour under test. Tests that need a previous
+    key patch the snapshot themselves; an inner patch wins over this one.
+    """
+    from unittest.mock import patch as _patch
+
+    with _patch("app.core.credentials.stored_api_key_snapshot", return_value=(True, "")):
+        yield
+
 # Shaped like Anthropic's own documented example, invented here. Not a
 # real workspace.
 FAKE_WORKSPACE = "wrkspc_01EXAMPLEEXAMPLEEXAMPLE"
@@ -283,7 +313,7 @@ def _stored(key=""):
 # --- 6. Setup and Settings accept an optional workspace ID -----------------
 
 def test_the_endpoint_accepts_a_workspace_id_alongside_the_key(api_client):
-    with _verification() as verify, patch("app.core.credentials.set_stored_api_key", return_value=True):
+    with _verification() as verify, patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()):
         r = api_client.post(
             "/settings/api-key",
             json={"api_key": FAKE_KEY, "workspace_id": FAKE_WORKSPACE},
@@ -294,7 +324,7 @@ def test_the_endpoint_accepts_a_workspace_id_alongside_the_key(api_client):
 
 def test_the_workspace_id_is_optional_so_legacy_callers_still_work(api_client):
     """Requirement 14: a body without the field at all is a legacy key."""
-    with _verification() as verify, patch("app.core.credentials.set_stored_api_key", return_value=True):
+    with _verification() as verify, patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()):
         r = api_client.post("/settings/api-key", json={"api_key": FAKE_KEY})
     assert r.status_code == 200
     verify.assert_called_once_with(FAKE_KEY, "")
@@ -325,7 +355,7 @@ def test_a_refused_key_stores_neither_the_key_nor_any_workspace_metadata(api_cli
         ok=False, worth_storing=False,
         category=ErrorCategory.PROVIDER_WORKSPACE_REQUIRED,
         message=safe_message(ErrorCategory.PROVIDER_WORKSPACE_REQUIRED),
-    ), patch("app.core.credentials.set_stored_api_key", return_value=True) as store:
+    ), patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()) as store:
         r = api_client.post(
             "/settings/api-key",
             json={"api_key": FAKE_KEY, "workspace_id": FAKE_WORKSPACE},
@@ -341,7 +371,7 @@ def test_a_verified_pair_records_the_workspace_and_the_verified_state(api_client
     from app.core.preferences import get as get_preference
     from app.core.providers import CREDENTIAL_VERIFIED, VERIFICATION_PREFERENCE
 
-    with _verification(), patch("app.core.credentials.set_stored_api_key", return_value=True):
+    with _verification(), patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()):
         api_client.post(
             "/settings/api-key",
             json={"api_key": FAKE_KEY, "workspace_id": FAKE_WORKSPACE},
@@ -358,14 +388,14 @@ def test_removing_the_key_clears_the_workspace_and_the_verification_state(api_cl
     from app.core.preferences import get as get_preference
     from app.core.providers import VERIFICATION_PREFERENCE
 
-    with _verification(), patch("app.core.credentials.set_stored_api_key", return_value=True):
+    with _verification(), patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()):
         api_client.post(
             "/settings/api-key",
             json={"api_key": FAKE_KEY, "workspace_id": FAKE_WORKSPACE},
         )
     assert get_preference(PREFERENCE_KEY) == FAKE_WORKSPACE
 
-    with patch("app.core.credentials.clear_stored_api_key", return_value=True):
+    with patch("app.core.credentials.clear_stored_api_key_detailed", return_value=_applied()):
         r = api_client.post("/settings/api-key/remove", json={})
 
     assert r.json()["success"] is True
@@ -378,13 +408,13 @@ def test_a_failed_credential_removal_leaves_the_metadata_alone(api_client):
     working identity-linked credential that can no longer authenticate."""
     from app.core.preferences import get as get_preference
 
-    with _verification(), patch("app.core.credentials.set_stored_api_key", return_value=True):
+    with _verification(), patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()):
         api_client.post(
             "/settings/api-key",
             json={"api_key": FAKE_KEY, "workspace_id": FAKE_WORKSPACE},
         )
 
-    with patch("app.core.credentials.clear_stored_api_key", return_value=False):
+    with patch("app.core.credentials.clear_stored_api_key_detailed", return_value=_refused()):
         r = api_client.post("/settings/api-key/remove", json={})
 
     assert r.json()["success"] is False
