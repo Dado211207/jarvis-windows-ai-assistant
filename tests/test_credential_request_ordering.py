@@ -434,8 +434,13 @@ def test_every_credential_and_metadata_write_goes_through_the_coordinator():
             node.func.id for node in ast.walk(tree)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
-        if called & mutators and str(path) not in allowed_mutator_modules:
-            offenders.append(str(path))
+        # `as_posix()` deliberately: `str(path)` yields backslashes on
+        # Windows, so comparing it against the allowlist above made every
+        # allowed module look like an offender there. The first version of
+        # this test passed on Linux and failed the Windows Build job.
+        name = path.as_posix()
+        if called & mutators and name not in allowed_mutator_modules:
+            offenders.append(name)
 
     assert offenders == [], (
         f"these modules mutate the credential without the coordinator: {offenders}. "
