@@ -259,6 +259,28 @@ surprise.
     in 14a or 14e, open **Logs** and confirm there is one `ai_provider`
     row naming the category with a reference id — and that it contains no
     key, no Workspace ID and no Anthropic response text.
+
+> ### Two things that are deliberately *not* on this list
+>
+> **"Save a key while offline and check the previous one survived."**
+> That contradicts the product's own contract and would fail correctly.
+> A network timeout is in `key_check._KEY_IS_PROBABLY_FINE`, so the key
+> being saved is *worth storing*: JARVIS keeps the **new** key and labels
+> it unconfirmed, which is what 14e asks you to confirm. An unreachable
+> Anthropic is not a Credential Manager write failure and implies nothing
+> about the credential already on the machine.
+>
+> **"Make the settings file unwritable and press Remove twice."**
+> Credential-store and metadata write failures are not states a person
+> should be asked to manufacture on their own PC, and a half-finished
+> removal is not something to practise on a real credential. Every
+> ordering — refused write, timed-out write, mutate-then-raise, failed
+> metadata write, and the idempotent second Remove that recovers from it —
+> is covered by `tests/test_credential_replacement_safety.py` and
+> `tests/test_credential_backend_targets.py`, deterministically, against a
+> backend fake with fault injection.
+>
+> Real-PC acceptance stays limited to what an ordinary user actually does.
 15. On a machine without Ollama, run the **guided local-AI install**.
     Confirm the plan screen names source, publisher, licence, size and
     free space *before* anything is fetched; that the **Authenticode

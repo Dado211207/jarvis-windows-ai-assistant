@@ -51,6 +51,20 @@ separate safe Coding Workspace for the owner's own repositories.
      containing the account name, so all five are now `safe_traceback.describe`.
   4. `note_runtime_failure()` discarded `store_many()`'s result and logged a
      downgrade that may never have been written.
+- A **fourth** review found a Windows-backend gap no fake had modelled, and
+  both parts are now corrected:
+  1. `requirements-windows.txt` pins `keyring==25.7.0`, whose
+     `WinVaultKeyring.set_password()` copies any existing credential to
+     `{username}@{service}` **before** writing the replacement — and does so
+     unconditionally, not only on the username collision its own docstring
+     describes. Replacing the Anthropic key therefore left two real
+     Credential Manager targets, `JARVIS` and `anthropic_api_key@JARVIS`,
+     the second holding the key just replaced; the owner observed both with
+     `cmdkey /list`. Reads never showed it, because `_resolve_credential()`
+     returns the plain target first.
+  2. A backend exception was classified as `MUTATION_UNCHANGED`. That
+     backend's `set_password` performs two writes and its `delete_password`
+     up to two deletes, so either can mutate the store and *then* raise.
 - State: awaiting a further independent review. Nothing installed, merged,
   tagged, released or deployed. **All installer evidence from every previous
   head is superseded** — each corrective commit changes runtime,
@@ -105,6 +119,17 @@ separate safe Coding Workspace for the owner's own repositories.
   unreadable credential snapshot never authorises a destructive rollback — and
   never authorises a *replacement* either, because a write that could not be
   undone is a write that must not be started.
+- **One logical secret occupies one credential target.** The pinned Windows
+  backend keeps a copy of what it replaced under `{username}@{service}`, so
+  JARVIS owns two names per credential and holds the invariant that only the
+  first exists after any settled mutation. Nothing is deleted until the
+  intended survivor is proven in place and the copy is proven to carry
+  JARVIS's own username — `credentials._discard_superseded()`.
+- **An exception is not a postcondition.** A backend that mutated the store
+  and then raised is never reported as having changed nothing; the store is
+  read back and compared against what was observed *before* the attempt, and
+  anything else is uncertain plus an actively submitted reconciliation
+  worker. Recording a desired value is not restoring one.
 - **A failed credential write reconciles to the value that was proven to be
   there, never to absence.** The old and new Anthropic keys are the same
   Credential Manager entry, so "clean up after a failed save by deleting it"

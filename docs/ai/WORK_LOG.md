@@ -274,6 +274,88 @@ configured, cleared the moment the stored credential changes, and lost on
 restart — which is correct, because it was never persisted, and saying otherwise
 is what this replaces.
 
+## Independent review, fourth pass — the Windows backend itself
+
+The corrective work was reviewed again against the *pinned* dependency
+rather than against JARVIS's own abstraction, and that found a gap no fake
+in this repository had modelled.
+
+### 1. The pinned backend keeps a copy of the secret it replaces
+
+`requirements-windows.txt` pins `keyring==25.7.0`. Its
+`WinVaultKeyring.set_password()` reads:
+
+```python
+def set_password(self, service, username, password):
+    existing_pw = self._read_credential(service)
+    if existing_pw:
+        # resave the existing password using a compound target
+        existing_username = existing_pw['UserName']
+        target = self._compound_name(existing_username, service)
+        self._set_password(target, existing_username, existing_pw.value)
+    self._set_password(service, username, str(password))
+```
+
+Note what the code does and its own docstring does not: the copy is
+unconditional, not limited to a username collision. With `SERVICE_NAME`
+`JARVIS` and `USERNAME` `anthropic_api_key`, replacing the key left two real
+Credential Manager entries — `JARVIS` and `anthropic_api_key@JARVIS` — the
+second holding the key just replaced. The owner observed exactly those two
+with `cmdkey /list`. Nothing in the application could see it:
+`_resolve_credential()` returns the plain target first, so the stale secret
+was invisible to every read while remaining on disk indefinitely.
+
+JARVIS now treats both names as its own and holds one invariant: after any
+settled mutation, only the plain target exists. `_discard_superseded()`
+proves three things before deleting anything — the intended survivor is in
+place (so removing the copy can never leave the user with no credential),
+the compound target exists, and it carries JARVIS's own username, which a
+read through keyring establishes because it falls through to a
+doubly-compound name otherwise. A compound target belonging to someone else
+is left alone, and there is a test for that.
+
+The invariant is applied on first save, on replacement, after a timed-out
+write's late reconciliation, after a partial failure, on removal, on full
+uninstall, and to the ElevenLabs and OpenAI entries, which reach the same
+backend through the same code. An installation that *already* carries the
+residue is cleaned by its next ordinary save or removal — no special user
+action — and `owned_credential_status()` now sees the compound target, so a
+full purge cannot report a clean store while a secret remains.
+
+### 2. A backend exception does not prove the store is unchanged
+
+The same source shows why: `set_password` performs two writes and
+`delete_password` walks two targets, so either can mutate and *then* raise.
+The previous code recorded the previous value as desired, enqueued nothing,
+and returned `MUTATION_UNCHANGED` — a postcondition nobody had observed, and
+a half-applied replacement that was never undone.
+
+Now every non-timeout failure reads the store back and compares it against
+what was observed *before* the attempt. Only an exact match — plus a proven
+absence of any superseded copy, and nothing else in flight — is reported as
+unchanged. Anything else is uncertain **and** enqueues a real reconciliation
+worker, because updating `_desired_values` alone only tells a future write
+what to converge to, and when nothing else is in flight that write never
+happens.
+
+### 3. Two real-PC instructions withdrawn
+
+A round-3 report suggested asking the owner to save a key while offline and
+check the previous one survived, and to manufacture a metadata-write failure
+and press Remove twice. Both are wrong to ask.
+
+The first contradicts the product: `PROVIDER_TIMEOUT` and
+`PROVIDER_UNAVAILABLE` are in `key_check._KEY_IS_PROBABLY_FINE`, so an
+offline save stores the **new** key and labels it unconfirmed — which is
+what checklist step 14e has always said. An unreachable Anthropic is not a
+Credential Manager write failure and implies nothing about the credential
+already on the machine. The second is not a safe or practical thing to
+practise on a real credential.
+
+`docs/physical-pc-checklist.md` now records both exclusions and why, and
+`tests/test_workspace_guidance.py` fails if either reappears as an
+instruction. Real-PC acceptance stays limited to what an ordinary user does.
+
 ## The owner's current installation must not be patched manually
 
 The installed build predates this fix. Do **not** hand-edit files under the
@@ -298,7 +380,7 @@ verified — see the verification gate in the pull request.
 
 ## Next action
 
-1. Independent review of this branch — the fourth.
+1. Independent review of this branch — the fifth.
 2. The verification gate in the pull request, including two sequential Windows
    Installer acceptance runs.
 3. Only then, a real-PC upgrade-in-place by the owner, entering the Workspace ID

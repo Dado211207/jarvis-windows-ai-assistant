@@ -231,3 +231,63 @@ def test_the_installer_guide_does_not_overclaim_the_verification(path):
     text = path.read_text(encoding="utf-8").lower()
     assert "so a combination that cannot work is never saved" not in text
     assert "could not be checked" in text or "cannot be checked" in text
+
+
+# ---------------------------------------------------------------------------
+# What the owner is asked to do on a real PC
+# ---------------------------------------------------------------------------
+
+def _checklist() -> str:
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parent.parent / "docs/physical-pc-checklist.md"
+    return path.read_text(encoding="utf-8")
+
+
+def test_the_checklist_states_the_real_offline_contract():
+    """A round-3 report suggested asking the owner to save a key while
+    offline and check the *previous* one survived. That contradicts the
+    product: PROVIDER_TIMEOUT and PROVIDER_UNAVAILABLE are both in
+    `key_check._KEY_IS_PROBABLY_FINE`, so the proposed key is stored and
+    labelled unconfirmed. The checklist has always said so; this keeps the
+    two from drifting apart again."""
+    from app.core.ai.key_check import _KEY_IS_PROBABLY_FINE
+    from app.core.errors import ErrorCategory
+
+    assert ErrorCategory.PROVIDER_TIMEOUT in _KEY_IS_PROBABLY_FINE
+    assert ErrorCategory.PROVIDER_UNAVAILABLE in _KEY_IS_PROBABLY_FINE
+
+    checklist = _checklist().lower()
+    assert "it must be stored and reported as *not yet" in checklist, (
+        "the offline step no longer states that the new key is kept"
+    )
+    assert "not a credential manager write failure" in checklist, (
+        "the checklist no longer warns against the offline/write-failure confusion"
+    )
+
+
+def test_the_checklist_does_not_ask_the_owner_to_manufacture_a_write_failure():
+    """Credential-store and metadata failures are automated-test territory,
+    not something to practise on a real machine with a real key."""
+    raw = _checklist()
+    # The exclusion note quotes both instructions in order to rule them out,
+    # so only the *instructions* are searched — blockquote lines, which is
+    # where the note lives, are not instructions to anyone.
+    instructions = "\n".join(
+        line for line in raw.splitlines() if not line.lstrip().startswith(">")
+    ).lower()
+
+    for forbidden in (
+        "make the settings file read-only",
+        "make the preferences file unwritable",
+        "simulate a metadata failure",
+        "press remove twice",
+        "press **remove** twice",
+    ):
+        assert forbidden not in instructions, (
+            f"the checklist asks the owner to perform {forbidden!r}"
+        )
+
+    assert "deliberately *not* on this list" in raw, (
+        "the checklist no longer records why those two steps are excluded"
+    )
