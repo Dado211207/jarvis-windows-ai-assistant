@@ -130,46 +130,76 @@ _NEGATIVE_STATES = (CREDENTIAL_FAILED, CREDENTIAL_UNFUNDED)
 # Persisting is still attempted first and is still what survives a restart.
 # When it fails, the observation is kept in this process instead, because
 # "Anthropic rejected this key thirty seconds ago" is knowledge JARVIS
-# genuinely has and must not act against. Its lifecycle is deliberately
-# small enough to state in full:
+# genuinely has and must not act against.
+#
+# **The note is bound to a credential revision, and that correction matters.**
+# An earlier version of this comment said the note is "cleared only when the
+# credential it describes stops being the stored one", and concluded that it
+# "cannot outlive the key it describes". That was disproved: `save()` does
+# clear it, but a request made with the *old* key can still be in flight, and
+# when it finally comes back rejected it recreated the note afterwards —
+# marking the new, working credential as rejected. Clearing on save orders
+# nothing, because the failure arrives later than the save.
+#
+# So every rejection now carries the revision of the pair that made the
+# request, and is discarded unless that revision is still the current one.
+# The lifecycle, restated:
 #
 #   set     only by note_runtime_failure(), only from an explicit live
-#           rejection, and only ever to a value in _NEGATIVE_STATES
-#   read    only by anthropic_credential_state(), and only while a key is
-#           configured at all
-#   cleared only when the credential it describes stops being the stored
-#           one — app/core/ai/credential_pair.py calls
-#           clear_runtime_downgrade() on save and on removal
+#           rejection of the *current* revision, and only ever to a value in
+#           _NEGATIVE_STATES
+#   read    only by credential_state_for(), and only for the revision it was
+#           recorded against
+#   cleared when the credential changes (credential_pair calls
+#           clear_runtime_downgrade()) and, independently, ignored the moment
+#           the revision moves on — so a stale note cannot describe a newer
+#           credential even if the clear never happened
 #   lost    on restart, which is correct: it was never persisted, and
 #           claiming otherwise is what this replaces
 #
 # There is no path that sets it to a positive state, so it cannot report a
 # rejected credential as working, and it cannot report a working one as
-# rejected without a provider having said so.
+# rejected without a provider having said so about that exact pair.
 # ---------------------------------------------------------------------------
 _runtime_downgrade_lock = threading.Lock()
 _runtime_downgrade: Optional[str] = None
+#: Which credential revision `_runtime_downgrade` describes. Never a key,
+#: never derived from one — see app/core/ai/credential_view.py.
+_runtime_downgrade_revision: int = -1
 
 
-def _remember_runtime_downgrade(state: str) -> None:
-    """Note a live rejection for the rest of this process. Negative only."""
-    global _runtime_downgrade
+def _remember_runtime_downgrade(state: str, revision: int) -> None:
+    """Note a live rejection for the rest of this process. Negative only,
+    and only ever about the revision that was actually rejected."""
+    global _runtime_downgrade, _runtime_downgrade_revision
     if state not in _NEGATIVE_STATES:
         return
     with _runtime_downgrade_lock:
         _runtime_downgrade = state
+        _runtime_downgrade_revision = revision
 
 
 def clear_runtime_downgrade() -> None:
     """Forget the note, because the credential it described is gone."""
-    global _runtime_downgrade
+    global _runtime_downgrade, _runtime_downgrade_revision
     with _runtime_downgrade_lock:
         _runtime_downgrade = None
+        _runtime_downgrade_revision = -1
 
 
-def runtime_downgrade() -> Optional[str]:
-    """The note, or None. Always one of `_NEGATIVE_STATES` when set."""
+def runtime_downgrade(revision: Optional[int] = None) -> Optional[str]:
+    """The note for *revision*, or None.
+
+    Answering only for the revision it was recorded against is what stops a
+    rejection of a replaced key describing the key that replaced it. Called
+    without a revision it answers for the note's own, which is what a
+    diagnostic wants: "is there a note at all".
+    """
     with _runtime_downgrade_lock:
+        if _runtime_downgrade is None:
+            return None
+        if revision is not None and revision != _runtime_downgrade_revision:
+            return None
         return _runtime_downgrade
 
 
@@ -202,8 +232,19 @@ def state_for_verification(ok: bool, category=None) -> str:
     return CREDENTIAL_UNVERIFIED
 
 
-def note_runtime_failure(provider: str, category) -> None:
+def note_runtime_failure(provider: str, category, credential_revision: int = -1) -> None:
     """Downgrade a recorded verification when a *live* request is rejected.
+
+    **`credential_revision` is the pair that made the failed request**, from
+    the snapshot the request was built with. A rejection is discarded unless
+    that revision is still the current one: a request carrying the previous
+    key can come back long after the user replaced it, and attributing its
+    rejection to the new key marks a working credential as failed. A lock
+    would not help — the delayed failure could simply wait for the save and
+    then be just as wrong. Only identity can settle it.
+
+    The default of -1 never matches a real revision, so a caller that
+    forgets to pass one downgrades nothing rather than downgrading blindly.
 
     "Verified" has to mean "answered successfully the last time Anthropic
     was asked", not a permanent promise. A key that is revoked, expires, or
@@ -233,12 +274,23 @@ def note_runtime_failure(provider: str, category) -> None:
         else:
             return
 
+        from app.core.ai import credential_view
         from app.core.preferences import get as get_preference
         from app.core.preferences import store_many as store_preferences
 
+        # The credential this rejection is about must still be the one that
+        # is stored. Checked before anything is written, because both the
+        # preference and the process-local note would otherwise describe a
+        # credential the user has already replaced.
+        if credential_revision != credential_view.current_revision():
+            logger.info(
+                "Ignoring a provider rejection for a credential that is no longer stored.",
+            )
+            return
+
         # Held in this process first, so the observation applies even if
         # nothing below can be written. See the block above for why.
-        _remember_runtime_downgrade(downgraded)
+        _remember_runtime_downgrade(downgraded, credential_revision)
 
         if (get_preference(VERIFICATION_PREFERENCE) or "").strip() == downgraded:
             return  # already says this; a rewrite would only churn the file
@@ -263,19 +315,29 @@ def anthropic_credential_state() -> str:
     which is the honest answer: it may well work, and nothing here has
     watched it do so.
     """
-    from app.config import settings
-    from app.core.preferences import get as get_preference
+    from app.core.ai import credential_view
 
-    if not settings.has_anthropic_key:
+    return credential_state_for(credential_view.current())
+
+
+def credential_state_for(pair) -> str:
+    """The state of one already-taken credential snapshot.
+
+    Separated from the function above so a caller that has a snapshot — a
+    request, a status endpoint — describes *that* pair rather than taking a
+    second, possibly different look at the store.
+    """
+    if not pair.configured:
         return CREDENTIAL_NOT_CONFIGURED
     # A live rejection this process saw but could not write down still
-    # happened. It is only ever a negative state and is dropped the moment
-    # the credential changes, so it can neither claim a rejected key works
-    # nor outlive the key it describes.
-    live = runtime_downgrade()
+    # happened. It is only ever a negative state, and it is answered only
+    # for the revision it was recorded against — so it can neither claim a
+    # rejected key works nor describe a credential that replaced the one it
+    # was about.
+    live = runtime_downgrade(pair.revision)
     if live:
         return live
-    recorded = (get_preference(VERIFICATION_PREFERENCE) or "").strip()
+    recorded = (pair.state or "").strip()
     return recorded if recorded in _RECORDED_STATES else CREDENTIAL_UNVERIFIED
 
 

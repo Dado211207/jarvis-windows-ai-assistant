@@ -6,6 +6,8 @@ All tests mock the Anthropic SDK — no real API calls are made.
 import pytest
 from unittest.mock import MagicMock, patch
 
+from tests.conftest import credential_present
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -91,7 +93,8 @@ def test_generate_response_uses_api_when_key_present():
 
     fake_reply = _mock_anthropic_message("The weather is sunny today.")
 
-    with patch("app.core.brain.settings") as s, \
+    with credential_present(), \
+         patch("app.core.brain.settings") as s, \
          patch("anthropic.Anthropic") as mock_anthropic_cls:
         s.has_anthropic_key = True
         s.anthropic_api_key = "sk-test-key"
@@ -129,7 +132,8 @@ def test_generate_response_passes_system_prompt():
 
     fake_reply = _mock_anthropic_message("I can help with that.")
 
-    with patch("app.core.brain.settings") as s, \
+    with credential_present(), \
+         patch("app.core.brain.settings") as s, \
          patch("anthropic.Anthropic") as mock_anthropic_cls:
         s.has_anthropic_key = True
         s.anthropic_api_key = "sk-test-key"
@@ -157,7 +161,8 @@ def test_generate_response_falls_back_on_api_error():
     from app.core.brain import Brain
     b = Brain()
 
-    with patch("app.core.brain.settings") as s, \
+    with credential_present(), \
+         patch("app.core.brain.settings") as s, \
          patch("anthropic.Anthropic") as mock_anthropic_cls:
         s.has_anthropic_key = True
         s.anthropic_api_key = "sk-bad-key"
@@ -194,7 +199,8 @@ def test_generate_response_error_never_leaks_raw_exception_text():
         "(local trace: /home/realuser/.config/jarvis/secrets.json line 42)"
     )
 
-    with patch("app.core.brain.settings") as s, \
+    with credential_present(), \
+         patch("app.core.brain.settings") as s, \
          patch("anthropic.Anthropic") as mock_anthropic_cls:
         s.has_anthropic_key = True
         s.anthropic_api_key = "sk-ant-api03-REALSECRETVALUE123"
@@ -223,7 +229,8 @@ def test_generate_response_falls_back_on_timeout():
     import socket
     b = Brain()
 
-    with patch("app.core.brain.settings") as s, \
+    with credential_present(), \
+         patch("app.core.brain.settings") as s, \
          patch("anthropic.Anthropic") as mock_anthropic_cls:
         s.has_anthropic_key = True
         s.anthropic_api_key = "sk-test-key"
@@ -385,7 +392,7 @@ def test_brain_response_stored_in_db():
 def api_client():
     from fastapi.testclient import TestClient
     from app.api.server import app as jarvis_app
-    from tests.conftest import prime_session
+    from tests.conftest import prime_session, credential_present
     with TestClient(jarvis_app, raise_server_exceptions=True) as client:
         yield prime_session(client)
 
@@ -394,7 +401,8 @@ def test_api_command_ai_response(api_client):
     """An unknown command via API should succeed with brain as tool_used."""
     fake_reply = _mock_anthropic_message("Bonjour!")
 
-    with patch("app.core.brain.settings") as s, \
+    with credential_present(), \
+         patch("app.core.brain.settings") as s, \
          patch("anthropic.Anthropic") as mock_cls:
         s.has_anthropic_key = True
         s.anthropic_api_key = "sk-test-key"

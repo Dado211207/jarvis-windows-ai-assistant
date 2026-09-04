@@ -59,6 +59,13 @@ class ProviderConfig:
     # Not a secret, but still never logged or returned — see
     # app/core/ai/workspace.py.
     anthropic_workspace_id: str = ""
+    # Which credential pair this configuration was built from, so a
+    # rejection that arrives after the credential changed downgrades the
+    # pair that caused it rather than the one that replaced it. A counter,
+    # never derived from the key — see app/core/ai/credential_view.py.
+    # -1 means "no snapshot", which never matches a real revision and so
+    # can never authorise a downgrade.
+    credential_revision: int = -1
 
 
 @dataclass

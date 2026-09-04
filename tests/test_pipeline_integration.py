@@ -23,6 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.conftest import credential_present
+
 from app.core.events import EventType, event_bus
 from app.core.models import ActionLifecycleStatus
 
@@ -303,7 +305,8 @@ def test_command_endpoint_never_leaks_raw_provider_exception_text(api_client):
         "at /home/realuser/.env line 3 — request to internal-host-7.corp"
     )
 
-    with patch("app.core.brain.settings") as mock_settings, \
+    with credential_present(), \
+         patch("app.core.brain.settings") as mock_settings, \
          patch("anthropic.Anthropic") as mock_anthropic_cls:
         mock_settings.has_anthropic_key = True
         mock_settings.anthropic_api_key = "sk-ant-api03-TOTALLYREALSECRET"

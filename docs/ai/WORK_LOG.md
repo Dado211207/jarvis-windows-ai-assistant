@@ -485,6 +485,106 @@ correction: two concurrent `POST /settings/api-key` requests need no button
 at all, and FastAPI serves sync routes from a thread pool. The source says
 so, and a test asserts the comment is still there.
 
+## Independent review, seventh pass — readers, and who a failure belongs to
+
+Round 6 serialised the writers. The review then asked the two questions
+that boundary does not answer: what does a *reader* see, and which
+credential does a *delayed failure* belong to?
+
+### 1. A reader could observe a mixed pair
+
+`Brain._provider_config()` assembled the pair from separate store reads —
+and `settings.has_anthropic_key` calls `effective_api_key`, so the
+credential store was read twice per request. Pausing a successful save
+between its two stores put a real chat request in that window:
+
+    observed_key        NEW-KEY
+    observed_workspace  wrkspc_OLD
+
+That is a request sent to Anthropic with one key's credential and another
+key's workspace. The writer lock does not protect readers, and the Settings
+page's button state protects neither Chat nor a direct API call.
+
+`app/core/ai/credential_view.py` now builds one immutable `CredentialPair`
+while holding a **read gate** on the coordinator, and every reader takes it:
+`Brain._provider_config()` (and the Coding Workspace through it),
+`GET /settings/api-key-status`, and `anthropic_credential_state()` — which
+is now a thin wrapper over `credential_state_for(pair)` so a caller that
+already has a snapshot describes *that* pair rather than looking again.
+
+There is deliberately **no revision-keyed cache**. A cache would be stale
+for any write that did not come through the coordinator, and "which writes
+go through the coordinator" is enforced by a test rather than by the type
+system — not something a reader should depend on. Building every time also
+costs *less* than the code it replaces, which read the credential twice.
+
+No lock is held across a network request: a snapshot is taken, the gate is
+released, and only then does anything talk to Anthropic.
+
+### 2. A delayed failure downgraded the credential that replaced it
+
+Both provider failure paths called `note_runtime_failure(provider.name,
+exc.category)` with nothing identifying which credential made the failed
+request. So a request carrying the old key, returning `PROVIDER_AUTH` after
+the user had saved a new one, marked the new, working credential
+`verification_failed`:
+
+    current_state_before_old_failure  verified
+    failed_request_key                OLD-KEY
+    current_state_after_old_failure   verification_failed
+
+This also disproved the comment in `providers.py` claiming the runtime note
+"cannot outlive the key it describes". `save()` does clear it — and the
+delayed old request recreated it afterwards. Clearing on save orders
+nothing, because the failure arrives later than the save.
+
+The snapshot's **non-secret revision** now travels on `ProviderConfig`, both
+failure paths pass it, and a rejection is discarded unless it still
+describes the stored pair. The process-local downgrade is stored against its
+revision too, so a session-only note cannot describe a later credential
+either. The revision is a counter — never a hash of a key, never derived
+from a secret — so it is safe in a log line in a way the key never is.
+
+A lock inside `note_runtime_failure()` would not have worked: the delayed
+failure could simply wait for the save to finish and then be just as wrong.
+Only identity settles it.
+
+### 3. Ordering at the HTTP boundary
+
+`POST /settings/api-key` verifies with Anthropic **before** it may store
+anything, so round 6's tests — which called `save()` directly — proved
+nothing about two concurrent requests. Two of them could verify out of
+order and reach the coordinator in the opposite order to the one the user
+made them in.
+
+The rule, chosen and documented before the fix: **the request admitted
+later wins.** Admission, not completion — that is the order the person
+acted in, and the only one they can observe. Each request takes an intent
+when it is admitted, verifies, and presents the intent to the coordinator;
+an older request whose check finished late is refused with a truthful
+message rather than landing on top of a newer accepted save. Remove is
+ordered by the same rule, because it changes the same credential.
+
+### 4. The busy outcome reported facts it did not have
+
+`_busy()` hard-coded `stored=False` for a save, `stored=True` for a remove
+and `consistent=True` for both. Those describe the *installation*, and a
+request that never started observed neither store — least of all in the
+case this outcome occurs in, where the transaction in front may be part-way
+between the credential and its metadata. Round 6's test held a transaction
+that touched neither store, which is exactly why the hard-coded answers
+looked true. Both fields are now `Optional[bool]` and `None` there, the API
+model carries the null through, and the page treats it as unknown.
+
+### 5. The tripwire claim was wrong and is withdrawn
+
+`Transaction.is_newest` is always true while the gate is held, and a writer
+that never entered the coordinator does not touch the counter it reads — so
+it cannot detect one. The assertion is kept as an internal invariant and
+described as one. What actually catches an escaped writer is a structural
+test that walks every module under `app/` and fails if anything outside a
+named allowlist calls the credential mutators.
+
 ## The owner's current installation must not be patched manually
 
 The installed build predates this fix. Do **not** hand-edit files under the
@@ -509,7 +609,7 @@ verified — see the verification gate in the pull request.
 
 ## Next action
 
-1. Independent review of this branch — the seventh.
+1. Independent review of this branch — the eighth.
 2. The verification gate in the pull request, including two sequential Windows
    Installer acceptance runs.
 3. Only then, a real-PC upgrade-in-place by the owner, entering the Workspace ID

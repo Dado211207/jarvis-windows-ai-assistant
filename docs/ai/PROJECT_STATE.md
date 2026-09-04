@@ -98,6 +98,26 @@ separate safe Coding Workspace for the owner's own repositories.
   with a bounded wait and a truthful refusal. The Settings page disables
   Save and Remove together as defence in depth, and says in the source that
   it is not the correction.
+- A **seventh** review found the two things still outside the round-6
+  writer boundary, and both are now fixed:
+  1. **A reader could observe a mixed pair.** `Brain._provider_config()`
+     read the key and the Workspace ID separately, and
+     `settings.has_anthropic_key` read the credential a second time — none
+     of it inside the transaction. A save paused between its two stores
+     gave a real chat request `NEW-KEY` with `wrkspc_OLD`, so a request
+     could go to Anthropic carrying one key's credential and another key's
+     workspace. `app/core/ai/credential_view.py` now builds one immutable
+     snapshot under a read gate, and every reader takes it.
+  2. **A delayed failure downgraded the wrong credential.**
+     `note_runtime_failure()` carried no credential identity, so a request
+     made with the old key, returning `PROVIDER_AUTH` after the user had
+     saved a new one, marked the new, working credential
+     `verification_failed`. Failures now carry the snapshot's non-secret
+     revision and are discarded unless it still describes the stored pair.
+  Two further corrections came with them: `POST /settings/api-key` takes an
+  ordering intent **before** its Anthropic verification, so two requests
+  that verify out of order cannot land out of order; and the busy outcome
+  no longer asserts `stored`/`consistent` it never observed.
 - State: awaiting a further independent review. Nothing installed, merged,
   tagged, released or deployed. **All installer evidence from every previous
   head is superseded** — each corrective commit changes runtime,
@@ -179,11 +199,29 @@ separate safe Coding Workspace for the owner's own repositories.
   write, the metadata write, the rollback, the runtime-downgrade note and
   the returned outcome. A credential write that landed is never, by itself,
   permission for an overtaken operation to commit its own Workspace ID —
-  and `Transaction.is_newest` is asserted before either metadata write as a
-  tripwire for a future path that escapes the coordinator. A request that
-  cannot get in is refused with "nothing was changed", which is true; it is
-  never queued indefinitely. UI button state is defence in depth and must
-  never be presented as the boundary: two direct API calls need no button.
+  and `Transaction.is_newest` is asserted before either metadata write as an
+  internal invariant of the coordinator. It does **not** detect a writer
+  that never entered the coordinator: such a writer never touches the
+  counter. What catches that is the structural allowlist test in
+  `tests/test_credential_request_ordering.py`. A request that cannot get in
+  is refused, and the refusal claims only that this request did not start.
+  UI button state is defence in depth and must never be presented as the
+  boundary: two direct API calls need no button.
+- **Readers take one snapshot, and it carries a revision.**
+  `app/core/ai/credential_view.py` builds the key, the Workspace ID and the
+  verification state together under the coordinator's read gate, so no
+  request can be assembled from one credential's key and another's
+  workspace. The non-secret revision travels on `ProviderConfig`, and
+  `note_runtime_failure()` refuses to downgrade unless it still describes
+  the stored pair — a delayed rejection of a replaced key must never mark
+  its replacement as failed. Never hold the coordinator across an Anthropic
+  request: take a snapshot, release, then go to the network.
+- **Ordering at the HTTP boundary is by admission, not completion.**
+  `POST /settings/api-key` verifies with Anthropic before it may store
+  anything, so two requests can finish out of order. Each takes an intent
+  when it is admitted and presents it to the coordinator; the request
+  admitted later wins, and an older one whose check finished late is
+  refused rather than applied. Remove is ordered by the same rule.
 - **Latest intent wins, and the check that establishes it is the only thing
   allowed to grant one.** `_record_desired_if_latest()` returning `None` means a
   newer request owns the credential; nothing the older request does afterwards

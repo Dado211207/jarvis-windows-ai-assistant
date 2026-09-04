@@ -38,6 +38,23 @@ from unittest.mock import patch
 
 import pytest
 
+def _current_revision():
+    """The revision a request made right now would carry.
+
+    `note_runtime_failure()` requires it: a rejection must name the pair it
+    was about, so a delayed failure cannot downgrade a credential that
+    replaced the one it actually used. These tests are about what a
+    rejection of the *current* credential does, so they pass the current
+    revision — the stale case has its own file,
+    tests/test_credential_read_coherence.py.
+    """
+    from app.core.ai import credential_view
+
+    # The coordinator's own number rather than a snapshot's, because a
+    # snapshot taken from a store these tests have patched into failing
+    # reads as unreadable and carries -1 — which correctly matches nothing.
+    return credential_view.current_revision()
+
 from app.core.errors import ErrorCategory
 
 FAKE_KEY = "sk-ant-api03-not-a-real-key-only-a-test-fixture"
@@ -822,7 +839,7 @@ def test_a_runtime_rejection_downgrades_a_previously_verified_credential():
     preferences = _Preferences({_state_key(): "verified"})
     with patch("app.core.preferences.store_many", preferences.store_many), \
          patch("app.core.preferences.get", preferences.get):
-        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH)
+        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
 
     assert preferences.data[_state_key()] == "verification_failed"
 
@@ -838,7 +855,7 @@ def test_a_transient_runtime_failure_never_downgrades_anything(category):
     preferences = _Preferences({_state_key(): "verified"})
     with patch("app.core.preferences.store_many", preferences.store_many), \
          patch("app.core.preferences.get", preferences.get):
-        providers.note_runtime_failure("anthropic", category)
+        providers.note_runtime_failure("anthropic", category, credential_revision=_current_revision())
 
     assert preferences.data[_state_key()] == "verified"
     assert preferences.writes == []
@@ -850,7 +867,7 @@ def test_a_runtime_failure_never_upgrades_a_state():
     preferences = _Preferences({_state_key(): "verification_failed"})
     with patch("app.core.preferences.store_many", preferences.store_many), \
          patch("app.core.preferences.get", preferences.get):
-        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH)
+        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
 
     assert preferences.data[_state_key()] == "verification_failed"
 
@@ -861,7 +878,7 @@ def test_another_providers_failure_never_touches_the_anthropic_state():
     preferences = _Preferences({_state_key(): "verified"})
     with patch("app.core.preferences.store_many", preferences.store_many), \
          patch("app.core.preferences.get", preferences.get):
-        providers.note_runtime_failure("ollama", ErrorCategory.PROVIDER_AUTH)
+        providers.note_runtime_failure("ollama", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
 
     assert preferences.data[_state_key()] == "verified"
 
@@ -870,7 +887,7 @@ def test_note_runtime_failure_never_raises():
     from app.core import providers
 
     with patch("app.core.preferences.get", side_effect=RuntimeError("preferences are gone")):
-        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH)
+        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
 
 
 def test_verified_does_not_promise_the_key_will_keep_working():

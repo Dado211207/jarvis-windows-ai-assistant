@@ -38,6 +38,23 @@ import types
 
 import pytest
 
+def _current_revision():
+    """The revision a request made right now would carry.
+
+    `note_runtime_failure()` requires it: a rejection must name the pair it
+    was about, so a delayed failure cannot downgrade a credential that
+    replaced the one it actually used. These tests are about what a
+    rejection of the *current* credential does, so they pass the current
+    revision — the stale case has its own file,
+    tests/test_credential_read_coherence.py.
+    """
+    from app.core.ai import credential_view
+
+    # The coordinator's own number rather than a snapshot's, because a
+    # snapshot taken from a store these tests have patched into failing
+    # reads as unreadable and carries -1 — which correctly matches nothing.
+    return credential_view.current_revision()
+
 
 # Obviously fake, and shaped like the real things so a leak is unmistakable.
 OLD_KEY = "sk-ant-api03-PREVIOUS-key-that-must-survive"
@@ -647,7 +664,7 @@ def test_a_failed_downgrade_write_does_not_render_the_exception(monkeypatch):
         raise _LeakyFailure()
 
     monkeypatch.setattr("app.core.preferences.get", _explode)
-    providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH)
+    providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
     _assert_safe(recorder.rendered())
 
 
@@ -787,7 +804,7 @@ def test_a_downgrade_that_cannot_be_persisted_is_not_logged_as_persisted(monkeyp
     monkeypatch.setattr(providers, "logger", recorder)
 
     with patch("app.core.preferences.store_many", return_value=False):
-        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH)
+        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
 
     rendered = recorder.rendered().lower()
     assert "downgraded to" not in rendered, (
@@ -805,7 +822,7 @@ def test_a_downgrade_that_was_persisted_is_logged(monkeypatch):
     monkeypatch.setattr(providers, "logger", recorder)
 
     with patch("app.core.preferences.store_many", return_value=True):
-        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH)
+        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
 
     assert "downgraded to" in recorder.rendered().lower()
 
@@ -823,7 +840,7 @@ def test_a_downgrade_that_cannot_be_persisted_still_stops_claiming_availability(
          patch("app.core.preferences.get", return_value=providers.CREDENTIAL_VERIFIED), \
          patch("app.core.preferences.store_many", return_value=False):
         assert providers.anthropic_status().available is True
-        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH)
+        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
         assert providers.anthropic_credential_state() == providers.CREDENTIAL_FAILED
         assert providers.anthropic_status().available is False
 
@@ -834,7 +851,7 @@ def test_the_process_local_downgrade_can_never_report_a_credential_as_working():
     for state in (providers.CREDENTIAL_VERIFIED, providers.CREDENTIAL_UNVERIFIED,
                   providers.CREDENTIAL_NOT_CONFIGURED, "anything-else"):
         providers.clear_runtime_downgrade()
-        providers._remember_runtime_downgrade(state)
+        providers._remember_runtime_downgrade(state, _current_revision())
         assert providers.runtime_downgrade() is None, (
             f"{state!r} was accepted as a downgrade; only negative states may be"
         )
@@ -848,7 +865,7 @@ def test_the_process_local_downgrade_is_forgotten_when_the_credential_changes():
 
     applied = credentials.MutationResult(credentials.MUTATION_APPLIED)
     with patch("app.core.preferences.store_many", return_value=False):
-        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH)
+        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
     assert providers.runtime_downgrade() == providers.CREDENTIAL_FAILED
 
     with patch("app.core.credentials.stored_api_key_snapshot", return_value=(True, OLD_KEY)), \
@@ -870,7 +887,7 @@ def test_the_process_local_downgrade_is_forgotten_when_the_credential_is_removed
 
     applied = credentials.MutationResult(credentials.MUTATION_APPLIED)
     with patch("app.core.preferences.store_many", return_value=False):
-        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH)
+        providers.note_runtime_failure("anthropic", ErrorCategory.PROVIDER_AUTH, credential_revision=_current_revision())
     assert providers.runtime_downgrade() == providers.CREDENTIAL_FAILED
 
     with patch("app.core.credentials.clear_stored_api_key_detailed", return_value=applied), \
@@ -886,5 +903,5 @@ def test_a_transient_runtime_failure_leaves_no_process_local_downgrade():
 
     for category in (ErrorCategory.PROVIDER_TIMEOUT, ErrorCategory.PROVIDER_RATE_LIMIT,
                      ErrorCategory.PROVIDER_UNAVAILABLE):
-        providers.note_runtime_failure("anthropic", category)
+        providers.note_runtime_failure("anthropic", category, credential_revision=_current_revision())
         assert providers.runtime_downgrade() is None

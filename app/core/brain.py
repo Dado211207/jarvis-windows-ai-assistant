@@ -111,19 +111,31 @@ class Brain:
 
         The key is resolved to "" whenever no key is configured, so a
         provider's own availability check and this class's is_configured()
-        can never disagree about whether credentials exist."""
+        can never disagree about whether credentials exist.
+
+        **The credential and its workspace come from one snapshot**, not
+        from separate store reads. Read separately they could straddle a
+        concurrent save and produce a request carrying one key's credential
+        with another key's workspace — see
+        `app/core/ai/credential_view.py`. The snapshot's revision travels
+        with the configuration so that a rejection arriving after the
+        credential has changed can be attributed to the pair that actually
+        made the request rather than to whatever is stored when it lands.
+        """
         from app.core.ai import ProviderConfig
-        from app.core.ai.workspace import PREFERENCE_KEY as WORKSPACE_PREFERENCE
-        from app.core.preferences import get as get_preference
+        from app.core.ai import credential_view
+
+        pair = credential_view.current()
 
         return ProviderConfig(
             model=settings.jarvis_ai_model or "",
             max_tokens=settings.jarvis_ai_max_tokens,
             timeout_seconds=float(settings.jarvis_ai_timeout_seconds),
-            api_key=settings.effective_api_key if settings.has_anthropic_key else "",
+            api_key=pair.api_key if pair.configured else "",
             # Resolved here rather than in the provider so that the one
             # place settings become configuration stays the one place.
-            anthropic_workspace_id=get_preference(WORKSPACE_PREFERENCE) or "",
+            anthropic_workspace_id=pair.workspace_id,
+            credential_revision=pair.revision,
             ollama_model=self._ollama_model(),
         )
 
@@ -272,7 +284,13 @@ class Brain:
         # that is actually stored as rejected.
         from app.core.providers import note_runtime_failure
 
-        note_runtime_failure(provider.name, exc.category)
+        # Attributed to the exact credential pair this request was built
+        # from. Without that, a rejection arriving after the user replaced
+        # the key marks the replacement as failed.
+        note_runtime_failure(
+            provider.name, exc.category,
+            credential_revision=getattr(provider.config, "credential_revision", -1),
+        )
         return BrainResponse(
             content=message,
             provider=provider.name,

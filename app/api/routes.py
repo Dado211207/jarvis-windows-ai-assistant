@@ -654,26 +654,34 @@ class ApiKeyActionResponse(BaseModel):
     # `success`: a key that is valid but could not be checked (offline,
     # rate-limited) is still stored, so the user does not have to type it
     # again later.
-    stored: bool = False
+    #
+    # `null` is a third answer and is not the same as `false`: the request
+    # never started, so it observed neither store and may not claim either
+    # way. The page treats a null as "unknown" and leaves the key box alone.
+    stored: Optional[bool] = False
     # Whether the credential and the metadata describing it agree. False
     # only in the partial-failure states of app/core/ai/credential_pair.py,
     # and the page uses it to decide whether the user still has to retype
     # anything: a stored key whose workspace could not be written is not
-    # finished with, even though `stored` is true.
-    consistent: bool = True
+    # finished with, even though `stored` is true. `null` for the same
+    # reason as above.
+    consistent: Optional[bool] = True
 
 
 @router.get("/settings/api-key-status", response_model=ApiKeyStatusResponse)
 def api_key_status() -> ApiKeyStatusResponse:
-    from app.config import settings
-    from app.core.ai.workspace import PREFERENCE_KEY as WORKSPACE_PREFERENCE
-    from app.core.preferences import get as get_preference
-    from app.core.providers import anthropic_credential_state
+    # One snapshot, so "a key is configured" and "a Workspace ID is
+    # configured" always describe the same credential. Read separately they
+    # could straddle a save and report a key from one request beside a
+    # workspace from another — see app/core/ai/credential_view.py.
+    from app.core.ai import credential_view
+    from app.core.providers import credential_state_for
 
+    pair = credential_view.current()
     return ApiKeyStatusResponse(
-        configured=settings.has_anthropic_key,
-        workspace_configured=bool((get_preference(WORKSPACE_PREFERENCE) or "").strip()),
-        state=anthropic_credential_state(),
+        configured=pair.configured,
+        workspace_configured=pair.workspace_configured,
+        state=credential_state_for(pair),
     )
 
 
@@ -705,13 +713,22 @@ def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
     route may not report success unless both ended up in the intended
     state.
     """
-    from app.core.ai import credential_pair
+    from app.core.ai import credential_pair, credential_transaction
     from app.core.ai.key_check import verify_anthropic_key
     from app.core.ai.workspace import normalise_workspace_id
     from app.core.providers import state_for_verification
 
     key = req.api_key.strip()
     workspace = normalise_workspace_id(req.workspace_id)
+
+    # Take this request's place in the order **before** asking Anthropic
+    # anything. The check below is a network call and must not happen under
+    # the credential coordinator's lock — every reader and writer would
+    # queue behind it — so the ordering cannot come from when the check
+    # returns. It comes from when the request was admitted, which is the
+    # order the person actually acted in. An older request whose check
+    # finishes late is refused rather than landing on a newer one.
+    intent = credential_transaction.admit("save")
 
     # Verified as a pair. An identity-linked key is rejected without the
     # workspace header, so checking the key on its own would either fail a
@@ -731,6 +748,7 @@ def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
 
     outcome = credential_pair.save(
         key, workspace, state_for_verification(verification.ok, verification.category),
+        intent=intent,
     )
 
     if not outcome.ok:
@@ -776,9 +794,12 @@ def remove_api_key() -> ApiKeyActionResponse:
     reported as exactly that. Answering "API key removed." would leave the
     inherited-workspace trap in place while telling the user it was gone.
     """
-    from app.core.ai import credential_pair
+    from app.core.ai import credential_pair, credential_transaction
 
-    outcome = credential_pair.clear()
+    # Removal does no network work, so it is admitted and applied in one
+    # go — but it takes its place in the same order as a save, because both
+    # change the same credential and the user's later action must win.
+    outcome = credential_pair.clear(intent=credential_transaction.admit("clear"))
     return ApiKeyActionResponse(
         success=outcome.ok,
         message=outcome.message,

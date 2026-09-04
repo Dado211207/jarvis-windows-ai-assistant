@@ -121,8 +121,13 @@ class PairOutcome:
     #: nobody knows, and this reads False because nothing was established.
     #: The message says which of the two happened; no message claims a
     #: postcondition that was only predicted.
-    stored: bool
-    consistent: bool
+    #:
+    #: `None` is a third answer, distinct from False: **not established at
+    #: all**. It is what a request that never started must say, because
+    #: "the key is not stored" is a claim about the installation and such a
+    #: request looked at neither store.
+    stored: Optional[bool]
+    consistent: Optional[bool]
     rolled_back: bool = False
     category: Optional[str] = None
 
@@ -170,26 +175,60 @@ def _transaction():
     return credential_transaction
 
 
-def _busy(what: str, stored: bool) -> PairOutcome:
-    """Nothing was attempted, so nothing was changed — and that is sayable.
+def _superseded_request(what: str) -> PairOutcome:
+    """A later request already claimed the credential, so this one stops.
 
-    The only outcome in this module that describes work JARVIS declined to
-    start. It is not a failure of either store: neither was touched, so
-    neither can have been left describing the other.
+    The rule is **the request admitted later wins** — admitted, not
+    finished. `POST /settings/api-key` asks Anthropic to check the key
+    before storing it, and that check cannot happen under the coordinator's
+    lock, so two requests can reach this module in the opposite order to the
+    one the person made them in. Ordering by admission means the outcome is
+    the order they acted in rather than the order Anthropic answered in.
+
+    Nothing has been written when this is returned: the claim is tested
+    before the first store is touched.
     """
     return PairOutcome(
-        outcome=CREDENTIAL_BUSY,
+        outcome=CREDENTIAL_SUPERSEDED,
         message=(
-            f"Another change to your API key is already in progress, so JARVIS did not "
-            f"{what}. Nothing was changed. Wait for the first change to finish, then try again."
+            f"A newer change to your API key was accepted while this one was being "
+            f"checked, so JARVIS did not {what} — the newer change is what is in place. "
+            f"Open Settings to see what is stored."
         ),
-        stored=stored,
+        stored=False,
         consistent=True,
         category="credential_store",
     )
 
 
-def save(api_key: str, workspace: str, state: str) -> PairOutcome:
+def _busy(what: str) -> PairOutcome:
+    """This request did not start — and that is *all* it may claim.
+
+    An earlier version answered `stored=False` for a busy save,
+    `stored=True` for a busy removal and `consistent=True` for both. Those
+    are statements about the installation, not about this request, and this
+    request observed neither store. Worse, the moment they are least likely
+    to be true is exactly the moment this outcome occurs: the transaction in
+    front may be part-way between the credential and its metadata, which is
+    the one window in which the pair really is inconsistent.
+
+    So both are `None` — not established — and the sentence says what did
+    happen rather than describing a state nobody looked at.
+    """
+    return PairOutcome(
+        outcome=CREDENTIAL_BUSY,
+        message=(
+            f"Another change to your API key is already running, so JARVIS did not "
+            f"{what} and cannot yet say what that other change has done. "
+            f"Wait for it to finish, check Settings, then try again."
+        ),
+        stored=None,
+        consistent=None,
+        category="credential_store",
+    )
+
+
+def save(api_key: str, workspace: str, state: str, intent=None) -> PairOutcome:
     """Store *api_key* with the *workspace* it acts in and the *state* the
     verification observed, or leave the installation as it was.
 
@@ -206,11 +245,14 @@ def save(api_key: str, workspace: str, state: str) -> PairOutcome:
     different requests.
     """
     transaction = _transaction()
+    ticket = transaction.admit("save") if intent is None else intent
     try:
         with transaction.begin("save") as active:
+            if not transaction.claim(ticket):
+                return _superseded_request("save this key")
             return _save_alone(api_key, workspace, state, active)
     except transaction.TransactionBusy:
-        return _busy("save this key", stored=False)
+        return _busy("save this key")
 
 
 def _save_alone(api_key: str, workspace: str, state: str, active) -> PairOutcome:
@@ -379,7 +421,7 @@ def _save_alone(api_key: str, workspace: str, state: str, active) -> PairOutcome
     )
 
 
-def clear() -> PairOutcome:
+def clear(intent=None) -> PairOutcome:
     """Remove the credential and the metadata that only described it.
 
     The workspace ID and the verification state are properties *of the
@@ -406,11 +448,14 @@ def clear() -> PairOutcome:
     key describing nothing. See `app/core/ai/credential_transaction.py`.
     """
     transaction = _transaction()
+    ticket = transaction.admit("clear") if intent is None else intent
     try:
         with transaction.begin("clear") as active:
+            if not transaction.claim(ticket):
+                return _superseded_request("remove this key")
             return _clear_alone(active)
     except transaction.TransactionBusy:
-        return _busy("remove this key", stored=True)
+        return _busy("remove this key")
 
 
 def _clear_alone(active) -> PairOutcome:

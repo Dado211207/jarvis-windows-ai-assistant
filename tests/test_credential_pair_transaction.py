@@ -89,8 +89,13 @@ class _Preferences:
         self._lock = threading.Lock()
         self.values = {}
         self.writes = []
+        #: Set to make every write fail, the way a settings file that
+        #: cannot be written behaves. All-or-nothing, like the real one.
+        self.refuse_writes = False
 
     def store_many(self, pairs):
+        if self.refuse_writes:
+            return False
         with self._lock:
             self.values.update(pairs)
             self.writes.append(dict(pairs))
@@ -521,12 +526,20 @@ def test_a_busy_save_changes_nothing_and_says_so(monkeypatch):
 
     for outcome_under_test in (outcome, removal):
         assert not outcome_under_test.ok
-        assert outcome_under_test.consistent, (
-            "nothing was attempted, so the two stores cannot have been made to disagree"
-        )
+        # Round 7 corrected what this may claim. `stored` and `consistent`
+        # describe the *installation*, and a request that never started
+        # observed neither store — least of all in the case this outcome
+        # actually occurs in, where the transaction in front may be
+        # part-way between the credential and its metadata. The real
+        # interleaving is covered by
+        # tests/test_credential_request_ordering.py; here the transaction
+        # in front is empty, which is exactly why the old hard-coded
+        # answers looked true.
+        assert outcome_under_test.stored is None
+        assert outcome_under_test.consistent is None
         lowered = outcome_under_test.message.lower()
-        assert "nothing was changed" in lowered
-        assert "already in progress" in lowered or "in progress" in lowered
+        assert "did not" in lowered
+        assert "already running" in lowered or "in progress" in lowered
 
     assert fake.target_names() == [], "a refused request wrote to the credential store"
     assert preferences.writes == [], "a refused request wrote metadata"

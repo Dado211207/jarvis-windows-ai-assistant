@@ -166,7 +166,13 @@ def _stream_events(command: str) -> Iterator[str]:
         # than inside record_provider_failure().
         from app.core.providers import note_runtime_failure
 
-        note_runtime_failure(provider.name, exc.category)
+        # Attributed to the credential pair this stream was built from, for
+        # the same reason as /command: a rejection that arrives after the
+        # key changed otherwise downgrades the key that replaced it.
+        note_runtime_failure(
+            provider.name, exc.category,
+            credential_revision=getattr(provider.config, "credential_revision", -1),
+        )
         yield _event({"type": "error", "message": message, "error": safe.model_dump()})
     except Exception as exc:  # noqa: BLE001 — a provider that broke its own contract
         failed = True

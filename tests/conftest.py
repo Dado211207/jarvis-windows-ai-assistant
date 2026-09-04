@@ -1,5 +1,7 @@
 """Shared pytest helpers across the test suite."""
 
+import contextlib
+
 import pytest
 
 SESSION_TOKEN_HEADER = "X-JARVIS-Session-Token"
@@ -39,11 +41,18 @@ def _forget_runtime_credential_downgrade():
     the next one. Cleared on both sides so neither the test that sets it nor
     the test that runs after it depends on ordering.
     """
+    from app.core.ai import credential_view
     from app.core.providers import clear_runtime_downgrade
 
+    # The credential snapshot is cached module-globally and keyed on the
+    # coordinator's revision, which a test that seeds the stores directly
+    # never moves. Dropping it on both sides keeps one test's credential
+    # out of the next test's request.
     clear_runtime_downgrade()
+    credential_view.invalidate()
     yield
     clear_runtime_downgrade()
+    credential_view.invalidate()
 
 
 def prime_session(client):
@@ -156,3 +165,30 @@ def chromium_executable_path():
     import os
 
     return os.environ.get("JARVIS_TEST_CHROMIUM_PATH") or None
+
+
+@contextlib.contextmanager
+def credential_present(key: str = "sk-test-key"):
+    """Make the real credential snapshot report *key* as configured.
+
+    Since round 7 the provider's credential comes from one coherent
+    snapshot (`app/core/ai/credential_view.py`) rather than from separate
+    `settings` reads, so a test that mocks `app.core.brain.settings` no
+    longer supplies the key — the snapshot reads `app.config.settings`.
+
+    Setting the environment-variable field is deliberately how this is
+    done: it is the real precedence rule (`effective_api_key` prefers
+    ANTHROPIC_API_KEY over the credential store), so a test using this
+    exercises the production read path rather than a stub of it.
+    """
+    from app.config import settings
+    from app.core.ai import credential_view
+
+    previous = settings.anthropic_api_key
+    settings.anthropic_api_key = key
+    credential_view.invalidate()
+    try:
+        yield
+    finally:
+        settings.anthropic_api_key = previous
+        credential_view.invalidate()

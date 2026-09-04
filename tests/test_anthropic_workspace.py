@@ -431,7 +431,7 @@ def test_an_upgraded_install_with_a_pre_existing_key_reads_as_unverified():
     from app.config import settings
     from app.core import providers
 
-    with patch.object(type(settings), "has_anthropic_key", property(lambda self: True)):
+    with patch.object(type(settings), "effective_api_key", property(lambda self: FAKE_KEY)):
         assert providers.anthropic_credential_state() == providers.CREDENTIAL_UNVERIFIED
 
 
@@ -510,7 +510,7 @@ def test_a_merely_present_credential_is_never_reported_as_live(api_client):
     from app.config import settings
     from app.core import providers
 
-    with patch.object(type(settings), "has_anthropic_key", property(lambda self: True)):
+    with patch.object(type(settings), "effective_api_key", property(lambda self: FAKE_KEY)):
         status = providers.anthropic_status()
 
     assert status.available is False
@@ -523,7 +523,7 @@ def test_a_rejected_credential_says_so_and_points_at_the_workspace_id():
     from app.core.preferences import store as store_preference
 
     store_preference(providers.VERIFICATION_PREFERENCE, providers.CREDENTIAL_FAILED)
-    with patch.object(type(settings), "has_anthropic_key", property(lambda self: True)):
+    with patch.object(type(settings), "effective_api_key", property(lambda self: FAKE_KEY)):
         status = providers.anthropic_status()
 
     assert status.available is False
@@ -537,7 +537,7 @@ def test_no_status_detail_ever_contains_the_key_or_the_workspace_id():
 
     store_preference(PREFERENCE_KEY, FAKE_WORKSPACE)
     with patch.object(type(settings), "effective_api_key", property(lambda self: FAKE_KEY)), \
-         patch.object(type(settings), "has_anthropic_key", property(lambda self: True)):
+         patch.object(type(settings), "effective_api_key", property(lambda self: FAKE_KEY)):
         for state in providers._CREDENTIAL_DETAIL.values():
             assert FAKE_KEY not in state
             assert FAKE_WORKSPACE not in state

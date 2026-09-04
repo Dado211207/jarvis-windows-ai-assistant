@@ -35,10 +35,32 @@ operation that it has been overtaken; they do not stop it having read a
 snapshot that is already stale, and every additional step would need its own
 check, correct in its own way, forever. Serialising the operation makes the
 question disappear: an older operation cannot still be running once a newer
-one has committed, because the newer one could not have started. The
-generation counters below are kept anyway, as a tripwire — a boundary with
-one implementation is a boundary with one bug — so a future path that
-escapes this module is caught by an assertion rather than by a race.
+one has committed, because the newer one could not have started.
+
+**What the generation counter is, and what it is not.** It is the *pair
+revision*: a non-secret, monotonic number that changes whenever a
+credential-pair transaction runs. Readers stamp it onto the snapshot they
+took (`app/core/ai/credential_view.py`) and a delayed provider failure
+presents it back, so a rejection can only ever downgrade the exact pair that
+made the request. `Transaction.is_newest` asserts it inside the locked body,
+where it is an internal invariant of this module and always true.
+
+It is **not** a detector for a writer that never came through here: such a
+writer does not touch this counter, so the comparison would stay true while
+it did its damage. What actually catches that is a structural test —
+`tests/test_credential_request_ordering.py` walks every module under `app/`
+and fails if anything outside a named allowlist calls the credential
+mutators. An earlier version of this comment claimed otherwise, and the
+claim was wrong.
+
+**Two orderings, two counters.** The revision orders *transactions*, which
+is what a reader needs. An `Intent` orders *requests*, which is what the
+HTTP layer needs: `POST /settings/api-key` asks Anthropic to verify the key
+before it may store it, and that network call must not happen under this
+lock. So the route takes an intent when it is admitted, verifies, and
+presents the intent here. The rule is **the request admitted later wins** —
+the order the person acted in, not the order Anthropic happened to answer
+in — and an older request that arrives late is refused rather than applied.
 
 **Why not the UI.** Disabling both buttons is worth doing and is done, but
 it cannot be the correction: two concurrent `POST /settings/api-key`
@@ -82,6 +104,11 @@ _state = threading.Condition()
 _generation = 0
 _committed = 0
 _waiting = 0
+#: Requests admitted, and the newest one that has claimed the credential.
+#: Separate from the generation above because a request is admitted before
+#: its Anthropic verification and claims only afterwards.
+_intents = 0
+_claimed_intent = 0
 
 
 class TransactionBusy(Exception):
@@ -101,10 +128,11 @@ class Transaction:
     def is_newest(self) -> bool:
         """Whether no transaction has been started since this one.
 
-        Always true while `begin()` holds the gate, which is the point: it
-        is a tripwire for a future code path that reaches a store without
-        going through this module, not the mechanism that makes the
-        invariant hold.
+        An internal invariant of this module: it is always true while
+        `begin()` holds the gate, and asserting it before each metadata
+        write documents *why* the write is allowed rather than leaving the
+        reader to reconstruct the argument. It cannot see a writer that
+        never entered this module — see the module docstring for what does.
         """
         with _state:
             return _generation == self.id
@@ -168,6 +196,89 @@ def begin(kind: str, wait: float = None):
             transaction.commit()
     finally:
         _gate.release()
+
+
+@contextlib.contextmanager
+def read_gate(wait: float = None):
+    """Hold the gate without minting a transaction.
+
+    For a reader that needs both stores to describe the same credential.
+    It deliberately does **not** advance the revision: a read changes
+    nothing, and a revision that moved on every read would mean no snapshot
+    was ever reusable and every provider failure looked stale.
+
+    Raises `TransactionBusy` if the wait runs out, exactly as `begin()`
+    does. A reader that cannot get in has a coherent older snapshot to fall
+    back on; it must never assemble one out of two separate reads.
+    """
+    global _waiting
+
+    limit = WAIT_SECONDS if wait is None else wait
+    with _state:
+        _waiting += 1
+        _state.notify_all()
+    try:
+        acquired = _gate.acquire(True, limit) if limit > 0 else _gate.acquire(False)
+    finally:
+        with _state:
+            _waiting -= 1
+            _state.notify_all()
+    if not acquired:
+        raise TransactionBusy("read")
+    try:
+        yield
+    finally:
+        _gate.release()
+
+
+def pair_revision() -> int:
+    """The credential pair's current revision — non-secret, monotonic.
+
+    Changes whenever a transaction runs, which is the conservative reading:
+    a transaction that ended up writing nothing still moves it, so a
+    delayed failure is skipped rather than attributed on a guess. A real
+    rejection of the current pair simply recurs on the next request.
+    """
+    with _state:
+        return _generation
+
+
+@dataclass(frozen=True)
+class Intent:
+    """One admitted request's place in the order the user acted in.
+
+    Taken *before* the Anthropic verification, so the ordering is the one
+    the person can observe rather than the one the network produced.
+    """
+
+    id: int
+
+
+def admit(kind: str) -> Intent:
+    """Take an intent for a request that is about to change the credential."""
+    global _intents
+    with _state:
+        _intents += 1
+        return Intent(_intents)
+
+
+def claim(intent: Intent) -> bool:
+    """Whether *intent* may still change the credential, claiming it if so.
+
+    False once a request admitted after it has already claimed: that later
+    request is what the user asked for most recently, and overwriting it
+    with an older one whose verification happened to finish late would make
+    the outcome depend on Anthropic's latency.
+
+    Called from inside `begin()`'s locked body, so the test and the claim
+    are atomic with respect to every other credential-pair operation.
+    """
+    global _claimed_intent
+    with _state:
+        if intent.id <= _claimed_intent:
+            return False
+        _claimed_intent = intent.id
+        return True
 
 
 def committed_generation() -> int:
