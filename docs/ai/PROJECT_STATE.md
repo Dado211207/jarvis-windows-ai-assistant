@@ -81,6 +81,23 @@ separate safe Coding Workspace for the owner's own repositories.
   worker, a superseded request writes nothing, cleanup follows the newest
   recorded intent, and `MutationResult.superseded` gives that outcome its own
   truthful message instead of promising a rollback nobody performed.
+- A **sixth** review found a broader race across the *whole* two-store
+  operation, and it is now fixed: **two successful overlapping operations
+  could leave the key and its Workspace ID describing different requests.**
+  `credential_pair.save()` is four steps — snapshot, credential write,
+  metadata write, rollback — and nothing held them together, so a newer save
+  could complete inside an older one's window. The older save's credential
+  write really had landed, so the credential layer correctly owed it
+  `MUTATION_APPLIED`; it then took that as permission to commit its own
+  Workspace ID over the newer request's. Reproduced deterministically in all
+  three orderings, in two directions: Save→Save left `NEWER-KEY` with
+  `OLDER-WORKSPACE`; Save→Remove left a removed key's Workspace ID for the
+  next key to inherit; Remove→Save left a stored key describing nothing.
+  `app/core/ai/credential_transaction.py` now serves one credential-pair
+  change at a time, from the snapshot through to the returned `PairOutcome`,
+  with a bounded wait and a truthful refusal. The Settings page disables
+  Save and Remove together as defence in depth, and says in the source that
+  it is not the correction.
 - State: awaiting a further independent review. Nothing installed, merged,
   tagged, released or deployed. **All installer evidence from every previous
   head is superseded** — each corrective commit changes runtime,
@@ -156,6 +173,17 @@ separate safe Coding Workspace for the owner's own repositories.
   call that never returned may still complete, and no message may describe it
   as having changed nothing. Every recovery instruction must be an action the
   UI can actually perform — Remove is idempotent and is the one named.
+- **A credential-pair change runs alone, and the guarantee is about the
+  operation rather than either store.** `save()` and `clear()` hold
+  `credential_transaction.begin()` across the snapshot, the credential
+  write, the metadata write, the rollback, the runtime-downgrade note and
+  the returned outcome. A credential write that landed is never, by itself,
+  permission for an overtaken operation to commit its own Workspace ID —
+  and `Transaction.is_newest` is asserted before either metadata write as a
+  tripwire for a future path that escapes the coordinator. A request that
+  cannot get in is refused with "nothing was changed", which is true; it is
+  never queued indefinitely. UI button state is defence in depth and must
+  never be presented as the boundary: two direct API calls need no button.
 - **Latest intent wins, and the check that establishes it is the only thing
   allowed to grant one.** `_record_desired_if_latest()` returning `None` means a
   newer request owns the credential; nothing the older request does afterwards

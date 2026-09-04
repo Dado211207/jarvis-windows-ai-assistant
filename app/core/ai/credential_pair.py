@@ -35,6 +35,21 @@ described:
     that clear fails too        reported precisely, as an inconsistent
                                 state, and never as success
 
+**One operation at a time, and that is a separate guarantee from the one
+above.** The failure orderings are about what happens when a step *fails*.
+They said nothing about what happens when two operations *succeed* and
+interleave between the steps — and two overlapping saves, each entirely
+successful, left the newer request's key beside the older request's
+Workspace ID. Every part had behaved as designed: the credential layer owes
+`MUTATION_APPLIED` to a write that really landed, and nothing had ever said
+that "my write landed" is a different permission from "I may still commit
+my own description of the credential". `save()` and `clear()` therefore run
+their whole body — snapshot, both stores, rollback, the runtime-downgrade
+note and the outcome — inside `app/core/ai/credential_transaction.py`,
+which serves one credential change at a time and refuses an overlapping one
+rather than queueing it forever. Still not atomicity across two stores;
+what it is, is one writer.
+
 **A failed replacement never destroys a working pair**, and that claim
 needed two corrections before it was true. The first version read the
 previous key for its own rollback but *began the replacement anyway* when
@@ -82,6 +97,7 @@ CREDENTIAL_STORE_FAILED = "credential_store_failed"
 CREDENTIAL_STORE_UNREADABLE = "credential_store_unreadable"
 CREDENTIAL_WRITE_UNCONFIRMED = "credential_write_unconfirmed"
 CREDENTIAL_SUPERSEDED = "credential_superseded"
+CREDENTIAL_BUSY = "credential_busy"
 REMOVAL_UNCONFIRMED = "removal_unconfirmed"
 ROLLED_BACK = "rolled_back"
 METADATA_ORPHANED = "metadata_orphaned"
@@ -149,6 +165,30 @@ def _write_metadata(workspace: str, state: str) -> bool:
     return bool(_preferences().store_many({workspace_key: workspace, state_key: state}))
 
 
+def _transaction():
+    from app.core.ai import credential_transaction
+    return credential_transaction
+
+
+def _busy(what: str, stored: bool) -> PairOutcome:
+    """Nothing was attempted, so nothing was changed — and that is sayable.
+
+    The only outcome in this module that describes work JARVIS declined to
+    start. It is not a failure of either store: neither was touched, so
+    neither can have been left describing the other.
+    """
+    return PairOutcome(
+        outcome=CREDENTIAL_BUSY,
+        message=(
+            f"Another change to your API key is already in progress, so JARVIS did not "
+            f"{what}. Nothing was changed. Wait for the first change to finish, then try again."
+        ),
+        stored=stored,
+        consistent=True,
+        category="credential_store",
+    )
+
+
 def save(api_key: str, workspace: str, state: str) -> PairOutcome:
     """Store *api_key* with the *workspace* it acts in and the *state* the
     verification observed, or leave the installation as it was.
@@ -157,7 +197,24 @@ def save(api_key: str, workspace: str, state: str) -> PairOutcome:
     from `state_for_verification()`; this module never decides what a
     verification meant, only that the verdict and the credential it
     describes are written together.
+
+    **The whole operation runs alone.** Snapshot, credential write, metadata
+    write, rollback, the runtime-downgrade note and the outcome that
+    describes them are one transaction — see
+    `app/core/ai/credential_transaction.py` for the interleaving that made
+    two *successful* saves leave a key and a Workspace ID belonging to
+    different requests.
     """
+    transaction = _transaction()
+    try:
+        with transaction.begin("save") as active:
+            return _save_alone(api_key, workspace, state, active)
+    except transaction.TransactionBusy:
+        return _busy("save this key", stored=False)
+
+
+def _save_alone(api_key: str, workspace: str, state: str, active) -> PairOutcome:
+    """`save()`'s body, with the coordinator's transaction already held."""
     credentials = _credentials()
 
     # Read before writing. Held in memory for the length of this call and
@@ -229,6 +286,30 @@ def save(api_key: str, workspace: str, state: str) -> PairOutcome:
             ),
             stored=False,
             consistent=True,          # the metadata was never touched
+            category="credential_store",
+        )
+
+    # The credential is in place. Committing *this* request's description of
+    # it is a separate permission, and the tripwire below is where they are
+    # kept separate: a write that landed never authorises an operation that
+    # has been overtaken to write its own Workspace ID. Holding the
+    # transaction makes this unreachable — which is the point of asserting
+    # it rather than assuming it.
+    if not active.is_newest:
+        logger.warning(
+            "A credential save was overtaken before its metadata could be written; "
+            "leaving the newer request's Workspace ID in place.",
+        )
+        return PairOutcome(
+            outcome=CREDENTIAL_SUPERSEDED,
+            message=(
+                "Another change to the key was made while this one was still running, and "
+                "that newer change is what is in place — JARVIS did not overwrite it with "
+                "this key's Workspace ID. Open Settings to see what is stored, and save "
+                "again if it is not what you wanted."
+            ),
+            stored=False,
+            consistent=True,
             category="credential_store",
         )
 
@@ -319,7 +400,21 @@ def clear() -> PairOutcome:
     field and save — cannot be carried out: `SetApiKeyRequest` refuses a
     blank API key, so there is no such request to make. Every partial
     outcome below therefore names Remove, which is a button that exists.
+
+    **The whole operation runs alone**, for the reason `save()` does: a
+    metadata clear that lands after a newer save committed leaves a stored
+    key describing nothing. See `app/core/ai/credential_transaction.py`.
     """
+    transaction = _transaction()
+    try:
+        with transaction.begin("clear") as active:
+            return _clear_alone(active)
+    except transaction.TransactionBusy:
+        return _busy("remove this key", stored=True)
+
+
+def _clear_alone(active) -> PairOutcome:
+    """`clear()`'s body, with the coordinator's transaction already held."""
     credentials = _credentials()
 
     removal = credentials.clear_stored_api_key_detailed()
@@ -364,6 +459,27 @@ def clear() -> PairOutcome:
                 "Windows did not confirm the key was removed, so JARVIS cannot tell you "
                 "whether it is gone. The Workspace ID has been left as it was. Press Remove "
                 "again — repeating it is safe, and it finishes the job either way."
+            ),
+            stored=False,
+            consistent=False,
+            category="credential_store",
+        )
+
+    # Same separation as in `save()`: the credential is gone, but clearing
+    # the description of it is a second permission that an overtaken
+    # operation does not have. A stale clear here is what would leave a key
+    # a newer save had just stored describing nothing at all.
+    if not active.is_newest:
+        logger.warning(
+            "A credential removal was overtaken before its metadata could be cleared; "
+            "leaving the newer request's Workspace ID in place.",
+        )
+        return PairOutcome(
+            outcome=CREDENTIAL_SUPERSEDED,
+            message=(
+                "Another change to the key was made while this removal was still running, "
+                "and that newer change is what is in place — JARVIS did not clear its "
+                "Workspace ID. Open Settings to see what is stored before removing again."
             ),
             stored=False,
             consistent=False,

@@ -2454,6 +2454,28 @@ function _setSettingsKeyMessage(text, ok) {
   el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
 }
 
+// Save and Remove act on the same credential, so one must not be started
+// while the other is running. Each used to disable only the button that was
+// pressed, which left Save→Remove and Remove→Save overlapping through the
+// ordinary UI.
+//
+// **This is defence in depth and deliberately not the correction.** Two
+// concurrent POSTs to /settings/api-key need no button at all, and FastAPI
+// serves sync routes from a thread pool, so the boundary that actually
+// holds is server-side: app/core/ai/credential_transaction.py runs one
+// credential-pair change at a time and refuses an overlapping one with an
+// outcome that says nothing was changed. A page cannot enforce that, and
+// nothing here should be read as though it does.
+let _settingsKeyBusy = false;
+
+function _setSettingsKeyBusy(busy) {
+  _settingsKeyBusy = busy;
+  for (const id of ["settings-key-save", "settings-key-remove"]) {
+    const control = $(id);
+    if (control) control.disabled = busy;
+  }
+}
+
 // ── Local AI ─────────────────────────────────────────────────────────────────
 //
 // Ten states, ten next steps. The buttons that appear are the ones that
@@ -2690,13 +2712,20 @@ function initSettings() {
   // The same verified save the first-run screen uses, so a key rejected
   // during setup and a key rejected in Settings say the same thing.
   if (saveBtn) saveBtn.addEventListener("click", async () => {
-    await saveApiKeyFrom("settings-key-input", "settings-key-save", _setSettingsKeyMessage, "settings-workspace-input");
-    refreshSettingsKeyStatus();
-    refreshSettingsProviders();
+    if (_settingsKeyBusy) return;
+    _setSettingsKeyBusy(true);
+    try {
+      await saveApiKeyFrom("settings-key-input", "settings-key-save", _setSettingsKeyMessage, "settings-workspace-input");
+      refreshSettingsKeyStatus();
+      refreshSettingsProviders();
+    } finally {
+      _setSettingsKeyBusy(false);
+    }
   });
 
   if (removeBtn) removeBtn.addEventListener("click", async () => {
-    removeBtn.disabled = true;
+    if (_settingsKeyBusy) return;
+    _setSettingsKeyBusy(true);
     try {
       const r = await API.post("/settings/api-key/remove", {});
       _setSettingsKeyMessage(r.message, r.success);
@@ -2705,7 +2734,7 @@ function initSettings() {
     } catch (e) {
       _setSettingsKeyMessage("Could not reach the server.", false);
     } finally {
-      removeBtn.disabled = false;
+      _setSettingsKeyBusy(false);
     }
   });
 

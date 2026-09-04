@@ -419,6 +419,72 @@ exists. Corrected in place, with no behaviour change, and backed by a test
 that observes the lock's state at every entry across the success, timeout
 and failure paths.
 
+## Independent review, sixth pass — the operation, not the store
+
+Round 5 made each *credential* mutation safe against a concurrent one. The
+review then asked the next question: what about the *operation*?
+
+### Two successful overlapping operations could disagree about the pair
+
+`credential_pair.save()` is four steps across two stores — snapshot,
+credential write, metadata write, rollback — and nothing held them
+together. A newer save could complete entirely inside an older one's
+window, and then:
+
+    older_result    applied
+    newer_result    applied
+    final_key       NEWER-KEY
+    final_workspace OLDER-WORKSPACE
+
+Every individual part behaved as designed. The older request's credential
+write really had landed, so the credential layer correctly owed it
+`MUTATION_APPLIED`, and `_cleanup_survivor()` correctly followed the newer
+generation. What had never been said is that **"my credential write landed"
+is not the same permission as "I may still commit my own description of the
+credential"** — and there was nothing above the two stores able to tell
+those apart.
+
+Reproduced deterministically in all three orderings, damaging the pair in
+two different directions:
+
+| Ordering | Final key | Final Workspace ID |
+|---|---|---|
+| Save → Save | `NEWER-KEY` | `OLDER-WORKSPACE` |
+| Save → Remove | absent | `OLDER-WORKSPACE`, left for the next key to inherit |
+| Remove → Save | `NEWER-KEY` | empty — a stored key describing nothing |
+
+The credential store itself was correct every time. The damage was entirely
+in the metadata, which is exactly why a guarantee about one store had been
+mistaken for a guarantee about the operation.
+
+### The correction
+
+`app/core/ai/credential_transaction.py` serves **one credential-pair change
+at a time**, from the snapshot through to the returned `PairOutcome` —
+snapshot, credential write, metadata write, rollback, runtime-downgrade
+note, outcome. Serialising the operation makes the question disappear: an
+older operation cannot still be running once a newer one has committed,
+because the newer one could not have started.
+
+Generation counters are kept anyway as a tripwire. `Transaction.is_newest`
+is asserted immediately before each metadata write, so a future path that
+reaches a store without going through the coordinator is caught by an
+assertion rather than by a race. Under the lock it is always true, which is
+the point of asserting rather than assuming it.
+
+The wait is bounded (`WAIT_SECONDS`, sized against what one transaction can
+actually take) and running out of it is a refusal that says nothing was
+attempted — which is true, and therefore safe to tell someone.
+
+### Why the UI change is not the fix
+
+The Settings page used to disable only the button that was pressed, so
+Save→Remove and Remove→Save overlapped through the ordinary UI. Both
+controls now disable together. That is worth doing and it is **not** the
+correction: two concurrent `POST /settings/api-key` requests need no button
+at all, and FastAPI serves sync routes from a thread pool. The source says
+so, and a test asserts the comment is still there.
+
 ## The owner's current installation must not be patched manually
 
 The installed build predates this fix. Do **not** hand-edit files under the
@@ -443,7 +509,7 @@ verified — see the verification gate in the pull request.
 
 ## Next action
 
-1. Independent review of this branch — the sixth.
+1. Independent review of this branch — the seventh.
 2. The verification gate in the pull request, including two sequential Windows
    Installer acceptance runs.
 3. Only then, a real-PC upgrade-in-place by the owner, entering the Workspace ID
