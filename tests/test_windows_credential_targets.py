@@ -107,12 +107,26 @@ def _read_target(vault, target, username):
 
 
 def _delete_target(vault, target, username):
-    from keyring.errors import PasswordDeleteError
+    """Best effort. "Already absent" is the state this is aiming for, and the
+    caller proves the end state by reading both targets back afterwards.
 
+    Deliberately a broad `except`, and deliberately **not**
+    `except keyring.errors.PasswordDeleteError`. Sibling modules in this
+    suite install a fake `keyring.errors` into `sys.modules` and pop it again
+    between tests, while `keyring.backends.Windows` stays cached holding a
+    reference to the *original* exception class. A fresh
+    `from keyring.errors import PasswordDeleteError` here then binds a
+    different class object with the same name, the except clause silently
+    stops matching, and cleanup escapes as an error — which is exactly what
+    happened on the first real-Windows run of this file.
+
+    Nothing is hidden by catching broadly: the `leftovers` assertion in each
+    test's `finally` fails if either target is still readable.
+    """
     try:
         vault.delete_password(target, username)
-    except PasswordDeleteError:
-        pass  # already absent is the state we want
+    except Exception:  # noqa: BLE001 — proven by the read-back that follows
+        pass
 
 
 def test_the_pinned_backend_keeps_the_previous_secret_in_a_compound_target():
