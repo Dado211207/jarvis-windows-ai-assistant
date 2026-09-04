@@ -96,6 +96,14 @@ MUTATION_UNCHANGED = "unchanged"
 #: the state that must never be described to a user as "nothing was changed".
 MUTATION_UNCERTAIN = "uncertain"
 
+#: An UNCERTAIN whose cause is that a *newer* request for the same credential
+#: arrived while this one was failing. It is called out by name because it is
+#: the one uncertain outcome where JARVIS deliberately did **not** ask for the
+#: previous value to be put back — the credential is not this request's to
+#: reconcile any more — and a message that said otherwise would be describing
+#: an action nobody took.
+MUTATION_REASON_SUPERSEDED = "superseded"
+
 
 @dataclass(frozen=True)
 class MutationResult:
@@ -111,8 +119,11 @@ class MutationResult:
     outcome: str
     #: Why, when it is not APPLIED. One of "store_unavailable" (the keyring
     #: package is not installed), "store_unreadable" (the entry could not be
-    #: read, so a failed write could not be undone), "backend_refused" or
-    #: "timed_out". Never contains a credential value.
+    #: read, so a failed write could not be undone), "backend_refused",
+    #: "timed_out", "partially_applied", "unverifiable", "superseded_copy"
+    #: (the write landed but a copy of the previous secret could not be
+    #: confirmed removed) or "superseded" (a newer request replaced this
+    #: one's intent). Never contains a credential value.
     reason: str = ""
 
     @property
@@ -127,6 +138,19 @@ class MutationResult:
         changed.
         """
         return self.outcome == MUTATION_UNCHANGED
+
+    @property
+    def superseded(self) -> bool:
+        """Whether a newer request for this credential replaced this one's
+        intent before it could finish.
+
+        Separated from the other uncertain outcomes because it changes what
+        may be *said*: on every other failure path JARVIS asks for the
+        proven previous value to be put back, and on this one it deliberately
+        does not — doing so would overwrite a request the user has already
+        been told succeeded.
+        """
+        return self.reason == MUTATION_REASON_SUPERSEDED
 
 
 @dataclass(frozen=True)
@@ -301,6 +325,29 @@ def _leave_mutation(username: str) -> None:
         _mutation_idle.notify_all()
 
 
+def _cleanup_survivor(username: str, generation: int,
+                      survivor: Optional[str]) -> Optional[str]:
+    """The value the store should hold by the time this cleanup runs.
+
+    Tidying up after a write is not the same job as performing one, but it
+    still has to aim at the right end state: `_discard_superseded()` proves
+    the plain target holds *this* value before it removes the copy beside
+    it. A request whose intent has since been replaced would therefore
+    either refuse to tidy at all — leaving a superseded secret on disk — or,
+    when its own survivor is `None`, delete on a proof it never made.
+
+    So cleanup follows the newest recorded intent whenever this request is
+    no longer it. That is deliberately the *only* thing a stale request is
+    allowed to do to the credential: a discard never writes the plain
+    target, so it can never undo the request that superseded it.
+    """
+    with _mutation_state_lock:
+        current = _desired_values.get(username)
+    if current is None or current[0] == generation:
+        return survivor
+    return current[1]
+
+
 def _pending_mutations(username: str) -> int:
     """How many workers for *username* have not finished.
 
@@ -363,7 +410,13 @@ def _discard_superseded(keyring, username: str, survivor: Optional[str]) -> bool
          doubly-compound name when the username does not match, and that
          name is never written by anything.
 
-    Called with `_backend_lock` already held.
+    **Never called with `_backend_lock` held.** An earlier version of this
+    sentence said the opposite, and it was never true of the code beneath
+    it: every read and delete below goes through `_run_isolated`, which
+    acquires `_backend_lock` on a *different* thread, so entering here under
+    the lock would deadlock rather than fail. `_discard_worker` exists
+    precisely so the paths that need this to run after a queued write can
+    have that without holding the lock across it.
     """
     compound = _compound_target(username)
 
@@ -398,7 +451,8 @@ def _discard_superseded(keyring, username: str, survivor: Optional[str]) -> bool
     return bool(confirmed and not still_there)
 
 
-def _discard_worker(keyring, username: str, survivor: Optional[str]) -> None:
+def _discard_worker(keyring, username: str, generation: int,
+                    survivor: Optional[str]) -> None:
     """`_discard_superseded` as a queued task, for the paths where the write
     it tidies up after has not finished yet.
 
@@ -407,23 +461,30 @@ def _discard_worker(keyring, username: str, survivor: Optional[str]) -> None:
     `_mutation_worker`: that holds `_backend_lock`, and every read below
     acquires it on a different thread, which would deadlock rather than
     fail.
+
+    The survivor is resolved *here* rather than when the task was queued,
+    because a newer request may have arrived in between — see
+    `_cleanup_survivor`.
     """
     try:
-        _discard_superseded(keyring, username, survivor)
+        _discard_superseded(
+            keyring, username, _cleanup_survivor(username, generation, survivor),
+        )
     finally:
         _leave_mutation(username)
 
 
-def _queue_discard(executor, keyring, username: str, survivor: Optional[str]) -> None:
+def _queue_discard(executor, keyring, username: str, generation: int,
+                   survivor: Optional[str]) -> None:
     """Clear the superseded copy once everything queued ahead has settled."""
     _enter_mutation(username)
     try:
-        executor.submit(_discard_worker, keyring, username, survivor)
+        executor.submit(_discard_worker, keyring, username, generation, survivor)
     except BaseException:  # noqa: BLE001 — a shut-down executor is not a failure path
         _leave_mutation(username)
 
 
-def _queue_reconciliation(executor, keyring, username: str,
+def _queue_reconciliation(executor, keyring, username: str, generation: int,
                           survivor: Optional[str]) -> None:
     """Drive the store back to *survivor*, then clear any superseded copy.
 
@@ -431,17 +492,23 @@ def _queue_reconciliation(executor, keyring, username: str,
     real submitted worker: updating `_desired_values` alone only tells a
     *future* write what to converge to, and when nothing else is in flight
     that future write never happens.
+
+    **`generation` must already have been accepted by
+    `_record_desired_if_latest()`**, and this function must never mint one
+    of its own. It used to call `_record_desired()` here, which creates a
+    brand-new *newest* generation — so an older request whose rollback value
+    had just been refused as stale got it applied anyway, one line later,
+    over a newer save the user had already been told succeeded. The guard
+    ran, answered correctly, and was then walked around; taking the accepted
+    generation as an argument is what makes walking around it impossible.
     """
     _enter_mutation(username)
     try:
-        executor.submit(
-            _mutation_worker, keyring, username,
-            _record_desired(username, survivor), survivor,
-        )
+        executor.submit(_mutation_worker, keyring, username, generation, survivor)
     except BaseException:  # noqa: BLE001
         _leave_mutation(username)
         return
-    _queue_discard(executor, keyring, username, survivor)
+    _queue_discard(executor, keyring, username, generation, survivor)
 
 
 def _mutation_worker(keyring, username: str, generation: int,
@@ -527,8 +594,13 @@ def _mutate_detailed(username: str, value: Optional[str]) -> MutationResult:
         future.result(timeout=TIMEOUT_SECONDS)
         # The write landed. The pinned Windows backend may have copied the
         # secret it replaced to a second target on the way; the operation is
-        # not finished until that copy is gone and proven gone.
-        if _discard_superseded(keyring, username, value):
+        # not finished until that copy is gone and proven gone. Aimed at the
+        # newest intent rather than blindly at `value`, so a request that a
+        # concurrent one has already replaced still tidies up instead of
+        # proving nothing and leaving the copy behind.
+        if _discard_superseded(
+            keyring, username, _cleanup_survivor(username, generation, value),
+        ):
             return MutationResult(MUTATION_APPLIED)
         logger.warning(
             "The credential was written but a superseded copy of the previous one "
@@ -542,9 +614,11 @@ def _mutate_detailed(username: str, value: Optional[str]) -> MutationResult:
         # which is what was asked for anyway.
         logger.warning("OS credential mutation did not answer within its timeout.")
         survivor = restore_to if value is not None else None
+        cleanup_generation = generation
         if value is not None:
             reconcile = _record_desired_if_latest(username, generation, restore_to)
             if reconcile is not None:
+                cleanup_generation = reconcile
                 _enter_mutation(username)
                 try:
                     executor.submit(
@@ -554,8 +628,10 @@ def _mutate_detailed(username: str, value: Optional[str]) -> MutationResult:
                     _leave_mutation(username)
         # Queued behind whatever is still running on this single-worker
         # executor, so the superseded copy is cleared once the late write
-        # and its reconciliation have settled.
-        _queue_discard(executor, keyring, username, survivor)
+        # and its reconciliation have settled. Carrying the generation lets
+        # the discard notice it has been overtaken and aim at what is
+        # actually meant to be there by the time it runs.
+        _queue_discard(executor, keyring, username, cleanup_generation, survivor)
         return MutationResult(MUTATION_UNCERTAIN, "timed_out")
     except BaseException as exc:
         # Class name only, and deliberately no traceback. _run_isolated
@@ -575,11 +651,22 @@ def _mutate_detailed(username: str, value: Optional[str]) -> MutationResult:
         #
         # So: put the intended state back on the desired list, then go and
         # look. Only what the store actually reads back may be reported.
+        #
+        # **The answer to that request is load-bearing and must be read.**
+        # `None` means a newer request for this same credential already
+        # stands, and this one has no claim on the entry any more. Ignoring
+        # it — while the next statement queued a reconciliation that minted
+        # its own newest generation — is how an older *failed* save came to
+        # overwrite a newer one that had already reported success.
         survivor = restore_to if value is not None else None
-        _record_desired_if_latest(username, generation, survivor)
+        reconcile = _record_desired_if_latest(username, generation, survivor)
+        cleanup_generation = generation if reconcile is None else reconcile
 
         reached, current = _read(username)
-        settled = _discard_superseded(keyring, username, survivor) if reached else False
+        settled = _discard_superseded(
+            keyring, username,
+            _cleanup_survivor(username, cleanup_generation, survivor),
+        ) if reached else False
         # Compared against what was observed *before* the attempt, not
         # against the value it was meant to converge to: for a removal those
         # are different, and only the first can prove nothing happened.
@@ -593,10 +680,21 @@ def _mutate_detailed(username: str, value: Optional[str]) -> MutationResult:
         if unchanged:
             return MutationResult(MUTATION_UNCHANGED, "backend_refused")
 
+        if reconcile is None:
+            # Superseded. Whatever this write did or did not do, the entry
+            # belongs to a later request now, and driving it back to this
+            # one's previous value would undo something the user has already
+            # been told happened. The only cleanup left is the discard,
+            # which never writes the plain target and aims at the newest
+            # intent — so it cannot undo the request that overtook this one.
+            _queue_discard(executor, keyring, username, generation, survivor)
+            return MutationResult(MUTATION_UNCERTAIN, MUTATION_REASON_SUPERSEDED)
+
         # The store may have moved. Recording a desired value is not
         # restoring one — a worker has to apply it — so enqueue that now
-        # rather than hoping something else picks it up.
-        _queue_reconciliation(executor, keyring, username, survivor)
+        # rather than hoping something else picks it up, under the
+        # generation that was just accepted rather than a fresh one.
+        _queue_reconciliation(executor, keyring, username, reconcile, survivor)
         return MutationResult(
             MUTATION_UNCERTAIN, "partially_applied" if reached else "unverifiable",
         )

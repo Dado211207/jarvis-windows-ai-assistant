@@ -81,6 +81,7 @@ APPLIED = "applied"
 CREDENTIAL_STORE_FAILED = "credential_store_failed"
 CREDENTIAL_STORE_UNREADABLE = "credential_store_unreadable"
 CREDENTIAL_WRITE_UNCONFIRMED = "credential_write_unconfirmed"
+CREDENTIAL_SUPERSEDED = "credential_superseded"
 REMOVAL_UNCONFIRMED = "removal_unconfirmed"
 ROLLED_BACK = "rolled_back"
 METADATA_ORPHANED = "metadata_orphaned"
@@ -193,6 +194,26 @@ def save(api_key: str, workspace: str, state: str) -> PairOutcome:
                     "Nothing was changed."
                 ),
                 stored=False,
+                consistent=True,
+                category="credential_store",
+            )
+        if write.superseded:
+            # A different change to the same key was made while this one was
+            # failing, and JARVIS deliberately did *not* roll back over it.
+            # The sentence below must therefore not be the one that promises
+            # a rollback: that promise would be describing an action nobody
+            # took, about a key the user may have just deliberately changed.
+            return PairOutcome(
+                outcome=CREDENTIAL_SUPERSEDED,
+                message=(
+                    "Windows did not confirm this key was saved, and another change to the "
+                    "key was made while this one was still running. That newer change is "
+                    "what is in place — JARVIS did not undo it. Open Settings to see which "
+                    "key is stored, and save again if it is not the one you wanted."
+                ),
+                stored=False,
+                # This request never reached the metadata, so it is not the
+                # reason the two stores could disagree.
                 consistent=True,
                 category="credential_store",
             )
@@ -312,6 +333,24 @@ def clear() -> PairOutcome:
                 ),
                 stored=True,
                 consistent=True,
+                category="credential_store",
+            )
+        if removal.superseded:
+            # "Press Remove again" is the right advice for an ordinary
+            # unconfirmed removal and the wrong advice here: a newer request
+            # may have just stored a key on purpose, and repeating a removal
+            # blindly would delete it. Say what happened instead.
+            logger.warning("The Anthropic API key removal was superseded by a newer request.")
+            return PairOutcome(
+                outcome=CREDENTIAL_SUPERSEDED,
+                message=(
+                    "Windows did not confirm the key was removed, and another change to the "
+                    "key was made while this removal was still running. That newer change is "
+                    "what is in place — JARVIS did not undo it. The Workspace ID has been "
+                    "left as it was. Open Settings to see what is stored before removing again."
+                ),
+                stored=False,
+                consistent=False,
                 category="credential_store",
             )
         # The delete never came back and may still complete, so the key may

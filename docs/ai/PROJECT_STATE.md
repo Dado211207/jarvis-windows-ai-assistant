@@ -65,6 +65,22 @@ separate safe Coding Workspace for the owner's own repositories.
   2. A backend exception was classified as `MUTATION_UNCHANGED`. That
      backend's `set_password` performs two writes and its `delete_password`
      up to two deletes, so either can mutate the store and *then* raise.
+- A **fifth** review found a concurrency defect inside the round-4
+  correction, and it is now fixed: **an older failed mutation could
+  overwrite a newer successful one.** `_mutate_detailed()`'s failure path
+  asked `_record_desired_if_latest()` whether its rollback value was still
+  the newest intent — the function that exists for exactly this — and then
+  discarded the answer, because the next statement called
+  `_queue_reconciliation()`, which called `_record_desired()` and minted a
+  brand-new *newest* generation for the stale request's value. The guard ran,
+  correctly said no, and was walked around one line later. Reproduced
+  deterministically in all three same-credential orderings: a stale failed
+  save overwriting a newer save, resurrecting a credential a newer Remove
+  had deleted, and a stale failed remove deleting a key a newer save had
+  stored. The accepted generation is now passed into the reconciliation
+  worker, a superseded request writes nothing, cleanup follows the newest
+  recorded intent, and `MutationResult.superseded` gives that outcome its own
+  truthful message instead of promising a rollback nobody performed.
 - State: awaiting a further independent review. Nothing installed, merged,
   tagged, released or deployed. **All installer evidence from every previous
   head is superseded** — each corrective commit changes runtime,
@@ -140,6 +156,15 @@ separate safe Coding Workspace for the owner's own repositories.
   call that never returned may still complete, and no message may describe it
   as having changed nothing. Every recovery instruction must be an action the
   UI can actually perform — Remove is idempotent and is the one named.
+- **Latest intent wins, and the check that establishes it is the only thing
+  allowed to grant one.** `_record_desired_if_latest()` returning `None` means a
+  newer request owns the credential; nothing the older request does afterwards
+  may create a newer generation, queue a write, or roll anything back. Cleanup
+  is the one exception and only because a discard never writes the plain
+  target: it follows the newest recorded intent (`_cleanup_survivor`) so it can
+  neither undo nor misclassify the request that overtook it. `MutationResult`
+  has a fourth outcome, `superseded`, precisely so no message claims the
+  previous value was put back on the one path where it deliberately was not.
 - A live rejection JARVIS could not write to disk is still applied for the rest
   of the process (`providers.runtime_downgrade()`), is only ever a *negative*
   state, and is dropped the moment the credential it describes changes. It is

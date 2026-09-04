@@ -356,6 +356,69 @@ practise on a real credential.
 `tests/test_workspace_guidance.py` fails if either reappears as an
 instruction. Real-PC acceptance stays limited to what an ordinary user does.
 
+## Independent review, fifth pass — the guard that was walked around
+
+The round-4 correction introduced a concurrency defect of its own, and the
+review reproduced it deterministically on the exact final source.
+
+### An older failed mutation could overwrite a newer successful one
+
+`_mutate_detailed()`'s failure path called
+`_record_desired_if_latest(username, generation, survivor)` — the function
+whose entire purpose is to answer "is this older request still the newest
+intent?" — and threw the answer away. The next statement called
+`_queue_reconciliation()`, which called `_record_desired()`, and
+`_record_desired()` unconditionally increments the generation counter and
+becomes the newest intent. So the older request's rollback value was
+refused as stale and then granted anyway, one line later, by a different
+route:
+
+    newer_result       applied
+    older_result       uncertain
+    final_plain_value  OLD
+    targets            ['JARVIS']
+
+The user had been told the newer key was saved. It was, and then an older
+save that had *failed* replaced it with the value it had decided to roll
+back to.
+
+The same statement produces three different kinds of damage, and all three
+are now regression tests in
+`tests/test_credential_generation_ordering.py`:
+
+  * an older failed **save** overwrites a newer successful **save**;
+  * an older failed **save** resurrects a credential a newer **Remove**
+    deleted — the user pressed Remove, was told it was gone, and it came
+    back;
+  * an older failed **Remove** deletes a credential a newer **save** stored.
+
+**The correction is to the design, not to the symptom.**
+`_queue_reconciliation()` no longer mints a generation: it takes one that
+`_record_desired_if_latest()` already accepted, so bypassing the guard is
+not expressible. A request whose intent has been superseded writes nothing
+at all. Cleanup is the single exception, and only because a discard never
+touches the plain target: `_cleanup_survivor()` aims it at the newest
+recorded intent, so it can neither undo the newer request nor delete a
+compound copy on a proof it never made. `MutationResult.superseded` is a
+fourth outcome with its own sentence, because the existing one says JARVIS
+"has asked for your previous key to be put back" and on this path it
+deliberately has not.
+
+Every wait in the new tests is an `Event` or a bounded thread join. The
+older request is stopped exactly on entry to `_record_desired_if_latest()`,
+which is where the defect lives, so the interleaving is identical on every
+machine rather than raced for.
+
+### A docstring that described the opposite of the code
+
+`_discard_superseded()` documented itself as "Called with `_backend_lock`
+already held". Every read and delete inside it goes through `_run_isolated`,
+which acquires that lock on another thread, so entering it under the lock
+would deadlock rather than fail — which is precisely why `_discard_worker`
+exists. Corrected in place, with no behaviour change, and backed by a test
+that observes the lock's state at every entry across the success, timeout
+and failure paths.
+
 ## The owner's current installation must not be patched manually
 
 The installed build predates this fix. Do **not** hand-edit files under the
@@ -380,7 +443,7 @@ verified — see the verification gate in the pull request.
 
 ## Next action
 
-1. Independent review of this branch — the fifth.
+1. Independent review of this branch — the sixth.
 2. The verification gate in the pull request, including two sequential Windows
    Installer acceptance runs.
 3. Only then, a real-PC upgrade-in-place by the owner, entering the Workspace ID
