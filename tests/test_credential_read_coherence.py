@@ -265,6 +265,49 @@ def test_one_request_reads_the_credential_once(monkeypatch):
     )
 
 
+def test_a_second_read_at_the_same_revision_still_reads_the_stores(monkeypatch):
+    """No revision-keyed fast path, and the docstring must not promise one.
+
+    A cache keyed on the coordinator's revision would be stale for every
+    change that did not come through the coordinator — an environment
+    variable, `ownership.py`'s uninstall sweep, a test seeding the stores —
+    and "all writes go through the coordinator" is enforced by a test rather
+    than by the type system, which is a bad thing for a *reader* to depend
+    on. `current()` therefore reads both stores every time.
+
+    Written as behaviour rather than as a string check because the claim
+    that was wrong was a claim about behaviour: an earlier docstring said
+    "an ordinary request touches no store at all", which was the design
+    before the fast path was removed and would fail here.
+    """
+    from app.core import credentials
+    from app.core.ai import credential_view
+
+    fake = _install(monkeypatch, _WindowsLikeKeyring())
+    preferences = _Preferences()
+    _wired(monkeypatch, preferences)
+    _seed_previous_pair(fake, preferences, credentials)
+    credential_view.invalidate()
+
+    first = credential_view.current()
+    assert first.api_key == OLD_KEY
+
+    # Change the store *without* going through the coordinator, exactly as
+    # the paths above do. The revision does not move.
+    revision_before = credential_view.current_revision()
+    fake.seed(credentials.SERVICE_NAME, credentials.USERNAME, NEW_KEY)
+
+    second = credential_view.current()
+
+    assert credential_view.current_revision() == revision_before, (
+        "this test is only meaningful while the revision has not moved"
+    )
+    assert second.api_key == NEW_KEY, (
+        "current() served a stale key at an unchanged revision — a reader must not "
+        "cache on a counter that only the coordinator moves"
+    )
+
+
 def test_the_snapshot_is_immutable_and_never_renders_its_secret(monkeypatch):
     """It is passed around and held for the length of a request, so it must
     not be mutable, and its repr must not put a key in a traceback."""

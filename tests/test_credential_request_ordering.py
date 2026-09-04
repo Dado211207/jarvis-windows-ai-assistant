@@ -472,3 +472,28 @@ def test_the_coordinator_does_not_claim_its_counter_detects_an_escaped_writer():
                 f"{module_path} still claims its counter detects a writer that bypasses it: "
                 f"{overclaim!r}"
             )
+
+
+def test_the_work_log_marks_the_withdrawn_tripwire_claim_as_withdrawn():
+    """The work log is chronological, so round 6's wrong claim stays in it —
+    rewriting it would make the mistake look like it never happened, and
+    this repository's own conventions keep superseded statements next to
+    their correction.
+
+    What it may not do is state a withdrawn claim in the present tense with
+    nothing nearby saying so. The round 6 paragraph carries the withdrawal
+    marker; this fails if someone removes it while leaving the claim.
+    """
+    import pathlib
+
+    log = pathlib.Path("docs/ai/WORK_LOG.md").read_text(encoding="utf-8")
+    claim = (
+        "so a future path that\nreaches a store without going through the coordinator is "
+        "caught by an\nassertion rather than by a race"
+    )
+    if claim in log:
+        after = log.split(claim, 1)[1]
+        assert "Withdrawn in round 7" in after[:900], (
+            "the work log states the withdrawn tripwire claim with no withdrawal marker "
+            "following it; a reader stopping at round 6 would take it as true"
+        )

@@ -44,10 +44,12 @@ def _forget_runtime_credential_downgrade():
     from app.core.ai import credential_view
     from app.core.providers import clear_runtime_downgrade
 
-    # The credential snapshot is cached module-globally and keyed on the
-    # coordinator's revision, which a test that seeds the stores directly
-    # never moves. Dropping it on both sides keeps one test's credential
-    # out of the next test's request.
+    # credential_view keeps the last coherent snapshot module-globally, to
+    # hand back when a reader cannot get into the gate. A test that seeds
+    # the stores directly never moves the coordinator's revision, so that
+    # published snapshot can outlive the test that produced it. Dropping it
+    # on both sides keeps one test's credential out of the next test's
+    # request.
     clear_runtime_downgrade()
     credential_view.invalidate()
     yield

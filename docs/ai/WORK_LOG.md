@@ -472,6 +472,14 @@ reaches a store without going through the coordinator is caught by an
 assertion rather than by a race. Under the lock it is always true, which is
 the point of asserting rather than assuming it.
 
+> **Withdrawn in round 7.** The second sentence above is wrong: a writer
+> that never entered the coordinator does not touch the counter
+> `is_newest` reads, so the comparison stays true while it does its
+> damage. The paragraph is left as written because this is a log of what
+> was believed at each round, not a record of having always been right.
+> See *5. The tripwire claim was wrong and is withdrawn* below for the
+> correction and for what actually catches an escaped writer.
+
 The wait is bounded (`WAIT_SECONDS`, sized against what one transaction can
 actually take) and running out of it is a refusal that says nothing was
 attempted — which is true, and therefore safe to tell someone.
@@ -584,6 +592,37 @@ it cannot detect one. The assertion is kept as an internal invariant and
 described as one. What actually catches an escaped writer is a structural
 test that walks every module under `app/` and fails if anything outside a
 named allowlist calls the credential mutators.
+
+### 6. `current()`'s docstring described the cache that was removed
+
+Found while assembling this round's evidence, and the same species of
+defect as round 5's `_discard_superseded()` docstring: a docstring
+asserting the opposite of its own code.
+
+An early draft of `credential_view.current()` looked the snapshot up by
+revision and returned it when the number still matched. That was removed
+before the commit — such a cache is stale for every write that does not go
+through the coordinator (`ANTHROPIC_API_KEY` in the environment,
+`ownership.py`'s uninstall sweep, a test seeding the stores), and "every
+write goes through the coordinator" is enforced by a test rather than by
+the type system, which is a bad thing for a *reader* to depend on. The
+body's comment explained the removal. The docstring above it still said
+"the published snapshot is reused while its revision still matches, so an
+ordinary request touches no store at all" — a promise the function does
+not keep, sitting where a reader would look first.
+
+The docstring now says what the code does: both stores are read every time
+under the gate, and the published snapshot is only the fallback for a gate
+the reader could not enter. `tests/conftest.py`'s note about why it
+invalidates the snapshot said the same wrong thing and is corrected too.
+
+Pinned by behaviour rather than by a string search, because the wrong
+claim was a claim about behaviour:
+`test_a_second_read_at_the_same_revision_still_reads_the_stores` changes
+the credential store without moving the revision and asserts the next read
+sees it. Verified by temporarily reinstating the fast path, at which point
+it fails with the stale key (`- sk-ant-api03-NEW-key-just-saved / +
+sk-ant-api03-OLD-key-in-flight`) while the other nine still pass.
 
 ## The owner's current installation must not be patched manually
 

@@ -141,9 +141,10 @@ def _build(revision: int) -> CredentialPair:
 def current() -> CredentialPair:
     """The credential pair, coherently. Never raises.
 
-    Cheap when nothing has changed: the published snapshot is reused while
-    its revision still matches, so an ordinary request touches no store at
-    all.
+    Both stores are read every time, under the gate. The published snapshot
+    is **not** a cache the happy path consults — it exists only as the
+    fallback for a gate this reader could not get into. See the comment in
+    the body for why a revision-keyed cache was rejected.
     """
     from app.core.ai import credential_transaction as coordinator
 
