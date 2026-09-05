@@ -35,6 +35,7 @@ app down over a settings file.
 import json
 import os
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -338,6 +339,55 @@ def _load_for_update(path: Path) -> Tuple[bool, Dict[str, Any]]:
     return True, {key: parsed[key] for key in STORABLE_KEYS if key in parsed}
 
 
+#: A replacement that loses to a *reader* is retried, briefly and a bounded
+#: number of times.
+#:
+#: `os.replace` is atomic on both platforms, and on POSIX it succeeds no
+#: matter who has the destination open. Windows is different: `MoveFileEx`
+#: fails with a sharing violation — surfaced as `PermissionError` — while
+#: another handle is open on the target. `load()` and `get()` are
+#: deliberately lock-free and are called constantly (`/health`,
+#: `/providers`, every chat request builds a credential snapshot), so a
+#: perfectly ordinary status read could make a perfectly correct write fail
+#: and report False.
+#:
+#: That was observed, not theorised: the Windows Build job on `c99332a`
+#: failed with
+#:
+#:     Could not write the preferences file. types=PermissionError
+#:     frames=[app/core/preferences.py in _write_document | pathlib.py in replace]
+#:
+#: and the local Linux gate could not have caught it, because on Linux the
+#: replacement simply succeeds. The claim that readers may stay lock-free
+#: "because replacement is atomic" was true about tearing and wrong about
+#: failing.
+#:
+#: A reader's handle is open for the microseconds it takes to read a small
+#: JSON file, so a short bounded retry converts a spurious failure into a
+#: success without weakening anything: the write is still atomic, still
+#: all-or-nothing, and still reports False if it genuinely cannot land.
+REPLACE_ATTEMPTS = 12
+REPLACE_BACKOFF_SECONDS = 0.01
+
+
+def _replace_atomically(temporary: Path, path: Path) -> None:
+    """Move *temporary* onto *path*, retrying a Windows sharing violation.
+
+    Raises the last `PermissionError` if every attempt loses, so the caller
+    reports the failure rather than claiming a write that did not happen.
+    Only `PermissionError` is retried: a full disk or a vanished directory
+    is not going to resolve itself in a hundred milliseconds.
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt + 1 >= REPLACE_ATTEMPTS:
+                raise
+            time.sleep(REPLACE_BACKOFF_SECONDS)
+
+
 def _write_document(path: Path, data: Dict[str, Any]) -> bool:
     """Replace the whole document atomically. Only called under the lock.
 
@@ -352,10 +402,7 @@ def _write_document(path: Path, data: Dict[str, Any]) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        # Atomic on both platforms, which is what lets `load()` stay
-        # lock-free: a reader opens either the complete old document or the
-        # complete new one, never a half-written file.
-        temporary.replace(path)
+        _replace_atomically(temporary, path)
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not write the preferences file. %s", describe(exc))

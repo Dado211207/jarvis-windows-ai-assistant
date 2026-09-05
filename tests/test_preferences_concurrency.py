@@ -329,12 +329,26 @@ def test_many_concurrent_writers_all_keep_their_own_key(real_preferences):
 
 
 def test_a_reader_never_observes_a_partial_document(real_preferences):
-    """Replacement is atomic, so a concurrent reader sees the complete old
-    document or the complete new one — never a half-written file."""
+    """A concurrent reader sees the complete old document or the complete
+    new one — never a half-written file — and the writes still land.
+
+    The reader is torn down in a `finally`. An earlier version was not, and
+    on Windows the first write failed (see the retry test below), so the
+    assertion raised before `stop.set()` and left a **daemon thread reading
+    for the rest of the session**. Once the fixture's monkeypatch was
+    undone that thread was reading the *shared* preferences file, holding a
+    handle open, and every later test that saved a preference failed with a
+    sharing violation: five unrelated failures in
+    `test_preferred_name_and_close_action`, `test_provider_selection`,
+    `test_tts` and `test_voice_output` on `c99332a`, none of which had
+    anything wrong with them. A test that can outlive its own failure is a
+    test that breaks the ones after it.
+    """
     preferences = real_preferences
     stop = threading.Event()
     seen = []
     failures = []
+    refused = []
 
     def read():
         while not stop.is_set():
@@ -348,17 +362,79 @@ def test_a_reader_never_observes_a_partial_document(real_preferences):
 
     reader = threading.Thread(target=read, name="status-reader", daemon=True)
     reader.start()
-    for index in range(40):
-        assert preferences.store_many({
-            "anthropic_workspace_id": NEW_WORKSPACE if index % 2 else OLD_WORKSPACE,
-        }) is True
-    stop.set()
-    reader.join(timeout=JOIN_TIMEOUT)
+    try:
+        for index in range(40):
+            if not preferences.store_many({
+                "anthropic_workspace_id": NEW_WORKSPACE if index % 2 else OLD_WORKSPACE,
+            }):
+                refused.append(index)
+    finally:
+        stop.set()
+        reader.join(timeout=JOIN_TIMEOUT)
+        assert not reader.is_alive(), "the reader thread outlived the test"
 
     assert not failures, f"a reader raised while the file was being replaced: {failures}"
+    assert not refused, (
+        "a write lost to a concurrent reader and reported failure; on Windows "
+        f"`replace` raises PermissionError while a handle is open: {refused}"
+    )
     assert set(seen) <= {OLD_WORKSPACE, NEW_WORKSPACE}, (
         f"a reader observed a document that was never committed: {sorted(set(seen))}"
     )
+
+
+def test_a_replacement_that_loses_to_a_reader_is_retried_not_reported_as_failure(
+        real_preferences, monkeypatch):
+    """Windows' behaviour, made reproducible on any platform.
+
+    `os.replace` is atomic everywhere, but on Windows it *fails* with a
+    sharing violation while another handle is open on the destination —
+    which lock-free readers hold constantly. The write is not torn; it
+    simply does not happen, and `store_many()` truthfully returns False.
+    Truthful is not good enough here: an ordinary `/health` read would be
+    able to discard a credential-metadata write.
+
+    Simulated by failing the first few replacements, because the Linux gate
+    cannot produce a sharing violation and this defect reached CI precisely
+    because nothing local could.
+    """
+    preferences = real_preferences
+    attempts = []
+    real = Path.replace
+
+    def hooked(self_path, target):
+        attempts.append(target)
+        if len(attempts) <= 3:
+            raise PermissionError(32, "The process cannot access the file")
+        return real(self_path, target)
+
+    monkeypatch.setattr(Path, "replace", hooked)
+
+    assert preferences.store_many({"anthropic_workspace_id": NEW_WORKSPACE}) is True, (
+        "a replacement that lost to a reader was reported as a failed write "
+        "instead of being retried"
+    )
+    assert len(attempts) == 4, f"expected three retries then a success, got {len(attempts)}"
+    assert _document(preferences).get("anthropic_workspace_id") == NEW_WORKSPACE
+
+
+def test_a_replacement_that_never_succeeds_is_still_reported_as_failure(
+        real_preferences, monkeypatch):
+    """The retry may not turn a genuine failure into a claimed success."""
+    preferences = real_preferences
+
+    def always_refuses(self_path, target):
+        raise PermissionError(32, "The process cannot access the file")
+
+    monkeypatch.setattr(Path, "replace", always_refuses)
+    monkeypatch.setattr(preferences, "REPLACE_BACKOFF_SECONDS", 0.0)
+
+    assert preferences.store_many({"anthropic_workspace_id": NEW_WORKSPACE}) is False
+    assert _document(preferences).get("anthropic_workspace_id") == OLD_WORKSPACE, (
+        "a write that never landed changed the document anyway"
+    )
+    leftovers = list(preferences.preferences_path().parent.glob("*.tmp"))
+    assert not leftovers, f"a failed write left its temporary file behind: {leftovers}"
 
 
 # ---------------------------------------------------------------------------
@@ -457,9 +533,24 @@ def test_every_preference_write_goes_through_the_one_serialised_entry_point():
             for node in ast.walk(function):
                 if node in replacing:
                     functions.append(function.name)
-    assert set(functions) <= {"store_many", "_write_document"}, (
+    # `store_many` -> `_write_document` -> `_replace_atomically` is one
+    # chain, entered only from `store_many` and only under `_write_lock`.
+    # Anything else touching the file is a second write path.
+    assert set(functions) <= {"store_many", "_write_document", "_replace_atomically"}, (
         "a preference file write exists outside the serialised entry point: "
         f"{sorted(set(functions))}"
+    )
+
+    callers = {
+        function.name
+        for function in ast.walk(tree)
+        if isinstance(function, ast.FunctionDef)
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") in ("_write_document", "_replace_atomically")
+    }
+    assert callers <= {"store_many", "_write_document"}, (
+        f"the write chain is entered from outside store_many: {sorted(callers)}"
     )
 
 

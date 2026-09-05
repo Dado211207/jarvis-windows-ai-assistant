@@ -931,6 +931,65 @@ This was not in the round's brief. It is reported rather than folded in
 quietly, because it is a behaviour change in the same function and a
 reviewer may reasonably want it separated.
 
+### Two defects the Windows job found that the Linux gate could not
+
+Both were mine, both were in the round-9 commit, and both are corrected in
+the same change.
+
+**1. `os.replace` fails on Windows while a reader holds the file.** The
+first version of this correction said readers could stay lock-free
+"because replacement is atomic". That is true about *tearing* and wrong
+about *failing*: `MoveFileEx` raises a sharing violation —
+`PermissionError` — while another handle is open on the destination, and
+`load()`/`get()` are deliberately lock-free and constant (`/health`,
+`/providers`, every chat request takes a credential snapshot). So an
+ordinary status read could make a correct write return False and lose a
+credential-metadata update. The Windows Build job on `c99332a` said so
+exactly:
+
+    Could not write the preferences file. types=PermissionError
+    frames=[app/core/preferences.py in _write_document | pathlib.py in replace]
+
+`_replace_atomically()` now retries a `PermissionError` a bounded number of
+times with a short backoff — a reader's handle lives for microseconds — and
+still returns False if every attempt loses. Only `PermissionError` is
+retried; a full disk will not fix itself in a hundred milliseconds. Two
+tests cover it on any platform by failing the replacement deliberately: one
+that it recovers, one that a replacement which never succeeds is still
+reported as a failure and leaves no temporary file behind.
+
+The local Linux gate could not have caught this. On Linux the replacement
+simply succeeds, whoever is reading.
+
+**2. A test that outlived its own failure.** The reader in
+`test_a_reader_never_observes_a_partial_document` was a daemon thread
+stopped after the assertions. When the first write failed on Windows the
+assertion raised, `stop.set()` never ran, and the thread kept reading for
+the rest of the session — against the *shared* preferences file once the
+fixture's monkeypatch was undone, holding a handle open. Five entirely
+healthy tests then failed with sharing violations:
+`test_preferred_name_and_close_action` (two), `test_provider_selection`,
+`test_tts` and `test_voice_output`. The teardown is now in a `finally`
+with an explicit "did not outlive the test" assertion.
+
+### The teardown abort, attributed
+
+One full-gate run reported its totals and then aborted at interpreter
+teardown with `terminate called without an active exception` (exit 134).
+It is **not** the preferences change. Running the voice suites directly
+printed the cause immediately before the abort:
+
+    [E:onnxruntime:, sequential_executor.cc:671 ExecuteKernel] Non-zero
+    status code returned while running ReduceMean node.
+    Name:'/decoder/decoder/generator/resblocks.3/adain1.0/ReduceMean_2'
+    Status Message: GetElementType is not implemented
+
+That is onnxruntime tearing down the Kokoro neural-voice decoder, in a
+suite this round does not touch. It is intermittent — one occurrence in
+five runs of the corrected tree — and is recorded rather than argued away
+statistically, because a direct cause beats a run count. It belongs to the
+voice stack and needs its own decision.
+
 ### Verification
 
 **5 of 9 new tests convict `e3523d2`, 25 runs out of 25**, all on
