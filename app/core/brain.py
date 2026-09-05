@@ -111,14 +111,31 @@ class Brain:
 
         The key is resolved to "" whenever no key is configured, so a
         provider's own availability check and this class's is_configured()
-        can never disagree about whether credentials exist."""
+        can never disagree about whether credentials exist.
+
+        **The credential and its workspace come from one snapshot**, not
+        from separate store reads. Read separately they could straddle a
+        concurrent save and produce a request carrying one key's credential
+        with another key's workspace — see
+        `app/core/ai/credential_view.py`. The snapshot's revision travels
+        with the configuration so that a rejection arriving after the
+        credential has changed can be attributed to the pair that actually
+        made the request rather than to whatever is stored when it lands.
+        """
         from app.core.ai import ProviderConfig
+        from app.core.ai import credential_view
+
+        pair = credential_view.current()
 
         return ProviderConfig(
             model=settings.jarvis_ai_model or "",
             max_tokens=settings.jarvis_ai_max_tokens,
             timeout_seconds=float(settings.jarvis_ai_timeout_seconds),
-            api_key=settings.effective_api_key if settings.has_anthropic_key else "",
+            api_key=pair.api_key if pair.configured else "",
+            # Resolved here rather than in the provider so that the one
+            # place settings become configuration stays the one place.
+            anthropic_workspace_id=pair.workspace_id,
+            credential_revision=pair.revision,
             ollama_model=self._ollama_model(),
         )
 
@@ -162,8 +179,13 @@ class Brain:
         try:
             availability = self.provider().availability()
             return bool(availability.ready), availability.reason
-        except Exception:  # noqa: BLE001
-            logger.warning("Provider availability check failed.", exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            # Described, not rendered — the same rule the rest of this
+            # module's provider handling follows. See
+            # app/core/safe_traceback.py.
+            from app.core.safe_traceback import describe
+
+            logger.warning("Provider availability check failed. %s", describe(exc))
             return False, "The AI provider could not be checked. Local commands still work normally."
 
     # --- generation ---
@@ -235,6 +257,8 @@ class Brain:
         correlation ID; the user gets the category's fixed safe message,
         plus the provider's own credential-free detail when it wrote one
         (e.g. which local models are actually installed)."""
+        from app.core.ai.events import record_provider_failure
+
         safe_error: SafeError = to_safe_error(
             exc.cause or exc,
             category=exc.category,
@@ -243,6 +267,30 @@ class Brain:
         message = safe_error.message
         if getattr(exc, "detail", ""):
             message = exc.detail
+        # One safe row on the Logs page, sharing the correlation id with
+        # the server-side entry. Without this, a user whose provider is
+        # rejecting every request sees one generic sentence in chat and
+        # an empty Logs page — which is what actually happened.
+        record_provider_failure(
+            provider=provider.name,
+            category=exc.category,
+            correlation_id=safe_error.correlation_id,
+            detail=getattr(exc, "detail", "") or None,
+        )
+        # A live rejection is the only thing that can disprove a stored
+        # "verified". Deliberately not inside record_provider_failure():
+        # that function also runs while *verifying a proposed key*, where
+        # downgrading would let a mistyped key in Settings mark the key
+        # that is actually stored as rejected.
+        from app.core.providers import note_runtime_failure
+
+        # Attributed to the exact credential pair this request was built
+        # from. Without that, a rejection arriving after the user replaced
+        # the key marks the replacement as failed.
+        note_runtime_failure(
+            provider.name, exc.category,
+            credential_revision=getattr(provider.config, "credential_revision", -1),
+        )
         return BrainResponse(
             content=message,
             provider=provider.name,

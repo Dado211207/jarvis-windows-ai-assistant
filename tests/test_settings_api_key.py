@@ -23,6 +23,36 @@ from app.core.ai.key_check import KeyVerification
 from app.core.errors import ErrorCategory
 
 
+def _applied():
+    """A credential-store write the backend confirmed."""
+    from app.core import credentials
+    return credentials.MutationResult(credentials.MUTATION_APPLIED)
+
+
+def _refused():
+    """A write the backend refused: provably nothing changed."""
+    from app.core import credentials
+    return credentials.MutationResult(credentials.MUTATION_UNCHANGED, "backend_refused")
+
+
+@pytest.fixture(autouse=True)
+def _readable_credential_store():
+    """Make the OS credential store answer, and answer "empty".
+
+    Every test below is about a *route*, and the route now declines to write
+    to a credential store it could not read first — deliberately, because a
+    write it cannot undo can destroy a working key (see
+    app/core/ai/credential_pair.py). On Linux CI there is no reachable
+    backend at all, so without this the routes would be exercising that
+    refusal instead of the behaviour under test. Tests that need a previous
+    key patch the snapshot themselves; an inner patch wins over this one.
+    """
+    from unittest.mock import patch as _patch
+
+    with _patch("app.core.credentials.stored_api_key_snapshot", return_value=(True, "")):
+        yield
+
+
 @contextmanager
 def _verifies(ok=True, category=None, worth_storing=True, message="API key verified."):
     """Stand in for the one real request /settings/api-key makes."""
@@ -49,14 +79,20 @@ def test_status_not_configured_when_no_key_anywhere(api_client):
          patch("app.core.credentials.get_stored_api_key", return_value=""):
         r = api_client.get("/settings/api-key-status")
     assert r.status_code == 200
-    assert r.json() == {"configured": False}
+    body = r.json()
+    assert body["configured"] is False
+    assert body["workspace_configured"] is False
+    assert body["state"] == "not_configured"
 
 
 def test_status_configured_when_env_var_set(api_client):
     with patch("app.config.settings.anthropic_api_key", "sk-ant-from-env"):
         r = api_client.get("/settings/api-key-status")
     assert r.status_code == 200
-    assert r.json() == {"configured": True}
+    body = r.json()
+    assert body["configured"] is True
+    # A key that exists but was never checked here is not "verified".
+    assert body["state"] in {"configured_unverified", "verification_failed", "verified"}
 
 
 def test_status_configured_when_only_credential_store_has_it(api_client):
@@ -64,7 +100,10 @@ def test_status_configured_when_only_credential_store_has_it(api_client):
          patch("app.core.credentials.get_stored_api_key", return_value="sk-ant-from-store"):
         r = api_client.get("/settings/api-key-status")
     assert r.status_code == 200
-    assert r.json() == {"configured": True}
+    body = r.json()
+    assert body["configured"] is True
+    # A key that exists but was never checked here is not "verified".
+    assert body["state"] in {"configured_unverified", "verification_failed", "verified"}
 
 
 def test_status_response_never_contains_the_key_value(api_client):
@@ -87,7 +126,7 @@ def test_set_api_key_requires_session_token():
 
 
 def test_set_api_key_success(api_client):
-    with _verifies(), patch("app.core.credentials.set_stored_api_key", return_value=True) as mock_set:
+    with _verifies(), patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()) as mock_set:
         r = api_client.post("/settings/api-key", json={"api_key": "sk-ant-new-key"})
     assert r.status_code == 200
     assert r.json()["success"] is True
@@ -96,7 +135,7 @@ def test_set_api_key_success(api_client):
 
 
 def test_set_api_key_never_echoes_the_submitted_key(api_client):
-    with _verifies(), patch("app.core.credentials.set_stored_api_key", return_value=True):
+    with _verifies(), patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()):
         r = api_client.post("/settings/api-key", json={"api_key": "sk-ant-do-not-leak-me"})
     assert "sk-ant-do-not-leak-me" not in r.text
 
@@ -107,7 +146,7 @@ def test_set_api_key_rejects_blank_key(api_client):
 
 
 def test_set_api_key_reports_failure_when_store_write_fails(api_client):
-    with _verifies(), patch("app.core.credentials.set_stored_api_key", return_value=False):
+    with _verifies(), patch("app.core.credentials.set_stored_api_key_detailed", return_value=_refused()):
         r = api_client.post("/settings/api-key", json={"api_key": "sk-ant-x"})
     assert r.status_code == 200
     assert r.json()["success"] is False
@@ -115,7 +154,7 @@ def test_set_api_key_reports_failure_when_store_write_fails(api_client):
 
 
 def test_set_api_key_strips_whitespace_before_storing(api_client):
-    with _verifies(), patch("app.core.credentials.set_stored_api_key", return_value=True) as mock_set:
+    with _verifies(), patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()) as mock_set:
         api_client.post("/settings/api-key", json={"api_key": "  sk-ant-padded  "})
     mock_set.assert_called_once_with("sk-ant-padded")
 
@@ -128,15 +167,20 @@ def test_the_key_is_verified_before_it_is_stored(api_client):
     """A key saved without being tried is a key whose first failure
     happens later, mid-conversation, with no visible connection to the
     screen where it was typed."""
-    with _verifies() as verify, patch("app.core.credentials.set_stored_api_key", return_value=True):
+    with _verifies() as verify, patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()):
         api_client.post("/settings/api-key", json={"api_key": "sk-ant-x"})
-    verify.assert_called_once_with("sk-ant-x")
+    # The workspace ID travels with the key because Anthropic treats an
+    # identity-linked key and its workspace as one credential: verifying
+    # the key alone would either fail a good key or bless a pair that has
+    # never made a successful request. Blank here is a legacy
+    # workspace-scoped key, which sends no header at all.
+    verify.assert_called_once_with("sk-ant-x", "")
 
 
 def test_a_rejected_key_is_never_stored(api_client):
     with _verifies(ok=False, category=ErrorCategory.PROVIDER_AUTH, worth_storing=False,
                    message="rejected"), \
-         patch("app.core.credentials.set_stored_api_key") as mock_set:
+         patch("app.core.credentials.set_stored_api_key_detailed") as mock_set:
         r = api_client.post("/settings/api-key", json={"api_key": "sk-ant-bad"})
 
     body = r.json()
@@ -157,7 +201,7 @@ def test_a_key_that_could_not_be_checked_is_still_stored(api_client, category):
     key. Making someone type it again afterwards would punish them for
     their network."""
     with _verifies(ok=False, category=category, worth_storing=True, message="try later"), \
-         patch("app.core.credentials.set_stored_api_key", return_value=True) as mock_set:
+         patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()) as mock_set:
         r = api_client.post("/settings/api-key", json={"api_key": "sk-ant-fine"})
 
     body = r.json()
@@ -192,7 +236,7 @@ def test_saving_a_key_never_reaches_the_network(api_client):
         raise AssertionError("a test tried to construct a real Anthropic client")
 
     with patch("anthropic.Anthropic", _explode), \
-         patch("app.core.credentials.set_stored_api_key", return_value=True):
+         patch("app.core.credentials.set_stored_api_key_detailed", return_value=_applied()):
         r = api_client.post("/settings/api-key", json={"api_key": "sk-ant-x"})
 
     # The request still completes — the failure is classified, not raised.
@@ -213,7 +257,7 @@ def test_remove_api_key_requires_session_token():
 
 
 def test_remove_api_key_success(api_client):
-    with patch("app.core.credentials.clear_stored_api_key", return_value=True) as mock_clear:
+    with patch("app.core.credentials.clear_stored_api_key_detailed", return_value=_applied()) as mock_clear:
         r = api_client.post("/settings/api-key/remove")
     assert r.status_code == 200
     assert r.json()["success"] is True
@@ -221,7 +265,7 @@ def test_remove_api_key_success(api_client):
 
 
 def test_remove_api_key_reports_failure_when_store_unreachable(api_client):
-    with patch("app.core.credentials.clear_stored_api_key", return_value=False):
+    with patch("app.core.credentials.clear_stored_api_key_detailed", return_value=_refused()):
         r = api_client.post("/settings/api-key/remove")
     assert r.status_code == 200
     assert r.json()["success"] is False

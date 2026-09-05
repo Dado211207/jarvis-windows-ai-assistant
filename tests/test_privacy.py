@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.conftest import credential_present
+
 from app.core.privacy import PrivacyModeState, privacy_mode, set_privacy_mode
 
 
@@ -199,7 +201,20 @@ def test_generate_response_never_includes_stored_memory_in_provider_call():
     from app.core.brain import Brain
     b = Brain()
 
-    with patch("app.core.brain.settings") as s, \
+    # The credential comes from one coherent snapshot rather than from
+    # separate settings reads (app/core/ai/credential_view.py), so that is
+    # the seam a test supplies a key at. Nothing about this test's subject
+    # — memory must never reach the provider — changes.
+    from app.core.ai.credential_view import CredentialPair
+
+    configured = CredentialPair(
+        revision=1, api_key="sk-test-key", workspace_id="", state="verified",
+        configured=True,
+    )
+
+    with credential_present(), \
+         patch("app.core.brain.settings") as s, \
+         patch("app.core.ai.credential_view.current", return_value=configured), \
          patch("anthropic.Anthropic") as mock_anthropic_cls, \
          patch("db.database.get_db") as mock_db:
         s.has_anthropic_key = True

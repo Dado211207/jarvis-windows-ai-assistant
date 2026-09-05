@@ -1,10 +1,10 @@
 """Does this API key actually work?
 
-First-run asks for exactly two things, and one of them is an API key. A
-key that is saved without being tried is a key whose first failure
-happens later, in the middle of a conversation, with no obvious
-connection to the thing the user typed on the setup screen. So it is
-tried here, once, immediately.
+First run asks for a name, an API key and — only when the key needs one —
+a Workspace ID. A key that is saved without being tried is a key whose
+first failure happens later, in the middle of a conversation, with no
+obvious connection to the thing the user typed on the setup screen. So it
+is tried here, once, immediately.
 
 What "tried" means: one real request to the provider, deliberately the
 smallest one the API accepts (a single token). It is the only way to
@@ -12,24 +12,32 @@ learn anything true — a key's shape says nothing about whether it was
 revoked, whether the account has credit, or whether this machine can
 reach the internet at all.
 
-The four outcomes the owner asked to be told apart, and how each is
+The outcomes the owner asked to be told apart, and how each is
 recognised:
 
   * **invalid key** — the provider authenticated us and said no.
+  * **missing Workspace ID** — the key is fine, but it is identity-linked
+    and Anthropic will not act on it until a workspace is named.
   * **no credit / billing** — the key is fine; the account is not funded.
     See app/core/errors.py for why this one case is allowed to look at
     the response text, and how narrowly.
   * **rate limited** — the key is fine and this is temporary.
   * **network failure** — the provider was never reached at all.
 
-Only the first is a reason to refuse the key. The other three say
-nothing bad about it, so it is stored and the situation reported: a user
-who is rate-limited or offline during setup should not have to type
-their key again later.
+The first two are reasons to refuse the pair: neither can make a request
+as entered. The last three say nothing bad about the key, so it is stored
+and the situation reported — a user who is rate-limited or offline during
+setup should not have to type their key again later. What is *recorded*
+about those three is deliberately not "rejected"; see
+app/core/providers.py::state_for_verification().
 
-Nothing here logs, echoes or returns any part of the key or the
-provider's response — see ProviderError's contract in
-app/core/ai/base.py.
+Every failure here also writes one safe row to the Logs page. That is not
+decoration: the defect this module was extended for happened on this exact
+path, and the owner's Logs page showed nothing at all.
+
+Nothing here logs, echoes or returns any part of the key, the workspace
+ID or the provider's response — see ProviderError's contract in
+app/core/ai/base.py and app/core/safe_traceback.py.
 """
 
 from dataclasses import dataclass
@@ -51,6 +59,12 @@ VERIFY_SYSTEM = "You are a connectivity check. Reply with one word."
 
 # Categories that say nothing bad about the key itself, so the key is
 # still worth storing.
+#
+# PROVIDER_WORKSPACE_REQUIRED is deliberately absent. That failure means
+# the pair as entered cannot make a request, so storing it would leave an
+# installation whose Settings page shows a key that has never worked —
+# exactly the misleading state this pass exists to remove. It fails
+# closed, and the message tells the owner precisely what to add.
 _KEY_IS_PROBABLY_FINE = (
     ErrorCategory.PROVIDER_BILLING,
     ErrorCategory.PROVIDER_RATE_LIMIT,
@@ -74,8 +88,23 @@ class KeyVerification:
     worth_storing: bool = False
 
 
-def verify_anthropic_key(api_key: str, provider_factory=None) -> KeyVerification:
-    """Try *api_key* once and report what happened.
+def verify_anthropic_key(
+    api_key: str,
+    workspace_id: str = "",
+    provider_factory=None,
+) -> KeyVerification:
+    """Try *api_key* — together with *workspace_id* — once, and report what
+    happened.
+
+    The pair is verified **atomically**, and deliberately: an identity-linked
+    key is rejected by Anthropic without the workspace header, so checking
+    the key alone would either fail a perfectly good key or store one that
+    has never made a successful request. The request made here carries the
+    same header every later request will carry, because it is built by the
+    same `AnthropicProvider._client()`.
+
+    A blank *workspace_id* is normal and correct for a legacy
+    workspace-scoped key, and sends no header at all.
 
     *provider_factory* is a test seam; production passes nothing and gets
     the real AnthropicProvider. Never raises: a failure to verify is a
@@ -83,6 +112,8 @@ def verify_anthropic_key(api_key: str, provider_factory=None) -> KeyVerification
     where an unhandled error would be the user's first impression of the
     product.
     """
+    from app.core.ai.workspace import normalise_workspace_id, validate_workspace_id
+
     key = (api_key or "").strip()
     if not key:
         return KeyVerification(
@@ -90,6 +121,20 @@ def verify_anthropic_key(api_key: str, provider_factory=None) -> KeyVerification
             message="Enter your Anthropic API key to continue.",
             category=None,
             worth_storing=False,
+        )
+
+    workspace = normalise_workspace_id(workspace_id)
+    shape_problem = validate_workspace_id(workspace)
+    if shape_problem is not None:
+        # Refused before spending a request: a value that cannot be a
+        # workspace ID cannot become one by being sent. It still gets a
+        # Logs row, because "every failed key save leaves a trace" is the
+        # promise, and a refusal the user does not understand is exactly
+        # the kind that sends them looking for one.
+        return _failed(
+            ErrorCategory.PROVIDER_WORKSPACE_REQUIRED,
+            detail=shape_problem,
+            message=shape_problem,
         )
 
     try:
@@ -105,27 +150,66 @@ def verify_anthropic_key(api_key: str, provider_factory=None) -> KeyVerification
         provider = provider_factory(
             ProviderConfig(
                 api_key=key,
+                anthropic_workspace_id=workspace,
                 max_tokens=VERIFY_MAX_TOKENS,
                 timeout_seconds=VERIFY_TIMEOUT_SECONDS,
             )
         )
         provider.generate([Message(role="user", content=VERIFY_PROMPT)], VERIFY_SYSTEM)
     except ProviderError as exc:
-        logger.info("API key verification failed: %s", exc.category.value)
-        return KeyVerification(
-            ok=False,
-            message=safe_message(exc.category),
-            category=exc.category,
-            worth_storing=exc.category in _KEY_IS_PROBABLY_FINE,
-        )
+        return _failed(exc.category, exc.cause or exc)
     except Exception as exc:  # noqa: BLE001 — never let a setup screen crash
-        logger.warning("API key verification raised an unclassified error.", exc_info=exc)
-        return KeyVerification(
-            ok=False,
-            message=safe_message(ErrorCategory.PROVIDER_ERROR),
-            category=ErrorCategory.PROVIDER_ERROR,
-            worth_storing=False,
-        )
+        return _failed(ErrorCategory.PROVIDER_ERROR, exc)
 
     logger.info("API key verified against the provider.")
     return KeyVerification(ok=True, message="API key verified.", worth_storing=True)
+
+
+def _failed(
+    category: ErrorCategory,
+    exc: Optional[BaseException] = None,
+    detail: Optional[str] = None,
+    message: Optional[str] = None,
+) -> KeyVerification:
+    """Record one failed verification and describe it.
+
+    **The Logs row is the point.** The real-PC failure happened on exactly
+    this path — someone saving a key in Settings — and the owner's Logs page
+    stayed completely empty, so there was no second place to look and no
+    way to tell a rejected key from an unfunded account from a missing
+    workspace header. Generation failures already wrote a safe row (see
+    app/core/ai/events.py); the path that actually broke did not. Every
+    failure now comes through here, including the one refused locally
+    before a request is made.
+
+    *detail* and *message* are only ever JARVIS's own fixed text — never
+    the provider's, and never the value that was rejected.
+
+    An exception, when there is one, is **described, not rendered**:
+    Anthropic's 404 for an inaccessible workspace is ``Workspace `<id>`
+    not found.``, so `exc_info=exc` here would put a workspace ID in
+    jarvis.log. See app/core/safe_traceback.py.
+    """
+    import uuid
+
+    from app.core.ai.events import record_provider_failure
+    from app.core.safe_traceback import describe
+
+    correlation_id = str(uuid.uuid4())
+    logger.warning(
+        "API key verification failed [correlation_id=%s] category=%s %s",
+        correlation_id, category.value,
+        describe(exc) if exc is not None else "refused before any request was made",
+    )
+    record_provider_failure(
+        provider="anthropic",
+        category=category,
+        correlation_id=correlation_id,
+        detail=detail,
+    )
+    return KeyVerification(
+        ok=False,
+        message=message or safe_message(category),
+        category=category,
+        worth_storing=category in _KEY_IS_PROBABLY_FINE,
+    )

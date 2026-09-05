@@ -1,5 +1,7 @@
 """Shared pytest helpers across the test suite."""
 
+import contextlib
+
 import pytest
 
 SESSION_TOKEN_HEADER = "X-JARVIS-Session-Token"
@@ -26,6 +28,33 @@ def isolated_preferences(tmp_path, monkeypatch):
     monkeypatch.setattr("app.core.preferences.config_dir", lambda: tmp_path)
     monkeypatch.setattr("app.voice.pronunciations.config_dir", lambda: tmp_path)
     yield tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _forget_runtime_credential_downgrade():
+    """Reset app/core/providers.py's process-local "this credential was
+    rejected" note between tests.
+
+    It is deliberately module-global — it has to outlive a request, because
+    it exists for the case where the observation could not be written to
+    disk — and anything module-global is shared state a test can leak into
+    the next one. Cleared on both sides so neither the test that sets it nor
+    the test that runs after it depends on ordering.
+    """
+    from app.core.ai import credential_view
+    from app.core.providers import clear_runtime_downgrade
+
+    # credential_view keeps the last coherent snapshot module-globally, to
+    # hand back when a reader cannot get into the gate. A test that seeds
+    # the stores directly never moves the coordinator's revision, so that
+    # published snapshot can outlive the test that produced it. Dropping it
+    # on both sides keeps one test's credential out of the next test's
+    # request.
+    clear_runtime_downgrade()
+    credential_view.invalidate()
+    yield
+    clear_runtime_downgrade()
+    credential_view.invalidate()
 
 
 def prime_session(client):
@@ -138,3 +167,30 @@ def chromium_executable_path():
     import os
 
     return os.environ.get("JARVIS_TEST_CHROMIUM_PATH") or None
+
+
+@contextlib.contextmanager
+def credential_present(key: str = "sk-test-key"):
+    """Make the real credential snapshot report *key* as configured.
+
+    Since round 7 the provider's credential comes from one coherent
+    snapshot (`app/core/ai/credential_view.py`) rather than from separate
+    `settings` reads, so a test that mocks `app.core.brain.settings` no
+    longer supplies the key — the snapshot reads `app.config.settings`.
+
+    Setting the environment-variable field is deliberately how this is
+    done: it is the real precedence rule (`effective_api_key` prefers
+    ANTHROPIC_API_KEY over the credential store), so a test using this
+    exercises the production read path rather than a stub of it.
+    """
+    from app.config import settings
+    from app.core.ai import credential_view
+
+    previous = settings.anthropic_api_key
+    settings.anthropic_api_key = key
+    credential_view.invalidate()
+    try:
+        yield
+    finally:
+        settings.anthropic_api_key = previous
+        credential_view.invalidate()

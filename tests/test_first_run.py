@@ -3,12 +3,17 @@
 Real hardware testing rejected the six-step wizard this replaced: it
 exposed provider discovery, speech-runtime preparation and a readiness
 table full of "Not ready" rows to someone who had just double-clicked an
-installer. First run now asks two questions — what to call you, and your
-API key — and everything else moved to the page that owns it.
+installer. First run now asks what to call you, for your API key, and —
+only for keys that need one — for a Workspace ID; everything else moved to
+the page that owns it.
 
-These tests guard that shape. A test file that only asserted the two
-fields exist would not notice the wizard creeping back one card at a
-time, so the ceiling is asserted too.
+These tests guard that shape. A test file that only asserted the fields
+exist would not notice the wizard creeping back one card at a time, so the
+ceiling is asserted too — by identity, not just by count.
+
+What the *copy* on this screen is allowed to claim lives in
+tests/test_workspace_guidance.py, which exists because this page went on
+describing itself as two questions after it grew a third field.
 """
 
 import re
@@ -37,6 +42,23 @@ def _js() -> str:
 # What first run asks
 # ---------------------------------------------------------------------------
 
+#: Every input first run is allowed to contain, by id. Adding to this
+#: list is a product decision about what someone must face before they
+#: have a working assistant — not a convenience.
+ALLOWED_SETUP_INPUTS = (
+    "setup-name-input",
+    "setup-key-input",
+    # Raised from two to three by the owner's instruction after a real-PC
+    # failure: an Anthropic *identity-linked* key (a personal or service
+    # account key not scoped to one workspace) is rejected on every
+    # request without a Workspace ID, so a first run that cannot accept
+    # one is a first run that cannot finish for those keys. Optional, and
+    # correctly left blank for a legacy workspace-scoped key — see
+    # app/core/ai/workspace.py.
+    "setup-workspace-input",
+)
+
+
 def test_first_run_asks_for_a_preferred_name_and_an_api_key():
     html = _html()
     assert 'id="setup-name-input"' in html
@@ -46,10 +68,33 @@ def test_first_run_asks_for_a_preferred_name_and_an_api_key():
 def test_first_run_asks_for_nothing_else():
     """The ceiling, not the floor. Every input on this page is one more
     thing between someone and a working assistant, and the six-step
-    version is what the owner rejected."""
+    version is what the owner rejected.
+
+    The count alone was the guard before; it is now the count *and* the
+    identity of each field, which is strictly harder to creep past — a
+    fourth card cannot arrive by swapping one input for another.
+    """
     html = _html()
-    inputs = re.findall(r"<(input|select|textarea)\b[^>]*>", html)
-    assert len(inputs) == 2, f"first run must ask exactly two things, found {len(inputs)}"
+    inputs = re.findall(r"<(?:input|select|textarea)\b[^>]*>", html)
+    assert len(inputs) == len(ALLOWED_SETUP_INPUTS), (
+        f"first run must ask exactly {len(ALLOWED_SETUP_INPUTS)} things, found {len(inputs)}"
+    )
+    for field_id in ALLOWED_SETUP_INPUTS:
+        assert f'id="{field_id}"' in html, f"first run lost its {field_id!r} field"
+
+
+def test_the_only_optional_first_run_field_is_the_workspace_id():
+    """The name and the key are what first run is *for*. Anything else on
+    this page has to justify itself, and this pins the one that did."""
+    html = _html()
+    at = html.index('id="setup-workspace-input"')
+    # A window either side: the "(optional)" marker is in the <label> that
+    # precedes the input, the placeholder is on the input itself, and the
+    # hint follows it.
+    block = html[max(0, at - 400):at + 800].lower()
+    assert "optional" in block
+    assert "wrkspc_" in block
+    assert "claude console" in block
 
 
 def test_first_run_is_a_single_screen():
@@ -206,8 +251,13 @@ def test_a_rejected_key_keeps_the_user_on_the_page_to_fix_it():
 
 def test_a_stored_key_clears_the_field_and_a_rejected_one_does_not():
     """Leaving a rejected key in the box is what lets someone fix a typo
-    instead of retyping the whole thing."""
-    assert "if (r.stored && input) input.value = \"\";" in _js()
+    instead of retyping the whole thing.
+
+    `consistent` joined the condition because a key whose workspace and
+    verdict could not be written is stored but not finished with — see
+    app/core/ai/credential_pair.py's partial-failure states.
+    """
+    assert 'if (r.stored && r.consistent !== false && input) input.value = "";' in _js()
 
 
 def test_the_save_button_says_it_is_working():

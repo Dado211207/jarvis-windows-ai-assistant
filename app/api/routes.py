@@ -620,10 +620,21 @@ def stored_data() -> StoredDataResponse:
 
 class ApiKeyStatusResponse(BaseModel):
     configured: bool
+    # Whether a Workspace ID is stored — never which one. The page needs
+    # to render "set"/"not set" and nothing more.
+    workspace_configured: bool = False
+    # One of app/core/providers.py's four CREDENTIAL_* state names, so the
+    # page can stop describing a merely-present key as a working one.
+    state: str = "not_configured"
 
 
 class SetApiKeyRequest(BaseModel):
     api_key: str
+    # Optional: blank is correct for a legacy workspace-scoped key, and
+    # required by Anthropic for an identity-linked one. Validated for
+    # shape in app/core/ai/workspace.py, then verified for real against
+    # the provider together with the key.
+    workspace_id: str = ""
 
     @field_validator("api_key")
     @classmethod
@@ -643,13 +654,35 @@ class ApiKeyActionResponse(BaseModel):
     # `success`: a key that is valid but could not be checked (offline,
     # rate-limited) is still stored, so the user does not have to type it
     # again later.
-    stored: bool = False
+    #
+    # `null` is a third answer and is not the same as `false`: the request
+    # never started, so it observed neither store and may not claim either
+    # way. The page treats a null as "unknown" and leaves the key box alone.
+    stored: Optional[bool] = False
+    # Whether the credential and the metadata describing it agree. False
+    # only in the partial-failure states of app/core/ai/credential_pair.py,
+    # and the page uses it to decide whether the user still has to retype
+    # anything: a stored key whose workspace could not be written is not
+    # finished with, even though `stored` is true. `null` for the same
+    # reason as above.
+    consistent: Optional[bool] = True
 
 
 @router.get("/settings/api-key-status", response_model=ApiKeyStatusResponse)
 def api_key_status() -> ApiKeyStatusResponse:
-    from app.config import settings
-    return ApiKeyStatusResponse(configured=settings.has_anthropic_key)
+    # One snapshot, so "a key is configured" and "a Workspace ID is
+    # configured" always describe the same credential. Read separately they
+    # could straddle a save and report a key from one request beside a
+    # workspace from another — see app/core/ai/credential_view.py.
+    from app.core.ai import credential_view
+    from app.core.providers import credential_state_for
+
+    pair = credential_view.current()
+    return ApiKeyStatusResponse(
+        configured=pair.configured,
+        workspace_configured=pair.workspace_configured,
+        state=credential_state_for(pair),
+    )
 
 
 @router.post(
@@ -658,25 +691,54 @@ def api_key_status() -> ApiKeyStatusResponse:
     dependencies=[Depends(require_session_token)],
 )
 def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
-    """Try the key, then store it.
+    """Try the key, then store it — together with the metadata describing
+    it, or not at all.
 
     A key saved without being tried is a key whose first failure happens
     later, mid-conversation, with no visible connection to the setup
-    screen where it was typed. So it is tried once here, and the four
-    outcomes the user might hit — rejected, unfunded, rate-limited,
-    unreachable — are reported as four different things.
+    screen where it was typed. So it is tried once here, and the five
+    outcomes the user might hit — rejected, missing its Workspace ID,
+    unfunded, rate-limited, unreachable — are reported as five different
+    things.
 
-    Only an outright rejection stops the key being stored: being offline
-    during setup says nothing about the key, and making someone re-enter
-    it afterwards would be punishing them for their network.
+    An outright rejection stops the key being stored; so does an
+    identity-linked key entered without the Workspace ID it needs, because
+    that pair cannot make a request as entered. The other three say nothing
+    bad about the key, so it is stored — and recorded as *unconfirmed*
+    rather than *rejected*, because being offline during setup is not a
+    verdict on anyone's key.
+
+    The write itself is app/core/ai/credential_pair.py's problem: two
+    stores are involved (Credential Manager and preferences.json) and this
+    route may not report success unless both ended up in the intended
+    state.
     """
+    from app.core.ai import credential_pair, credential_transaction
     from app.core.ai.key_check import verify_anthropic_key
-    from app.core.credentials import set_stored_api_key
+    from app.core.ai.workspace import normalise_workspace_id
+    from app.core.providers import state_for_verification
 
     key = req.api_key.strip()
-    verification = verify_anthropic_key(key)
+    workspace = normalise_workspace_id(req.workspace_id)
+
+    # Take this request's place in the order **before** asking Anthropic
+    # anything. The check below is a network call and must not happen under
+    # the credential coordinator's lock — every reader and writer would
+    # queue behind it — so the ordering cannot come from when the check
+    # returns. It comes from when the request was admitted, which is the
+    # order the person actually acted in. An older request whose check
+    # finishes late is refused rather than landing on a newer one.
+    intent = credential_transaction.admit("save")
+
+    # Verified as a pair. An identity-linked key is rejected without the
+    # workspace header, so checking the key on its own would either fail a
+    # good key or bless one that has never made a successful request.
+    verification = verify_anthropic_key(key, workspace)
 
     if not verification.ok and not verification.worth_storing:
+        # Nothing is written: not the key, not the workspace ID, not the
+        # state. A refused attempt must leave the previous configuration
+        # exactly as it was rather than half-replacing it.
         return ApiKeyActionResponse(
             success=False,
             message=verification.message,
@@ -684,15 +746,24 @@ def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
             stored=False,
         )
 
-    if not set_stored_api_key(key):
+    outcome = credential_pair.save(
+        key, workspace, state_for_verification(verification.ok, verification.category),
+        intent=intent,
+    )
+
+    if not outcome.ok:
+        # Covers every failure ordering across the two stores, including
+        # the one where the credential was written and its metadata was
+        # not. `stored` reports where the key actually ended up, which is
+        # not the same question as whether the operation succeeded.
         return ApiKeyActionResponse(
             success=False,
-            message="Could not save the key to the Windows credential store.",
-            category="credential_store",
-            stored=False,
+            message=outcome.message,
+            category=outcome.category,
+            stored=outcome.stored,
+            consistent=outcome.consistent,
         )
 
-    logger.info("Anthropic API key stored via the OS credential store.")
     if verification.ok:
         return ApiKeyActionResponse(success=True, message="API key saved and verified.", stored=True)
     return ApiKeyActionResponse(
@@ -709,11 +780,33 @@ def set_api_key(req: SetApiKeyRequest) -> ApiKeyActionResponse:
     dependencies=[Depends(require_session_token)],
 )
 def remove_api_key() -> ApiKeyActionResponse:
-    from app.core.credentials import clear_stored_api_key
-    if clear_stored_api_key():
-        logger.info("Anthropic API key removed from the OS credential store.")
-        return ApiKeyActionResponse(success=True, message="API key removed.")
-    return ApiKeyActionResponse(success=False, message="Could not remove the key from the OS credential store.")
+    """Remove the key, and the metadata that only described that key.
+
+    The workspace ID and the verification state are properties *of the
+    credential*, not standing preferences: leaving them behind would mean
+    the next key entered inherits the workspace of the one before it, and
+    the status page would go on reporting a verification that belonged to
+    a credential that no longer exists. They are cleared here rather than
+    by the uninstaller because this is the moment the thing they describe
+    stops existing.
+
+    A removal that clears the credential but cannot clear the metadata is
+    reported as exactly that. Answering "API key removed." would leave the
+    inherited-workspace trap in place while telling the user it was gone.
+    """
+    from app.core.ai import credential_pair, credential_transaction
+
+    # Removal does no network work, so it is admitted and applied in one
+    # go — but it takes its place in the same order as a save, because both
+    # change the same credential and the user's later action must win.
+    outcome = credential_pair.clear(intent=credential_transaction.admit("clear"))
+    return ApiKeyActionResponse(
+        success=outcome.ok,
+        message=outcome.message,
+        category=outcome.category,
+        stored=outcome.stored,
+        consistent=outcome.consistent,
+    )
 
 
 # ---------------------------------------------------------------------------

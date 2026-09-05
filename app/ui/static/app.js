@@ -2287,16 +2287,42 @@ async function saveProviderSelection() {
   }
 }
 
+// The five states the server can report, and the one phrase each is
+// allowed. "Configured" used to be shown for all of them, which is how a
+// key Anthropic was rejecting on every request read as working.
+//
+// "Rejected by Anthropic" belongs to verification_failed alone. An
+// offline or rate-limited check reads "Saved, not confirmed", because
+// nothing rejected anything — and an unfunded account gets its own row
+// rather than being called either.
+const KEY_STATE_LABELS = {
+  not_configured: ["Not configured", "text-muted"],
+  configured_unverified: ["Saved, not confirmed", "text-warn"],
+  verified: ["Worked when last checked", "text-ok"],
+  verification_failed: ["Rejected by Anthropic", "text-err"],
+  account_unfunded: ["Key accepted, account has no credit", "text-warn"],
+};
+
 async function refreshSettingsKeyStatus() {
   const el = $("settings-key-status");
-  if (!el) return;
+  const workspaceEl = $("settings-workspace-status");
+  if (!el && !workspaceEl) return;
   try {
     const r = await API.get("/settings/api-key-status");
-    el.textContent = r.configured ? "Configured" : "Not configured";
-    el.className = `status-row-value ${r.configured ? "text-ok" : "text-muted"}`;
+    if (el) {
+      const [label, tone] = KEY_STATE_LABELS[r.state] ||
+        (r.configured ? KEY_STATE_LABELS.configured_unverified : KEY_STATE_LABELS.not_configured);
+      el.textContent = label;
+      el.className = `status-row-value ${tone}`;
+    }
+    if (workspaceEl) {
+      // Whether one is set — never which one.
+      workspaceEl.textContent = r.workspace_configured ? "Set" : "Not set";
+      workspaceEl.className = `status-row-value ${r.workspace_configured ? "text-ok" : "text-muted"}`;
+    }
   } catch (e) {
-    el.textContent = "Unknown";
-    el.className = "status-row-value";
+    if (el) { el.textContent = "Unknown"; el.className = "status-row-value"; }
+    if (workspaceEl) { workspaceEl.textContent = "Unknown"; workspaceEl.className = "status-row-value"; }
   }
 }
 
@@ -2426,6 +2452,28 @@ function _setSettingsKeyMessage(text, ok) {
   if (!el) return;
   el.textContent = text;
   el.className = `text-xs mt-2 ${ok ? "text-ok" : "text-err"}`;
+}
+
+// Save and Remove act on the same credential, so one must not be started
+// while the other is running. Each used to disable only the button that was
+// pressed, which left Save→Remove and Remove→Save overlapping through the
+// ordinary UI.
+//
+// **This is defence in depth and deliberately not the correction.** Two
+// concurrent POSTs to /settings/api-key need no button at all, and FastAPI
+// serves sync routes from a thread pool, so the boundary that actually
+// holds is server-side: app/core/ai/credential_transaction.py runs one
+// credential-pair change at a time and refuses an overlapping one with an
+// outcome that says nothing was changed. A page cannot enforce that, and
+// nothing here should be read as though it does.
+let _settingsKeyBusy = false;
+
+function _setSettingsKeyBusy(busy) {
+  _settingsKeyBusy = busy;
+  for (const id of ["settings-key-save", "settings-key-remove"]) {
+    const control = $(id);
+    if (control) control.disabled = busy;
+  }
 }
 
 // ── Local AI ─────────────────────────────────────────────────────────────────
@@ -2664,13 +2712,20 @@ function initSettings() {
   // The same verified save the first-run screen uses, so a key rejected
   // during setup and a key rejected in Settings say the same thing.
   if (saveBtn) saveBtn.addEventListener("click", async () => {
-    await saveApiKeyFrom("settings-key-input", "settings-key-save", _setSettingsKeyMessage);
-    refreshSettingsKeyStatus();
-    refreshSettingsProviders();
+    if (_settingsKeyBusy) return;
+    _setSettingsKeyBusy(true);
+    try {
+      await saveApiKeyFrom("settings-key-input", "settings-key-save", _setSettingsKeyMessage, "settings-workspace-input");
+      refreshSettingsKeyStatus();
+      refreshSettingsProviders();
+    } finally {
+      _setSettingsKeyBusy(false);
+    }
   });
 
   if (removeBtn) removeBtn.addEventListener("click", async () => {
-    removeBtn.disabled = true;
+    if (_settingsKeyBusy) return;
+    _setSettingsKeyBusy(true);
     try {
       const r = await API.post("/settings/api-key/remove", {});
       _setSettingsKeyMessage(r.message, r.success);
@@ -2679,7 +2734,7 @@ function initSettings() {
     } catch (e) {
       _setSettingsKeyMessage("Could not reach the server.", false);
     } finally {
-      removeBtn.disabled = false;
+      _setSettingsKeyBusy(false);
     }
   });
 
@@ -2887,8 +2942,12 @@ async function refreshSetupKeyStatus() {
   if (!el) return;
   try {
     const r = await API.get("/settings/api-key-status");
-    el.textContent = r.configured ? "Configured" : "Not configured yet";
-    el.className = `status-row-value ${r.configured ? "text-ok" : "text-muted"}`;
+    // Same four states as Settings — a first run that says "Configured"
+    // for a key the provider is rejecting starts the product on a lie.
+    const [label, tone] = KEY_STATE_LABELS[r.state] ||
+      (r.configured ? KEY_STATE_LABELS.configured_unverified : ["Not configured yet", "text-muted"]);
+    el.textContent = label;
+    el.className = `status-row-value ${tone}`;
   } catch (e) {
     el.textContent = "Unknown";
     el.className = "status-row-value";
@@ -2923,7 +2982,7 @@ async function savePreferredName(inputId) {
 // Saving the key is deliberately a real round trip that verifies it, so
 // this can take a couple of seconds. The button says so rather than
 // looking frozen.
-async function saveApiKeyFrom(inputId, buttonId, setMessage) {
+async function saveApiKeyFrom(inputId, buttonId, setMessage, workspaceInputId) {
   const input = $(inputId);
   const button = $(buttonId);
   const value = input ? input.value.trim() : "";
@@ -2931,15 +2990,24 @@ async function saveApiKeyFrom(inputId, buttonId, setMessage) {
     setMessage("Enter a key first.", false);
     return false;
   }
+  // Sent with the key, never separately: an identity-linked key and its
+  // workspace are one credential as far as Anthropic is concerned, and
+  // the server verifies them as a pair.
+  const workspaceInput = workspaceInputId ? $(workspaceInputId) : null;
+  const workspace = workspaceInput ? workspaceInput.value.trim() : "";
 
   const originalLabel = button ? button.textContent : "";
   if (button) { button.disabled = true; button.textContent = "Checking…"; }
   try {
-    const r = await API.post("/settings/api-key", { api_key: value });
+    const r = await API.post("/settings/api-key", { api_key: value, workspace_id: workspace });
     setMessage(r.message, r.success);
-    // Cleared only when it was actually stored: leaving a rejected key in
-    // the box is what lets someone fix a typo instead of retyping it.
-    if (r.stored && input) input.value = "";
+    // Cleared only when it was actually stored *and* its workspace and
+    // verdict were stored with it: leaving a rejected key in the box is
+    // what lets someone fix a typo instead of retyping it, and a key whose
+    // metadata could not be written still needs saving again.
+    // The workspace box is deliberately left alone either way — it is not
+    // a secret, and retyping it after a failed attempt is pure friction.
+    if (r.stored && r.consistent !== false && input) input.value = "";
     return r.success;
   } catch (e) {
     setMessage("Could not reach JARVIS's local service.", false);
@@ -2994,7 +3062,7 @@ function initSetup() {
 
     const typedKey = keyInput ? keyInput.value.trim() : "";
     if (typedKey) {
-      const ok = await saveApiKeyFrom("setup-key-input", "setup-continue", _setSetupKeyMessage);
+      const ok = await saveApiKeyFrom("setup-key-input", "setup-continue", _setSetupKeyMessage, "setup-workspace-input");
       await refreshSetupKeyStatus();
       // A rejected key keeps the user here, where they can fix it — but
       // only a rejection does. Being offline or rate-limited during setup

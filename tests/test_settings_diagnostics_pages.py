@@ -184,6 +184,31 @@ def test_startup_toggle_trusts_the_server_reported_state():
     assert "startup.checked = r.enabled" in js
 
 
+def test_save_and_remove_disable_each_other_while_either_is_running():
+    """Both act on the same credential, and each used to disable only the
+    button that was pressed — so Save→Remove and Remove→Save could overlap
+    through the ordinary UI.
+
+    Defence in depth only. The boundary that holds is
+    `app/core/ai/credential_transaction.py`, because two concurrent POSTs
+    need no button at all; this test exists so the page stops making the
+    overlap *easy*, not so anyone believes the page prevents it.
+    """
+    js = APP_JS.read_text(encoding="utf-8")
+    assert "_setSettingsKeyBusy" in js, "the shared busy state is gone"
+    assert '"settings-key-save", "settings-key-remove"' in js, (
+        "the busy state no longer covers both controls"
+    )
+    # Both handlers must consult it, or one of them can still start while
+    # the other is running.
+    assert js.count("if (_settingsKeyBusy) return;") >= 2, (
+        "a key control no longer checks whether the other one is running"
+    )
+    assert "deliberately not the correction" in js, (
+        "the comment that stops this being mistaken for the fix is gone"
+    )
+
+
 def test_copy_failure_is_reported_rather_than_silent():
     """Clipboard access can be denied by the browser; the user must be
     told instead of clicking a button that appears to do nothing."""

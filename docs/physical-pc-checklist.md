@@ -232,6 +232,55 @@ surprise.
 13. Ask JARVIS a real question and get a **real Anthropic response**.
 14. Deliberately save a **wrong key** and confirm the error says the key
     was rejected — not "add an API key", and not "offline".
+14a. **Identity-linked key.** With a personal or service account key that
+    is *not* scoped to a single workspace, save it with the **Workspace ID
+    box empty**. It must be refused with *"This Anthropic API key requires
+    a Workspace ID"*, and the Settings status must **not** afterwards
+    claim the key is working. Then supply the workspace and save again:
+    for a **non-default** workspace the ID is in the Console's
+    Settings → Workspaces **ID** column; the **Default Workspace is not
+    listed there**, and its ID comes from the `anthropic-workspace-id`
+    response header (see `docs/WINDOWS_INSTALLER.md`). Confirm chat works,
+    and that the Workspace ID appears in no log line, no Diagnostics field
+    and no API response — only "Set"/"Not set".
+14b. **Scoped key — the route that needs no ID.** Create a key scoped to a
+    single workspace (the Default Workspace is fine) and confirm it works
+    with the Workspace ID box **blank**. This is the setup the docs
+    recommend, and it must not require creating an extra workspace.
+14c. **Legacy workspace-scoped key**, if you have one: it must still work
+    with the Workspace ID box left empty. Nothing about it changed.
+14d. **Remove the key** and confirm the Workspace ID clears with it, so
+    the next key does not inherit it.
+14e. **A check that cannot run is not a rejection.** Disconnect the
+    network and save a key. It must be stored and reported as *not yet
+    confirmed* — the Settings status must **not** say Anthropic rejected
+    it, and must **not** say chat is available.
+14f. **The Logs page must show the failure.** After any failed key save
+    in 14a or 14e, open **Logs** and confirm there is one `ai_provider`
+    row naming the category with a reference id — and that it contains no
+    key, no Workspace ID and no Anthropic response text.
+
+> ### Two things that are deliberately *not* on this list
+>
+> **"Save a key while offline and check the previous one survived."**
+> That contradicts the product's own contract and would fail correctly.
+> A network timeout is in `key_check._KEY_IS_PROBABLY_FINE`, so the key
+> being saved is *worth storing*: JARVIS keeps the **new** key and labels
+> it unconfirmed, which is what 14e asks you to confirm. An unreachable
+> Anthropic is not a Credential Manager write failure and implies nothing
+> about the credential already on the machine.
+>
+> **"Make the settings file unwritable and press Remove twice."**
+> Credential-store and metadata write failures are not states a person
+> should be asked to manufacture on their own PC, and a half-finished
+> removal is not something to practise on a real credential. Every
+> ordering — refused write, timed-out write, mutate-then-raise, failed
+> metadata write, and the idempotent second Remove that recovers from it —
+> is covered by `tests/test_credential_replacement_safety.py` and
+> `tests/test_credential_backend_targets.py`, deterministically, against a
+> backend fake with fault injection.
+>
+> Real-PC acceptance stays limited to what an ordinary user actually does.
 15. On a machine without Ollama, run the **guided local-AI install**.
     Confirm the plan screen names source, publisher, licence, size and
     free space *before* anything is fetched; that the **Authenticode

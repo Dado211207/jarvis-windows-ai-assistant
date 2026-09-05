@@ -55,12 +55,102 @@ OPENAI_USERNAME = "openai_api_key"
 
 # Keyring calls that time out keep running in Python; a Future timeout does
 # not cancel a call already inside WinCred. Serialize the backend and track
-# the latest desired value so a late set is reconciled to a newer delete (or
-# removed after its own timeout) instead of becoming an orphan credential.
+# the latest desired value so a late set is reconciled to whatever was most
+# recently asked for, rather than becoming an orphan credential.
+#
+# **What "most recently asked for" has to be after a failure**, because the
+# first version got this wrong in a way that could destroy a working key.
+# It reconciled *every* failed non-None write to absence:
+#
+#     if value is not None:
+#         cleanup_generation = _record_desired(username, None)   # delete
+#
+# That is right for a first-time save — a late `set_password` would leave a
+# credential the user was told had not been saved. It is destructive for a
+# **replacement**, because the old key and the new key are the same
+# Credential Manager entry. Replacing key A with key B and having that write
+# fail or time out therefore deleted A, while the caller reported "Nothing
+# was changed."
+#
+# The reconciliation target after a failed write is now the value that was
+# *proven* to be there beforehand. Establishing it is a precondition of
+# attempting the write at all: a store JARVIS cannot read is a store it will
+# not write to, because a failure there could not be undone. An unreadable
+# entry is never treated as an empty one — it may hold the only working key
+# on the machine.
 _backend_lock = threading.Lock()
 _mutation_state_lock = threading.Lock()
+#: Signalled whenever a mutation worker finishes, so shutdown and tests can
+#: wait for the store to stop changing under them.
+_mutation_idle = threading.Condition(_mutation_state_lock)
 _mutation_generation = 0
 _desired_values = {}
+_inflight_mutations = {}
+
+#: The value is in the store: the backend confirmed it.
+MUTATION_APPLIED = "applied"
+#: Provably nothing changed — either nothing was sent to the backend, or the
+#: backend raised before applying anything and nothing is still in flight.
+MUTATION_UNCHANGED = "unchanged"
+#: Sent to the backend and never confirmed. It may still complete. This is
+#: the state that must never be described to a user as "nothing was changed".
+MUTATION_UNCERTAIN = "uncertain"
+
+#: An UNCERTAIN whose cause is that a *newer* request for the same credential
+#: arrived while this one was failing. It is called out by name because it is
+#: the one uncertain outcome where JARVIS deliberately did **not** ask for the
+#: previous value to be put back — the credential is not this request's to
+#: reconcile any more — and a message that said otherwise would be describing
+#: an action nobody took.
+MUTATION_REASON_SUPERSEDED = "superseded"
+
+
+@dataclass(frozen=True)
+class MutationResult:
+    """What one attempted write to the credential store established.
+
+    Three outcomes, not two, for the same reason `ProviderStatus` has five
+    states rather than one boolean: "it worked", "it definitely did not
+    happen" and "the call never came back and may yet land" call for three
+    different sentences to the person holding the machine, and collapsing
+    the last two lets JARVIS promise a postcondition it never observed.
+    """
+
+    outcome: str
+    #: Why, when it is not APPLIED. One of "store_unavailable" (the keyring
+    #: package is not installed), "store_unreadable" (the entry could not be
+    #: read, so a failed write could not be undone), "backend_refused",
+    #: "timed_out", "partially_applied", "unverifiable", "superseded_copy"
+    #: (the write landed but a copy of the previous secret could not be
+    #: confirmed removed) or "superseded" (a newer request replaced this
+    #: one's intent). Never contains a credential value.
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == MUTATION_APPLIED
+
+    @property
+    def provably_unchanged(self) -> bool:
+        """Whether the store is *known* to hold what it held before.
+
+        The only basis on which a caller may tell a user that nothing was
+        changed.
+        """
+        return self.outcome == MUTATION_UNCHANGED
+
+    @property
+    def superseded(self) -> bool:
+        """Whether a newer request for this credential replaced this one's
+        intent before it could finish.
+
+        Separated from the other uncertain outcomes because it changes what
+        may be *said*: on every other failure path JARVIS asks for the
+        proven previous value to be put back, and on this one it deliberately
+        does not — doing so would overwrite a request the user has already
+        been told succeeded.
+        """
+        return self.reason == MUTATION_REASON_SUPERSEDED
 
 
 @dataclass(frozen=True)
@@ -116,7 +206,44 @@ def _run_isolated(func: Callable, *args: Any) -> Tuple[bool, Any]:
         executor.shutdown(wait=False)
 
 
-def _read(username: str) -> Tuple[bool, str]:
+def _compound_target(username: str) -> str:
+    """The second target name the pinned Windows backend can create.
+
+    `keyring==25.7.0`'s `WinVaultKeyring.set_password()` copies any existing
+    credential to ``{existing_username}@{service}`` *before* writing the
+    replacement — unconditionally, not only on the username collision its
+    own docstring describes:
+
+        existing_pw = self._read_credential(service)
+        if existing_pw:
+            target = self._compound_name(existing_pw['UserName'], service)
+            self._set_password(target, existing_pw['UserName'], existing_pw.value)
+        self._set_password(service, username, str(password))
+
+    So replacing one JARVIS key leaves two real Credential Manager entries —
+    `JARVIS` and `anthropic_api_key@JARVIS` — the second holding the key
+    that was just replaced. Both were observed on a real machine with
+    `cmdkey /list`. Reads never reveal it: `_resolve_credential()` returns
+    the plain target first, so the stale secret is invisible to the
+    application while remaining on disk indefinitely.
+
+    JARVIS therefore owns *two* names per credential and keeps the invariant
+    that only the first of them exists after any settled mutation. The name
+    is composed from two JARVIS constants, so nothing else writes it — but
+    ownership is still proven from the stored username before anything is
+    deleted (see `_discard_superseded`).
+    """
+    return f"{username}@{SERVICE_NAME}"
+
+
+def _read_target(target: str, username: str) -> Tuple[bool, str]:
+    """``(store_reached, value)`` for one exact target name.
+
+    Passing the target *as the service* is how an exact name is addressed
+    through keyring's public API. A non-None result also proves the stored
+    username matches: `_resolve_credential` falls through to a
+    doubly-compound name when it does not, and nothing ever writes that.
+    """
     try:
         import keyring
     except ImportError:
@@ -127,7 +254,7 @@ def _read(username: str) -> Tuple[bool, str]:
         # inside WinCred, so two overlapping reads must not enter the
         # backend together.
         with _backend_lock:
-            return keyring.get_password(SERVICE_NAME, username)
+            return keyring.get_password(target, username)
 
     ok, value = _run_isolated(_read_locked)
     # The (reached, value) pair is load-bearing for uninstall: collapsing
@@ -135,6 +262,17 @@ def _read(username: str) -> Tuple[bool, str]:
     # data folder and report a successful purge while a secret may still
     # exist. Ordinary callers use _get() and see only the value.
     return ok, (value or "") if ok else ""
+
+
+def _read(username: str) -> Tuple[bool, str]:
+    """What a `get` would return: the plain target, else the compound one.
+
+    Deliberately the backend's own resolution order rather than the plain
+    target alone, because that is what every other caller of this module
+    would observe. It means "reads as empty" proves *both* targets are gone,
+    which is what a removal has to establish.
+    """
+    return _read_target(SERVICE_NAME, username)
 
 
 def _get(username: str) -> str:
@@ -150,6 +288,98 @@ def _record_desired(username: str, value: Optional[str]) -> int:
         return _mutation_generation
 
 
+def _record_desired_if_latest(username: str, generation: int,
+                              value: Optional[str]) -> Optional[int]:
+    """Record *value* as the newest desired state, unless something newer
+    has already been asked for.
+
+    A failed write must not undo a *later* request. If a second Save landed
+    while the first was stuck inside the backend, the second one's value is
+    the newest intent and putting the first one's previous value back over
+    it would be the same class of defect this whole mechanism exists to
+    prevent. Returns the new generation, or None when there was nothing to
+    do because a newer intent already stands.
+    """
+    global _mutation_generation
+    with _mutation_state_lock:
+        current = _desired_values.get(username)
+        if current is None or current[0] != generation:
+            return None
+        _mutation_generation += 1
+        _desired_values[username] = (_mutation_generation, value)
+        return _mutation_generation
+
+
+def _enter_mutation(username: str) -> None:
+    with _mutation_state_lock:
+        _inflight_mutations[username] = _inflight_mutations.get(username, 0) + 1
+
+
+def _leave_mutation(username: str) -> None:
+    with _mutation_idle:
+        remaining = _inflight_mutations.get(username, 1) - 1
+        if remaining > 0:
+            _inflight_mutations[username] = remaining
+        else:
+            _inflight_mutations.pop(username, None)
+        _mutation_idle.notify_all()
+
+
+def _cleanup_survivor(username: str, generation: int,
+                      survivor: Optional[str]) -> Optional[str]:
+    """The value the store should hold by the time this cleanup runs.
+
+    Tidying up after a write is not the same job as performing one, but it
+    still has to aim at the right end state: `_discard_superseded()` proves
+    the plain target holds *this* value before it removes the copy beside
+    it. A request whose intent has since been replaced would therefore
+    either refuse to tidy at all — leaving a superseded secret on disk — or,
+    when its own survivor is `None`, delete on a proof it never made.
+
+    So cleanup follows the newest recorded intent whenever this request is
+    no longer it. That is deliberately the *only* thing a stale request is
+    allowed to do to the credential: a discard never writes the plain
+    target, so it can never undo the request that superseded it.
+    """
+    with _mutation_state_lock:
+        current = _desired_values.get(username)
+    if current is None or current[0] == generation:
+        return survivor
+    return current[1]
+
+
+def _pending_mutations(username: str) -> int:
+    """How many workers for *username* have not finished.
+
+    Read on the failure path: a backend that refused this write changed
+    nothing *by itself*, but an earlier worker still inside the store will
+    converge to the newest desired value when it comes out. While one
+    exists, "nothing changed" is a prediction rather than an observation.
+    """
+    with _mutation_state_lock:
+        return _inflight_mutations.get(username, 0)
+
+
+def wait_for_pending_mutations(timeout: float = TIMEOUT_SECONDS * 4) -> bool:
+    """Block until no credential mutation worker is running. Never raises.
+
+    Not called on any request path — a route must never wait on a backend
+    that has already blown its timeout. It exists so shutdown and tests can
+    make an assertion about what the store ends up holding, which is not a
+    meaningful question while a late write is still in flight.
+    """
+    import time
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    with _mutation_idle:
+        while any(_inflight_mutations.values()):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _mutation_idle.wait(remaining)
+    return True
+
+
 def _apply_value(keyring, username: str, value: Optional[str]) -> None:
     if value is not None:
         keyring.set_password(SERVICE_NAME, username, value)
@@ -160,54 +390,320 @@ def _apply_value(keyring, username: str, value: Optional[str]) -> None:
         pass
 
 
+def _discard_superseded(keyring, username: str, survivor: Optional[str]) -> bool:
+    """Remove the copy of the previous secret the backend leaves behind.
+
+    Returns whether the store is *proven* to be free of a superseded copy.
+    False means "could not establish it" — never "there wasn't one".
+
+    **Nothing is deleted until three things are proven**, because a target
+    JARVIS did not write is not JARVIS's to remove:
+
+      1. *The intended survivor is in place.* `_read()` resolves the plain
+         target first, so it returning exactly what was meant to be stored
+         proves the plain target holds it — and therefore that deleting the
+         other copy cannot leave the user with no credential. For a removal
+         (`survivor is None`) the proof is that the store reads empty.
+      2. *The compound target actually exists*, read by its exact name.
+      3. *It carries our own username.* A non-None read through
+         `_read_target` establishes this: keyring falls through to a
+         doubly-compound name when the username does not match, and that
+         name is never written by anything.
+
+    **Never called with `_backend_lock` held.** An earlier version of this
+    sentence said the opposite, and it was never true of the code beneath
+    it: every read and delete below goes through `_run_isolated`, which
+    acquires `_backend_lock` on a *different* thread, so entering here under
+    the lock would deadlock rather than fail. `_discard_worker` exists
+    precisely so the paths that need this to run after a queued write can
+    have that without holding the lock across it.
+    """
+    compound = _compound_target(username)
+
+    if survivor is not None:
+        # Deleting the copy must never be what leaves the user with no
+        # credential, so the intended survivor has to be in place first.
+        ok, current = _read_target(SERVICE_NAME, username)
+        if not ok or current != survivor:
+            return False
+    # With no survivor the caller wants the credential gone entirely, so
+    # there is nothing to protect: any copy under the compound name is
+    # residue by definition, and removing it is the goal rather than a risk.
+
+    reached, residue = _read_target(compound, username)
+    if not reached:
+        return False
+    if not residue:
+        return True
+
+    def _delete_locked():
+        with _backend_lock:
+            try:
+                keyring.delete_password(compound, username)
+            except keyring.errors.PasswordDeleteError:
+                pass
+
+    deleted, _ = _run_isolated(_delete_locked)
+    if not deleted:
+        return False
+
+    confirmed, still_there = _read_target(compound, username)
+    return bool(confirmed and not still_there)
+
+
+def _discard_worker(keyring, username: str, generation: int,
+                    survivor: Optional[str]) -> None:
+    """`_discard_superseded` as a queued task, for the paths where the write
+    it tidies up after has not finished yet.
+
+    Submitted to the same single-worker executor as the mutation, so it runs
+    strictly after it. Deliberately **not** called from inside
+    `_mutation_worker`: that holds `_backend_lock`, and every read below
+    acquires it on a different thread, which would deadlock rather than
+    fail.
+
+    The survivor is resolved *here* rather than when the task was queued,
+    because a newer request may have arrived in between — see
+    `_cleanup_survivor`.
+    """
+    try:
+        _discard_superseded(
+            keyring, username, _cleanup_survivor(username, generation, survivor),
+        )
+    finally:
+        _leave_mutation(username)
+
+
+def _queue_discard(executor, keyring, username: str, generation: int,
+                   survivor: Optional[str]) -> None:
+    """Clear the superseded copy once everything queued ahead has settled."""
+    _enter_mutation(username)
+    try:
+        executor.submit(_discard_worker, keyring, username, generation, survivor)
+    except BaseException:  # noqa: BLE001 — a shut-down executor is not a failure path
+        _leave_mutation(username)
+
+
+def _queue_reconciliation(executor, keyring, username: str, generation: int,
+                          survivor: Optional[str]) -> None:
+    """Drive the store back to *survivor*, then clear any superseded copy.
+
+    Used where the outcome could not be established. It is deliberately a
+    real submitted worker: updating `_desired_values` alone only tells a
+    *future* write what to converge to, and when nothing else is in flight
+    that future write never happens.
+
+    **`generation` must already have been accepted by
+    `_record_desired_if_latest()`**, and this function must never mint one
+    of its own. It used to call `_record_desired()` here, which creates a
+    brand-new *newest* generation — so an older request whose rollback value
+    had just been refused as stale got it applied anyway, one line later,
+    over a newer save the user had already been told succeeded. The guard
+    ran, answered correctly, and was then walked around; taking the accepted
+    generation as an argument is what makes walking around it impossible.
+    """
+    _enter_mutation(username)
+    try:
+        executor.submit(_mutation_worker, keyring, username, generation, survivor)
+    except BaseException:  # noqa: BLE001
+        _leave_mutation(username)
+        return
+    _queue_discard(executor, keyring, username, generation, survivor)
+
+
 def _mutation_worker(keyring, username: str, generation: int,
                      value: Optional[str]) -> None:
-    """Apply this mutation, then reconcile anything requested behind it."""
-    with _backend_lock:
-        applied_generation = generation
-        _apply_value(keyring, username, value)
-        while True:
-            with _mutation_state_lock:
-                latest_generation, latest_value = _desired_values.get(
-                    username, (applied_generation, value),
-                )
-            if latest_generation == applied_generation:
-                return
-            _apply_value(keyring, username, latest_value)
-            applied_generation = latest_generation
+    """Apply this mutation, then reconcile anything requested behind it.
+
+    The primary apply is deliberately left to propagate. That is what lets
+    `_mutate_detailed` tell "the backend refused, so the store still holds
+    what it held" from "the call never came back, so it may yet land" — two
+    facts that call for two different sentences to the user. Everything
+    *after* it is best effort and must not be reported as a failure of a
+    write that already happened.
+    """
+    try:
+        with _backend_lock:
+            applied_generation = generation
+            _apply_value(keyring, username, value)
+            while True:
+                with _mutation_state_lock:
+                    latest_generation, latest_value = _desired_values.get(
+                        username, (applied_generation, value),
+                    )
+                if latest_generation == applied_generation:
+                    return
+                try:
+                    _apply_value(keyring, username, latest_value)
+                except BaseException as exc:
+                    logger.warning(
+                        "Reconciling the OS credential store failed: %s", type(exc).__name__,
+                    )
+                    return
+                applied_generation = latest_generation
+    finally:
+        _leave_mutation(username)
 
 
-def _mutate(username: str, value: Optional[str]) -> bool:
+def _mutate_detailed(username: str, value: Optional[str]) -> MutationResult:
+    """Apply one change to the credential store and report what it settled.
+
+    A *set* reads the entry first. That read is not a convenience: it is the
+    only way to know what a failed write has to be undone back to. If it
+    cannot be done, the write is not attempted at all — starting one that
+    could not be reversed is how a replacement destroys the key it was
+    replacing, and an unreadable entry is never assumed to be an empty one.
+    """
     try:
         import keyring
         import keyring.errors
     except ImportError:
-        return False
+        return MutationResult(MUTATION_UNCHANGED, "store_unavailable")
+
+    # Read first, always. For a *set* this is the value a failed write has
+    # to be undone back to, and not having it is a refusal. For a *delete*
+    # it is the baseline that makes "nothing changed" checkable afterwards —
+    # a delete cannot destroy something the caller wanted to keep, so a
+    # failed read there is not a refusal, only a loss of that proof.
+    baseline_known, baseline = _read(username)
+    restore_to: Optional[str] = None
+    if value is not None:
+        if not baseline_known:
+            logger.warning(
+                "Not writing to the OS credential store: its current contents could not "
+                "be read, so a write that failed could not be undone.",
+            )
+            return MutationResult(MUTATION_UNCHANGED, "store_unreadable")
+        # "" means the store answered and the entry is empty, so absence is
+        # the proven previous state and deleting on failure is correct.
+        restore_to = baseline or None
 
     generation = _record_desired(username, value)
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="jarvis-keyring-mutation",
     )
-    future = executor.submit(_mutation_worker, keyring, username, generation, value)
+    _enter_mutation(username)
+    try:
+        future = executor.submit(_mutation_worker, keyring, username, generation, value)
+    except BaseException:
+        _leave_mutation(username)
+        executor.shutdown(wait=False)
+        return MutationResult(MUTATION_UNCHANGED, "store_unavailable")
+
     try:
         future.result(timeout=TIMEOUT_SECONDS)
-        return True
-    except BaseException as exc:
+        # The write landed. The pinned Windows backend may have copied the
+        # secret it replaced to a second target on the way; the operation is
+        # not finished until that copy is gone and proven gone. Aimed at the
+        # newest intent rather than blindly at `value`, so a request that a
+        # concurrent one has already replaced still tidies up instead of
+        # proving nothing and leaving the copy behind.
+        if _discard_superseded(
+            keyring, username, _cleanup_survivor(username, generation, value),
+        ):
+            return MutationResult(MUTATION_APPLIED)
         logger.warning(
-            "OS credential mutation failed: %s", type(exc).__name__, exc_info=True,
+            "The credential was written but a superseded copy of the previous one "
+            "could not be confirmed removed.",
         )
+        return MutationResult(MUTATION_UNCERTAIN, "superseded_copy")
+    except concurrent.futures.TimeoutError:
+        # Still inside the backend. It may complete after this returns, so
+        # the newest desired state has to be the one that should survive:
+        # the proven previous value for a set, and absence for a delete,
+        # which is what was asked for anyway.
+        logger.warning("OS credential mutation did not answer within its timeout.")
+        survivor = restore_to if value is not None else None
+        cleanup_generation = generation
         if value is not None:
-            # A failed/timed-out save is not owned by JARVIS. Make absence
-            # the newest desired state and enqueue a cleanup behind the late
-            # operation. If the first worker is still alive it also observes
-            # this generation and performs the same idempotent cleanup.
-            cleanup_generation = _record_desired(username, None)
-            executor.submit(
-                _mutation_worker, keyring, username, cleanup_generation, None,
-            )
-        return False
+            reconcile = _record_desired_if_latest(username, generation, restore_to)
+            if reconcile is not None:
+                cleanup_generation = reconcile
+                _enter_mutation(username)
+                try:
+                    executor.submit(
+                        _mutation_worker, keyring, username, reconcile, restore_to,
+                    )
+                except BaseException:
+                    _leave_mutation(username)
+        # Queued behind whatever is still running on this single-worker
+        # executor, so the superseded copy is cleared once the late write
+        # and its reconciliation have settled. Carrying the generation lets
+        # the discard notice it has been overtaken and aim at what is
+        # actually meant to be there by the time it runs.
+        _queue_discard(executor, keyring, username, cleanup_generation, survivor)
+        return MutationResult(MUTATION_UNCERTAIN, "timed_out")
+    except BaseException as exc:
+        # Class name only, and deliberately no traceback. _run_isolated
+        # above already refuses to log str(exc) because a backend
+        # exception may quote the value it was asked to store; exc_info
+        # renders exactly that string, so it was the same leak by another
+        # route. What is lost is a stack through keyring internals; what
+        # is kept is the contract that a credential value never reaches a
+        # log file.
+        logger.warning("OS credential mutation failed: %s", type(exc).__name__)
+        # An exception is not a postcondition. The pinned backend's
+        # `set_password` performs two writes and its `delete_password` up to
+        # two deletes, so either can mutate the store and *then* raise — the
+        # earlier code assumed the opposite, called that "nothing was
+        # changed", and skipped the reconciliation, which left a
+        # half-applied replacement standing.
+        #
+        # So: put the intended state back on the desired list, then go and
+        # look. Only what the store actually reads back may be reported.
+        #
+        # **The answer to that request is load-bearing and must be read.**
+        # `None` means a newer request for this same credential already
+        # stands, and this one has no claim on the entry any more. Ignoring
+        # it — while the next statement queued a reconciliation that minted
+        # its own newest generation — is how an older *failed* save came to
+        # overwrite a newer one that had already reported success.
+        survivor = restore_to if value is not None else None
+        reconcile = _record_desired_if_latest(username, generation, survivor)
+        cleanup_generation = generation if reconcile is None else reconcile
+
+        reached, current = _read(username)
+        settled = _discard_superseded(
+            keyring, username,
+            _cleanup_survivor(username, cleanup_generation, survivor),
+        ) if reached else False
+        # Compared against what was observed *before* the attempt, not
+        # against the value it was meant to converge to: for a removal those
+        # are different, and only the first can prove nothing happened.
+        unchanged = (
+            reached
+            and settled
+            and baseline_known
+            and current == baseline
+            and not _pending_mutations(username)
+        )
+        if unchanged:
+            return MutationResult(MUTATION_UNCHANGED, "backend_refused")
+
+        if reconcile is None:
+            # Superseded. Whatever this write did or did not do, the entry
+            # belongs to a later request now, and driving it back to this
+            # one's previous value would undo something the user has already
+            # been told happened. The only cleanup left is the discard,
+            # which never writes the plain target and aims at the newest
+            # intent — so it cannot undo the request that overtook this one.
+            _queue_discard(executor, keyring, username, generation, survivor)
+            return MutationResult(MUTATION_UNCERTAIN, MUTATION_REASON_SUPERSEDED)
+
+        # The store may have moved. Recording a desired value is not
+        # restoring one — a worker has to apply it — so enqueue that now
+        # rather than hoping something else picks it up, under the
+        # generation that was just accepted rather than a fresh one.
+        _queue_reconciliation(executor, keyring, username, reconcile, survivor)
+        return MutationResult(
+            MUTATION_UNCERTAIN, "partially_applied" if reached else "unverifiable",
+        )
     finally:
         executor.shutdown(wait=False)
+
+
+def _mutate(username: str, value: Optional[str]) -> bool:
+    return _mutate_detailed(username, value).ok
 
 
 def _set(username: str, value: str) -> bool:
@@ -252,6 +748,48 @@ def clear_stored_api_key() -> bool:
     either way (already-absent counts as success), False only if the
     store genuinely could not be reached."""
     return _clear(USERNAME)
+
+
+def set_stored_api_key_detailed(value: str) -> MutationResult:
+    """`set_stored_api_key` with the reason attached.
+
+    For app/core/ai/credential_pair.py, which has to tell the user whether
+    the previous key is still there. "Could not save it, and nothing was
+    changed" and "could not confirm the save, and the previous key is being
+    put back" are different situations with different next steps.
+    """
+    return _mutate_detailed(USERNAME, value)
+
+
+def clear_stored_api_key_detailed() -> MutationResult:
+    """`clear_stored_api_key` with the reason attached — see above.
+
+    A removal that timed out is the case that matters here: the delete may
+    complete after the response is written, so the removal must not be
+    reported as having changed nothing.
+    """
+    return _mutate_detailed(USERNAME, None)
+
+
+def stored_api_key_snapshot() -> Tuple[bool, str]:
+    """``(store_reached, value)`` for the Anthropic key.
+
+    For **rollback only** — see app/core/ai/credential_pair.py. Saving a
+    key writes two stores (this one and the preferences file), and the
+    second write can fail, so the first has to be undoable. Undoing it
+    needs the previous value, and it needs to know whether that value was
+    actually observed.
+
+    That second half is the point of returning a pair rather than a
+    string. get_stored_api_key() answers "" both for "there is no key" and
+    for "the store could not be reached", and a rollback that treats the
+    second as the first would *delete* a key it simply could not read.
+
+    The value is held in memory for the length of one request and never
+    logged, echoed, returned by an endpoint or written anywhere but back
+    into this same store.
+    """
+    return _read(USERNAME)
 
 
 # ---------------------------------------------------------------------------
