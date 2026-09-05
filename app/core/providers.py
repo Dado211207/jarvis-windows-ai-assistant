@@ -161,6 +161,12 @@ _NEGATIVE_STATES = (CREDENTIAL_FAILED, CREDENTIAL_UNFUNDED)
 # rejected credential as working, and it cannot report a working one as
 # rejected without a provider having said so about that exact pair.
 # ---------------------------------------------------------------------------
+#: How long the failure path will wait for the coordinator before giving up
+#: and recording nothing. Short on purpose: this runs after a request has
+#: already failed, and a rejection that cannot be attributed safely is better
+#: dropped than guessed at — a real one recurs on the next request.
+DOWNGRADE_WAIT_SECONDS = 5.0
+
 _runtime_downgrade_lock = threading.Lock()
 _runtime_downgrade: Optional[str] = None
 #: Which credential revision `_runtime_downgrade` describes. Never a key,
@@ -274,33 +280,72 @@ def note_runtime_failure(provider: str, category, credential_revision: int = -1)
         else:
             return
 
+        from app.core.ai import credential_transaction as coordinator
         from app.core.ai import credential_view
         from app.core.preferences import get as get_preference
         from app.core.preferences import store_many as store_preferences
 
-        # The credential this rejection is about must still be the one that
-        # is stored. Checked before anything is written, because both the
-        # preference and the process-local note would otherwise describe a
-        # credential the user has already replaced.
+        # A cheap early-out, and *only* that. It can end in a skip and never
+        # in a write, so an answer that goes stale between here and the gate
+        # costs nothing. Its job is to keep an obviously-delayed failure from
+        # queueing behind a credential change it is going to be discarded by
+        # anyway.
         if credential_revision != credential_view.current_revision():
             logger.info(
                 "Ignoring a provider rejection for a credential that is no longer stored.",
             )
             return
 
-        # Held in this process first, so the observation applies even if
-        # nothing below can be written. See the block above for why.
-        _remember_runtime_downgrade(downgraded, credential_revision)
+        try:
+            with coordinator.pair_state_gate(DOWNGRADE_WAIT_SECONDS):
+                # **The check that authorises the write, made while holding
+                # the gate that keeps it true.** Checking before the gate and
+                # writing after it is what this replaces: a save could commit
+                # in between, and the rejection of the key it replaced was
+                # then written over the key that replaced it —
+                #
+                #     revision_after_new_save        1
+                #     state_before_old_failure       verified
+                #     persisted_state_after_failure  verification_failed
+                #
+                # The process-local note stayed correctly revision-scoped;
+                # the persisted preference did not, and the next snapshot
+                # read it back and handed it to the new revision.
+                if credential_revision != credential_view.current_revision():
+                    logger.info(
+                        "Ignoring a provider rejection for a credential that was "
+                        "replaced while the rejection was being recorded.",
+                    )
+                    return
 
-        if (get_preference(VERIFICATION_PREFERENCE) or "").strip() == downgraded:
-            return  # already says this; a rewrite would only churn the file
-        if not store_preferences({VERIFICATION_PREFERENCE: downgraded}):
-            logger.warning(
-                "Could not write the Anthropic credential downgrade to this PC's settings. "
-                "It applies for this session and will not survive a restart.",
+                # Held in this process first, so the observation applies even
+                # if nothing below can be written.
+                _remember_runtime_downgrade(downgraded, credential_revision)
+
+                if (get_preference(VERIFICATION_PREFERENCE) or "").strip() == downgraded:
+                    return  # already says this; a rewrite would only churn the file
+                if not store_preferences({VERIFICATION_PREFERENCE: downgraded}):
+                    logger.warning(
+                        "Could not write the Anthropic credential downgrade to this PC's "
+                        "settings. It applies for this session and will not survive a restart.",
+                    )
+                    return
+                logger.info(
+                    "Anthropic credential state downgraded to %s after a live rejection.",
+                    downgraded,
+                )
+        except coordinator.TransactionBusy:
+            # A credential change is running, so what is stored is being
+            # decided right now and this rejection may be about either side
+            # of it. Recording nothing is the only truthful option; a real
+            # rejection of whatever ends up stored recurs on the next
+            # request, which is how this path has always been expected to
+            # converge.
+            logger.info(
+                "A credential change is in progress; a provider rejection was not "
+                "recorded against it.",
             )
             return
-        logger.info("Anthropic credential state downgraded to %s after a live rejection.", downgraded)
     except Exception as exc:  # noqa: BLE001 — bookkeeping must never break a request
         logger.warning("Could not record the provider's runtime rejection. %s", describe(exc))
 

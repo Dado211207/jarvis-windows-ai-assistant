@@ -134,6 +134,26 @@ separate safe Coding Workspace for the owner's own repositories.
   reported as such rather than counted as detection. Same lesson as the
   clap flake: a phase is not a receipt, so wait for the evidence and not
   for the thread that will produce it.
+- An **eighth** review found a time-of-check/time-of-use defect inside the
+  round-7 correction itself. `note_runtime_failure()` compared the expected
+  credential revision, then wrote the runtime note and the persisted
+  verification preference, with nothing holding the coordinator across the
+  two. A Save completing in that window left the comparison already made
+  against a number that had stopped being true, so a rejection of the
+  previous key wrote `verification_failed` over the credential that
+  replaced it (`persisted_state_after_failure verification_failed` against
+  a stored `NEW-KEY` / `wrkspc_NEW`). The process-local note stayed
+  correctly revision-scoped; the preference did not.
+  `credential_transaction.pair_state_gate()` now holds the gate for the
+  whole check-and-write **without minting a transaction**, because a
+  verification-state change describes the same pair and must not advance
+  the credential-identity revision — advancing it would make every
+  legitimate current rejection look stale, which is the same defect
+  inverted. A bounded wait that runs out records nothing.
+  `credential_view._build()` also stopped hard-coding `readable=True`: it
+  now carries `credentials.stored_api_key_snapshot()`'s `(reached, value)`,
+  so "no key" and "this machine could not be read" are distinguishable, and
+  `ANTHROPIC_API_KEY` precedence is explicit.
 - State: awaiting a further independent review. Nothing installed, merged,
   tagged, released or deployed. **All installer evidence from every previous
   head is superseded** — each corrective commit changes runtime,

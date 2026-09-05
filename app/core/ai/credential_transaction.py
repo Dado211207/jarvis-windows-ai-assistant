@@ -199,17 +199,11 @@ def begin(kind: str, wait: float = None):
 
 
 @contextlib.contextmanager
-def read_gate(wait: float = None):
-    """Hold the gate without minting a transaction.
+def _hold(kind: str, wait: float = None):
+    """Hold the gate without minting a transaction or moving the revision.
 
-    For a reader that needs both stores to describe the same credential.
-    It deliberately does **not** advance the revision: a read changes
-    nothing, and a revision that moved on every read would mean no snapshot
-    was ever reusable and every provider failure looked stale.
-
-    Raises `TransactionBusy` if the wait runs out, exactly as `begin()`
-    does. A reader that cannot get in has a coherent older snapshot to fall
-    back on; it must never assemble one out of two separate reads.
+    The shared body of `read_gate()` and `pair_state_gate()`. Both need
+    mutual exclusion against a credential change; neither is one.
     """
     global _waiting
 
@@ -224,11 +218,61 @@ def read_gate(wait: float = None):
             _waiting -= 1
             _state.notify_all()
     if not acquired:
-        raise TransactionBusy("read")
+        raise TransactionBusy(kind)
     try:
         yield
     finally:
         _gate.release()
+
+
+@contextlib.contextmanager
+def read_gate(wait: float = None):
+    """Hold the gate without minting a transaction.
+
+    For a reader that needs both stores to describe the same credential.
+    It deliberately does **not** advance the revision: a read changes
+    nothing, and a revision that moved on every read would mean no snapshot
+    was ever reusable and every provider failure looked stale.
+
+    Raises `TransactionBusy` if the wait runs out, exactly as `begin()`
+    does. A reader that cannot get in has a coherent older snapshot to fall
+    back on; it must never assemble one out of two separate reads.
+    """
+    with _hold("read", wait):
+        yield
+
+
+@contextlib.contextmanager
+def pair_state_gate(wait: float = None):
+    """Hold the gate to change how the stored pair is *described*.
+
+    **The rule this encodes.** The revision identifies *which credential
+    pair is stored* — the key and its Workspace ID together. It advances
+    when a transaction changes that pair, because afterwards it is a
+    different credential. A verification-state change describes the **same**
+    pair differently: the key has not moved, only what was last observed
+    about it. So this gate deliberately does not mint a transaction and does
+    not advance the revision.
+
+    Using `begin()` here would be a defect with a plausible shape. It would
+    increment the revision *before* the expected one could be checked, so
+    every legitimate rejection of the current credential would compare
+    against a number that had already moved and be discarded as stale — the
+    exact opposite failure to the one being fixed, and a silent one: nothing
+    would ever be downgraded again.
+
+    What it does provide is mutual exclusion against `save()` and `clear()`
+    for the whole check-and-write, which is what
+    `providers.note_runtime_failure()` needs. Validating the revision and
+    then writing outside the gate let a save commit in between, and the
+    rejection of the replaced key landed on the key that replaced it.
+
+    Nothing unbounded may run inside it, and in particular no Anthropic
+    request: the provider call that produced the failure has already
+    finished by the time this is taken.
+    """
+    with _hold("verification-state", wait):
+        yield
 
 
 def pair_revision() -> int:

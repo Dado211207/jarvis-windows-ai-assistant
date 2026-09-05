@@ -121,20 +121,56 @@ def invalidate() -> None:
 
 
 def _build(revision: int) -> CredentialPair:
-    """Read both stores. Only ever called while the gate is held."""
+    """Read both stores. Only ever called while the gate is held.
+
+    **`readable` is established, not assumed.** It used to be hard-coded
+    `True` while the field above promised it distinguished "there is no
+    key" from "this machine's credential store could not be read" — a
+    claim the code did not keep, and the same species of defect as the
+    docstrings corrected in rounds 5 and 7. `settings.effective_api_key`
+    cannot make that distinction either: it answers `""` for both.
+
+    `credentials.stored_api_key_snapshot()` already returns the
+    `(store_reached, value)` pair the uninstaller relies on for exactly
+    this reason — collapsing the two there would delete a data folder
+    while a secret still existed — so the fact was available all along and
+    only needed carrying.
+
+    **Precedence is not reimplemented here.** `settings.effective_api_key`
+    remains the one place that decides `ANTHROPIC_API_KEY` beats the
+    credential store; duplicating that ordering in a second module is how
+    the two would eventually disagree. The value still comes from it.
+
+    The reachability question is asked **only when the answer is
+    ambiguous** — that is, only when no key came back at all. A key that
+    arrived is itself proof the store answered, and when the environment
+    supplies one the store is never consulted, so neither case needs a
+    second look. The extra read therefore happens only when nothing is
+    configured: there is no credential to race over then, and no request
+    will be made with one, so round 7's "one store read per request" holds
+    exactly where it matters.
+    """
     from app.config import settings
     from app.core.ai.workspace import PREFERENCE_KEY as WORKSPACE_PREFERENCE
     from app.core.preferences import get as get_preference
     from app.core.providers import VERIFICATION_PREFERENCE
 
     key = settings.effective_api_key or ""
+    if key.strip():
+        readable = True
+    else:
+        from app.core.credentials import stored_api_key_snapshot
+
+        readable = bool(stored_api_key_snapshot()[0])
+
     return CredentialPair(
         revision=revision,
         api_key=key,
         workspace_id=(get_preference(WORKSPACE_PREFERENCE) or "").strip(),
         state=(get_preference(VERIFICATION_PREFERENCE) or "").strip(),
-        configured=bool(key.strip()),
-        readable=True,
+        # An unreadable store is not evidence that no key is configured.
+        configured=bool(key.strip()) and readable,
+        readable=readable,
     )
 
 

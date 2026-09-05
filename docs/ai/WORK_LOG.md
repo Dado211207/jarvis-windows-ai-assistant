@@ -707,6 +707,119 @@ normal for tests of a new component and is reported as such rather than
 counted as detection, which is the whole point of separating the two
 numbers.
 
+## Independent review, eighth pass — the gap between the check and the write
+
+Round 7 gave every request the revision of the pair it was built with and
+made a rejection carrying a stale revision be discarded. That fixed
+*attribution*. The eighth review found it had not made the decision and
+the write one act.
+
+### The defect
+
+`note_runtime_failure()` read the current revision, compared it, and then
+wrote — with nothing holding the coordinator across the two:
+
+    if credential_revision != credential_view.current_revision():   # read
+        return
+    _remember_runtime_downgrade(...)                                # write
+    store_preferences({VERIFICATION_PREFERENCE: downgraded})        # write
+
+A Save can complete in that window. The comparison has already been made,
+against a number that was true when it was read and is not true when it is
+used, so it still passes — and the rejection of the *previous* key writes
+`verification_failed` over the credential that replaced it. Reproduced on
+the unmodified head by pausing inside the revision check itself:
+
+    in_flight_revision              0
+    new_save_outcome                applied
+    revision_after_new_save         1
+    state_before_old_failure_resumes verified
+    current_key                     NEW-KEY
+    current_workspace               wrkspc_NEW
+    persisted_state_after_failure   verification_failed
+    reported_state_after_failure    verification_failed
+    runtime_note_for_new_revision   None
+
+The last line is round 7 working: the process-local note stayed correctly
+revision-scoped. The persisted preference did not, and the next
+`credential_view.current()` reads it back and hands it to the new revision.
+
+**Why round 7's own test missed it.** It ran the whole Save and *then*
+called `note_runtime_failure()`, so the first comparison already saw the
+new revision and rejected the stale failure. The window was never entered.
+Catching this needs a pause inside the check — the same lesson as round 7
+section 7, one layer further in: a test that never reaches the window
+proves nothing about the window.
+
+### The rule, decided before the code
+
+**The revision identifies which credential pair is stored** — the key and
+its Workspace ID together. It advances when a transaction changes that
+pair, because afterwards it is a different credential. A verification-state
+change describes the *same* pair differently: only what was last observed
+about it has moved. So it must **not** advance the revision.
+
+That rule is what makes the obvious implementation wrong. Wrapping the
+downgrade in `begin()` would increment the revision *before* the expected
+one could be checked, so every legitimate rejection of the current
+credential would compare against a number that had already moved and be
+discarded as stale — the opposite failure, and a silent one: nothing would
+ever be downgraded again. `test_two_rejections_of_the_same_credential_are_
+both_honoured` and the three `PROVIDER_AUTH`/`WORKSPACE_REQUIRED`/`BILLING`
+cases exist to catch exactly that.
+
+### The correction
+
+`credential_transaction.pair_state_gate()` holds the gate without minting a
+transaction and without moving the revision — `read_gate()`'s mechanism,
+named for a different purpose, both now sharing `_hold()`.
+`note_runtime_failure()` takes it, then re-validates the revision **while
+holding it**, and only then writes the runtime note and the preference.
+
+The pre-gate comparison is kept as a cheap early-out and documented as
+nothing more: it can only end in a skip, never in a write, so an answer
+that goes stale between it and the gate costs nothing.
+
+The wait is bounded (`DOWNGRADE_WAIT_SECONDS = 5.0`) and running out of it
+records **nothing**: a credential change is in progress, what is stored is
+being decided right now, and a rejection that cannot be attributed safely
+is better dropped than guessed at. A real rejection of whatever ends up
+stored recurs on the next request. No network call happens under the gate —
+the provider request that produced the failure finished before this runs.
+
+Lock order is unchanged: `_gate` then `_runtime_downgrade_lock`, which is
+already the order `credential_pair.save()` takes them in through
+`clear_runtime_downgrade()`, so there is no inversion to create.
+
+### `_build()` claimed a fact it had not established
+
+Audited in the same pass. `CredentialPair.readable` is documented as
+"False when the credential store could not be read coherently at all —
+distinct from 'there is no key'", and `_build()` hard-coded it `True`.
+`settings.effective_api_key` cannot tell the two apart either: it answers
+`""` for both.
+
+The fact was already available. `credentials.stored_api_key_snapshot()`
+returns `(store_reached, value)` — the pair the uninstaller depends on for
+this very reason, since collapsing them there would delete a data folder
+while a secret still existed. `_build()` now carries it, and
+`configured` is no longer set from an unreadable store: not being able to
+read is not evidence that nothing is stored.
+
+Environment precedence is now explicit rather than inherited. When
+`ANTHROPIC_API_KEY` is set it wins and the credential store is not consulted
+at all, so `readable` is true because the question never arose — proven by
+a test that makes `stored_api_key_snapshot` raise if it is called.
+
+### Verification
+
+**4 of 14 new tests fail on the unmodified `fdef269`**, all on substantive
+assertions and none on an import: the TOCTOU itself, the Save window, the
+Remove window, and the `readable` claim. The other ten pass on both heads —
+they are the guards that the correction must not break, including the three
+category cases and the two-rejections-of-one-key case that would catch a
+revision that moved when it should not have.
+
 ## The owner's current installation must not be patched manually
 
 The installed build predates this fix. Do **not** hand-edit files under the
