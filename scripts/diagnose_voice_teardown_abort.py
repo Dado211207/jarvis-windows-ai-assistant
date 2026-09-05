@@ -77,6 +77,32 @@ PHRASES = (
 
 WORKER_TIMEOUT_SECONDS = 180
 
+#: The exact suite combination that was observed to abort, recorded so
+#: this aims at the conditions the failure actually appeared in. A bare
+#: synthesise workload did not reproduce it in 12/12 iterations, so the
+#: trigger is something pytest brings — collection, fixtures, threads, or
+#: another suite's teardown running alongside the voice one.
+PYTEST_SUITES = (
+    "tests/test_preferences_concurrency.py",
+    "tests/test_settings_diagnostics_pages.py",
+    "tests/test_provider_selection.py",
+    "tests/test_tts.py",
+    "tests/test_voice_output.py",
+)
+
+#: A pytest plugin, written to a temp file, that releases the session at
+#: session finish. Injected with `-p` so the repository's own conftest is
+#: untouched and an ordinary run is completely unaffected.
+_RELEASE_PLUGIN = """
+def pytest_sessionfinish(session, exitstatus):
+    try:
+        from app.voice.kokoro import engine as kokoro_engine
+        kokoro_engine.engine.unload()
+        print("\\n[release-plugin] released the Kokoro session at session finish")
+    except Exception as exc:
+        print(f"\\n[release-plugin] could not release: {exc.__class__.__name__}")
+"""
+
 SIGABRT_EXIT_CODES = {-6, 134}
 
 
@@ -120,7 +146,16 @@ def _worker(arm: str) -> int:
     return 0
 
 
-def _run_iteration(arm: str, index: int) -> dict:
+def _pytest_command(arm: str, plugin_dir: Path) -> list:
+    """The real pytest invocation, optionally with the release plugin."""
+    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly", *PYTEST_SUITES]
+    if arm == "unload":
+        command[3:3] = ["-p", "release_kokoro"]
+    return command
+
+
+def _run_iteration(arm: str, index: int, via_pytest: bool = False,
+                   plugin_dir: Path = None) -> dict:
     """One fresh subprocess. Returns what happened; never raises."""
     environment = dict(os.environ)
     environment["JARVIS_LOG_LEVEL"] = "WARNING"
@@ -130,8 +165,15 @@ def _run_iteration(arm: str, index: int) -> dict:
 
     started = time.monotonic()
     try:
+        if via_pytest:
+            command = _pytest_command(arm, plugin_dir)
+            environment["PYTHONPATH"] = (
+                str(plugin_dir) + os.pathsep + environment.get("PYTHONPATH", "")
+            )
+        else:
+            command = [sys.executable, str(Path(__file__).resolve()), "--worker", arm]
         completed = subprocess.run(  # noqa: S603 — argv list, shell=False
-            [sys.executable, str(Path(__file__).resolve()), "--worker", arm],
+            command,
             cwd=str(REPO_ROOT),
             env=environment,
             capture_output=True,
@@ -171,6 +213,9 @@ def main() -> int:
     parser.add_argument("--worker", default="", help=argparse.SUPPRESS)
     parser.add_argument("--iterations", type=int, default=12)
     parser.add_argument("--out", default="")
+    parser.add_argument("--via-pytest", action="store_true",
+                        help="drive the real suite combination that was observed to "
+                             "abort, instead of a synthetic workload")
     args = parser.parse_args()
 
     if args.worker:
@@ -186,12 +231,18 @@ def main() -> int:
         print("NOT RUN: nothing to measure without onnxruntime.")
         return 0
     print(f"iterations  : {args.iterations} per arm, each in a fresh subprocess")
+    print(f"workload    : {'real pytest suites' if args.via_pytest else 'synthetic synthesise'}")
+    if args.via_pytest:
+        print(f"suites      : {' '.join(PYTEST_SUITES)}")
     print()
+
+    plugin_dir = Path(tempfile.mkdtemp(prefix="jarvis_release_plugin_"))
+    (plugin_dir / "release_kokoro.py").write_text(_RELEASE_PLUGIN, encoding="utf-8")
 
     records = []
     for arm in ("baseline", "unload"):
         for index in range(args.iterations):
-            record = _run_iteration(arm, index)
+            record = _run_iteration(arm, index, args.via_pytest, plugin_dir)
             records.append(record)
             flag = "ABORT" if record["aborted"] else ("BROKEN" if record["broken"] else "ok    ")
             print(
