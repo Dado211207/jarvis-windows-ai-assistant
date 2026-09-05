@@ -624,6 +624,89 @@ sees it. Verified by temporarily reinstating the fast path, at which point
 it fails with the stale key (`- sk-ant-api03-NEW-key-just-saved / +
 sk-ant-api03-OLD-key-in-flight`) while the other nine still pass.
 
+### 7. The reproduction test did not reproduce anything
+
+Found in the final verification pass of this round, by re-running the new
+tests against the pre-fix head instead of trusting the number recorded
+when they were written. **The headline test for blocker 1 passed against
+the code it was written to convict.**
+
+`test_a_reader_never_sees_one_requests_key_with_another_requests_workspace`
+parks a save between its two stores, starts a reader on another thread,
+and then releases the save. `Thread.start()` returns as soon as the thread
+exists — nothing made the reader's *read* land inside the paused window.
+On this machine it lost that race every time: it read after the save
+completed, saw a coherent NEW/NEW pair, and passed. The defect was real
+the whole time; reading on the main thread inside the window shows it
+immediately:
+
+    store credential at pause : NEW
+    store workspace at pause  : OLD
+    reader observed key       : NEW
+    reader observed workspace : NEW      <- read after the release
+    mixed_pair                : False
+
+    (read strictly inside the window)
+    reader observed key       : NEW
+    reader observed workspace : OLD
+    mixed_pair                : True
+
+This is the repository's own clap-flake lesson in a second place: *a phase
+is not a receipt*. `state === "calibrating"` did not mean a microphone was
+open, and a started thread does not mean a read has happened. Both times
+the test waited for the thing that would produce the evidence rather than
+for the evidence.
+
+Auditing the rest of the round's tests the same way found two more of the
+same species, both fixed here:
+
+* `test_the_status_endpoint_never_reports_a_mixed_pair` read through
+  `credential_view.current()`, which does not exist on the pre-fix head —
+  so it "failed" there with an `ImportError`. A module that has not been
+  written yet is not evidence that a defect was detected. It now drives
+  the real `GET /settings/api-key-status`, which exists on both heads and
+  reports `configured=True workspace_configured=False` on the old one.
+* **Blocker 2 had no reproduction that could run on the code it was
+  about.** `test_a_delayed_failure_from_the_old_key_does_not_downgrade_
+  the_new_one` captures a snapshot and attributes the failure to its
+  revision — both introduced by this round — so it stopped at the same
+  `ImportError`. `test_a_delayed_rejection_that_names_no_credential_
+  downgrades_nothing` now makes the two-positional-argument call the old
+  code made, which is the whole difference: the old code downgraded
+  whatever was stored when the rejection landed, the new code discards a
+  rejection naming no credential. On `67f0205` it convicts with
+  `verification_failed` where `verified` is required.
+
+`test_credential_request_ordering.py` was audited the same way and needed
+nothing: all six of its pre-fix failures are substantive assertions.
+
+`_reader_can_no_longer_see_the_finished_save()` is the fix: it blocks
+until releasing the save can no longer change what the reader saw, and the
+two ways that becomes true are exactly the difference under test — before
+the correction the read is ungated and simply completes (`finished`);
+after it the reader parks on the read gate before touching a store
+(`wait_for_waiters(1, …)`, which already existed for this purpose and
+which `read_gate` already participates in). No production code changed, no
+sleep, and no timeout used as a positive signal.
+
+Verified in both directions, 25 runs each: at `7964947` all 19 round-7
+tests pass 25/25; at `67f0205` both reproductions convict 25/25, with
+
+    a reader was given one request's key with another request's Workspace ID:
+    key=NEW workspace=OLD
+
+    the status endpoint described a key from one request and a workspace from
+    another: configured=True workspace_configured=False
+
+The round's failing-first figure was re-measured rather than quoted, with
+the final test files run against `67f0205` and *its own* `conftest.py`.
+**17 of 20 fail there — and 11 of those 17 are substantive assertions.**
+The other six cannot be anything else: they test `credential_view`, which
+the correction introduces, so they stop at an `ImportError`. That is
+normal for tests of a new component and is reported as such rather than
+counted as detection, which is the whole point of separating the two
+numbers.
+
 ## The owner's current installation must not be patched manually
 
 The installed build predates this fix. Do **not** hand-edit files under the

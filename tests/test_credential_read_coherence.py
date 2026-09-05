@@ -56,6 +56,7 @@ import pytest
 
 from tests.test_credential_backend_targets import _WindowsLikeKeyring, _install
 from tests.test_credential_pair_transaction import (
+    _coordinator,
     _InAnotherThread,
     _Preferences,
     _metadata_keys,
@@ -132,6 +133,53 @@ class _PausedBetweenStores:
         self.release.set()
 
 
+def _reader_can_no_longer_see_the_finished_save(reader):
+    """Block until releasing the paused save cannot change what *reader* saw.
+
+    Starting the reader's thread is **not** that point. `Thread.start()`
+    returns as soon as the thread exists; whether its read lands inside the
+    paused window or after the release is then a scheduling race, and on
+    this machine it reliably lost — the reader read the completed NEW/NEW
+    pair and the test passed against the very code it was written to
+    convict. This is the repository's own clap-flake lesson in a second
+    place: *a phase is not a receipt*, and the fix is to wait for the thing
+    actually being asserted on rather than for the thread that will produce
+    it.
+
+    Exactly one of two things has to be true, and which one is itself the
+    difference the test is about:
+
+    * **Before the correction** nothing gates the read, so it simply runs to
+      completion inside the window — `finished` is the signal, and what it
+      observed is the mixed pair.
+    * **After it** the reader parks on the coordinator's read gate before
+      touching either store, so it cannot complete until released —
+      `wait_for_waiters` is the signal, and parking is the whole mechanism.
+
+    Both are edge-triggered facts published by something other than this
+    test, and past either one the release below cannot be what the reader
+    saw. No sleep, and no timeout used as a positive signal.
+    """
+    settled = threading.Event()
+    coordinator = _coordinator()
+
+    def _completed():
+        if reader.finished.wait(JOIN_TIMEOUT):
+            settled.set()
+
+    def _parked():
+        if coordinator is not None and coordinator.wait_for_waiters(1, JOIN_TIMEOUT):
+            settled.set()
+
+    for watch in (_completed, _parked):
+        threading.Thread(target=watch, name="barrier", daemon=True).start()
+
+    assert settled.wait(JOIN_TIMEOUT), (
+        "the reader neither finished nor parked on the read gate, so nothing here "
+        "can say whether it read inside the paused window"
+    )
+
+
 def _seed_previous_pair(fake, preferences, credentials):
     fake.seed(credentials.SERVICE_NAME, credentials.USERNAME, OLD_KEY)
     workspace_key, state_key = _metadata_keys()
@@ -175,6 +223,7 @@ def test_a_reader_never_sees_one_requests_key_with_another_requests_workspace(mo
     # reader on the main thread would deadlock against a save only this
     # test can release.
     reader = _InAnotherThread(_observed_pair, "chat-request").start()
+    _reader_can_no_longer_see_the_finished_save(reader)
     paused.let_it_finish()
     observed_key, observed_workspace = reader.join()
     outcome = saver.join()
@@ -193,15 +242,34 @@ def test_a_reader_never_sees_one_requests_key_with_another_requests_workspace(mo
     )
 
 
-def test_the_status_endpoint_never_reports_a_mixed_pair(monkeypatch):
+@pytest.fixture
+def client():
+    from fastapi.testclient import TestClient
+
+    from app.api.server import app as jarvis_app
+    from tests.conftest import prime_session
+
+    with TestClient(jarvis_app, raise_server_exceptions=True) as started:
+        yield prime_session(started)
+
+
+def test_the_status_endpoint_never_reports_a_mixed_pair(monkeypatch, client):
     """`GET /settings/api-key-status` reads the same two stores separately.
 
     It reports booleans rather than values, so the visible damage is
     smaller — but "configured" and "workspace_configured" still have to
     describe the same credential.
+
+    Driven through the **real endpoint** rather than through
+    `credential_view.current()`. Reading the view would test the corrected
+    component against itself, and on the source this was written against
+    the view does not exist at all — so the test would have "failed" there
+    with an `ImportError`, which is not evidence that it detects anything.
+    The endpoint exists on both, so the same request convicts one and
+    passes on the other.
     """
     from app.core import credentials
-    from app.core.ai import credential_pair, credential_view
+    from app.core.ai import credential_pair
 
     fake = _install(monkeypatch, _WindowsLikeKeyring())
     preferences = _Preferences()
@@ -217,19 +285,20 @@ def test_the_status_endpoint_never_reports_a_mixed_pair(monkeypatch):
     ).start()
     paused.wait_until_reached()
 
-    reader = _InAnotherThread(
-        lambda: (lambda snap: (snap.configured, bool(snap.workspace_id)))(
-            credential_view.current()
-        ),
-        "status-request",
-    ).start()
+    def _ask_the_endpoint():
+        body = client.get("/settings/api-key-status").json()
+        return bool(body["configured"]), bool(body["workspace_configured"])
+
+    reader = _InAnotherThread(_ask_the_endpoint, "status-request").start()
+    _reader_can_no_longer_see_the_finished_save(reader)
     paused.let_it_finish()
     observed = reader.join()
     saver.join()
     settle()
 
     assert observed in ((False, False), (True, True)), (
-        "the status endpoint described a key from one request and a workspace from another"
+        "the status endpoint described a key from one request and a workspace from "
+        f"another: configured={observed[0]} workspace_configured={observed[1]}"
     )
 
 
@@ -351,6 +420,19 @@ def _fail_with(revision, category=None):
     )
 
 
+def _fail_the_old_way(category=None):
+    """One provider failure, called exactly as the pre-fix source called it.
+
+    Two positional arguments and no identity — the signature both failure
+    paths used before this round. It exists so blocker 2 has a reproduction
+    that runs on the source it is about.
+    """
+    from app.core.errors import ErrorCategory
+    from app.core.providers import note_runtime_failure
+
+    note_runtime_failure("anthropic", category or ErrorCategory.PROVIDER_AUTH)
+
+
 def test_a_delayed_failure_from_the_old_key_does_not_downgrade_the_new_one(monkeypatch):
     """The reported ordering, end to end."""
     from app.core import credentials
@@ -381,6 +463,45 @@ def test_a_delayed_failure_from_the_old_key_does_not_downgrade_the_new_one(monke
     workspace_key, state_key = _metadata_keys()
     assert preferences.get(state_key) == "verified"
     assert preferences.get(workspace_key) == NEW_WORKSPACE
+
+
+def test_a_delayed_rejection_that_names_no_credential_downgrades_nothing(monkeypatch):
+    """Blocker 2 again, in the vocabulary the pre-fix source actually had.
+
+    The test above captures a snapshot and attributes the failure to its
+    revision — both things this round introduces — so on `67f0205` it stops
+    at an `ImportError`. A module that does not exist yet is not evidence
+    that a defect was detected, and quoting it as though it were is the
+    same error as the one section 7 of the pull request describes.
+
+    This one makes the two-positional-argument call the old code made, and
+    the difference is the whole correction: the old code downgraded
+    whatever was stored *now*, so the newly saved key was marked
+    `verification_failed` by the previous key's rejection; the new code
+    discards a rejection that names no credential, because `-1` matches no
+    revision.
+    """
+    from app.core import credentials
+    from app.core.ai import credential_pair
+
+    fake = _install(monkeypatch, _WindowsLikeKeyring())
+    preferences = _Preferences()
+    _wired(monkeypatch, preferences)
+    _seed_previous_pair(fake, preferences, credentials)
+
+    assert credential_pair.save(NEW_KEY, NEW_WORKSPACE, "verified").ok
+    settle()
+    assert _current_state() == "verified"
+
+    _fail_the_old_way()
+
+    _, state_key = _metadata_keys()
+    assert _current_state() == "verified", (
+        "a rejection carrying no credential identity downgraded the key that is "
+        "stored; an unattributed failure must downgrade nothing rather than "
+        "downgrade blindly"
+    )
+    assert preferences.get(state_key) == "verified"
 
 
 def test_a_rejection_of_the_current_credential_still_downgrades_it(monkeypatch):

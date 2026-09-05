@@ -118,6 +118,22 @@ separate safe Coding Workspace for the owner's own repositories.
   ordering intent **before** its Anthropic verification, so two requests
   that verify out of order cannot land out of order; and the busy outcome
   no longer asserts `stored`/`consistent` it never observed.
+- The round's own final verification found a seventh defect, in the tests
+  rather than the product: **the headline reproduction passed against the
+  pre-fix code.** It started the reader on a thread and released the paused
+  save without waiting for the read, so the reader read the completed pair
+  and saw nothing wrong. The mixed pair was always there — forcing the read
+  inside the window shows `key=NEW workspace=OLD`. The sibling test failed
+  on the old head only through `ImportError`, which is not detection.
+  Blocker 2 had no reproduction that could run on the code it was about
+  either; one that uses only the old two-argument call now convicts it.
+  All are fixed and convict 25/25 while passing 25/25 here. The
+  failing-first figure, re-measured rather than quoted, is **17 of 20 on
+  `67f0205`, 11 of them substantive assertions** — the other six test a
+  module the correction introduces and stop at an `ImportError`, which is
+  reported as such rather than counted as detection. Same lesson as the
+  clap flake: a phase is not a receipt, so wait for the evidence and not
+  for the thread that will produce it.
 - State: awaiting a further independent review. Nothing installed, merged,
   tagged, released or deployed. **All installer evidence from every previous
   head is superseded** — each corrective commit changes runtime,
