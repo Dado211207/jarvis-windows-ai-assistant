@@ -49,3 +49,46 @@ jobs:
           path: ${{ runner.temp }}/pid-visibility.jsonl
           retention-days: 14
           if-no-files-found: warn
+
+  survivor:
+    name: "Real Edge survivor probe / windows-latest"
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check -r requirements-windows.txt
+
+      - name: Drive the real browser-QA route and probe any survivor
+        # `continue-on-error` because a captured failure is the point. The
+        # test's own assertions are unchanged and still fail the test;
+        # this step must not turn the *investigation* red for having
+        # succeeded at reproducing the thing it is investigating.
+        continue-on-error: true
+        run: >-
+          python scripts/diagnose_survivor_flake.py
+          --iterations 6
+          --all-routes
+          --stop-on-capture
+          --verbose
+          --diagnostics ${{ runner.temp }}/survivor-native.jsonl
+        env:
+          JARVIS_LOG_LEVEL: WARNING
+          JARVIS_DB_PATH: ${{ runner.temp }}/survivor_native.db
+
+      - name: Upload the record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: survivor-native
+          path: ${{ runner.temp }}/survivor-native.jsonl
+          retention-days: 14
+          if-no-files-found: warn

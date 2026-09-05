@@ -448,6 +448,24 @@ def terminate_identities(
     return report
 
 
+def _native_probe(identity: ProcessIdentity) -> dict:
+    """Ask Windows about a survivor directly. Never raises, never signals.
+
+    Import is local and guarded so that a module which is meaningless off
+    Windows can never affect the shutdown path on any other platform, and
+    so a missing or broken probe degrades to an empty record rather than
+    to an exception during cleanup.
+    """
+    try:
+        from app.launcher import process_probe
+
+        if not process_probe.available():
+            return {}
+        return process_probe.probe(identity.pid, identity.create_time)
+    except Exception as exc:  # noqa: BLE001 — a diagnostic may never break shutdown
+        return {"probe": f"unavailable_{exc.__class__.__name__}"}
+
+
 def _final_state(psutil, identity: ProcessIdentity) -> str:
     """Re-resolve one identity after the kill grace, and say what it is.
 
@@ -566,6 +584,42 @@ def _record_diagnostics(report: CleanupReport) -> None:
         payload = report.as_dict()
         payload["recorded_at"] = time.time()
         payload["platform"] = os.name
+        # Kernel-level corroboration for any survivor, recorded here
+        # rather than on `CleanupResult` so that the report's shape — and
+        # every assertion that pins it — is untouched.
+        #
+        # It is collected because two psutil behaviours make the existing
+        # fields weaker evidence than they look: `psutil_proc_kill`
+        # suppresses `ERROR_ACCESS_DENIED` from `TerminateProcess`, so
+        # `kill_error=''` does not establish that the native call
+        # succeeded; and `wait_procs` swallows `TimeoutExpired`, which is
+        # why `wait_error` is empty in every observed failure.
+        #
+        # Observation only: it opens handles, reads, and closes them.
+        # Sending another kill to collect evidence would change the very
+        # operation being measured.
+        survivors = [
+            entry for entry in payload.get("processes", [])
+            if entry.get("final_state") == STILL_ALIVE
+        ]
+        if survivors:
+            payload["native_probes"] = [
+                {
+                    "pid": entry["identity"]["pid"],
+                    "name": entry["identity"].get("name", ""),
+                    "source": entry.get("source", ""),
+                    "outcome": entry.get("outcome", ""),
+                    "kill_sent": entry.get("kill_sent"),
+                    "kill_error": entry.get("kill_error", ""),
+                    "probe": _native_probe(
+                        ProcessIdentity(
+                            pid=entry["identity"]["pid"],
+                            create_time=entry["identity"].get("create_time"),
+                        )
+                    ),
+                }
+                for entry in survivors
+            ]
         with open(destination, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, sort_keys=True) + "\n")
     except Exception:  # noqa: BLE001 — never break shutdown for a diagnostic

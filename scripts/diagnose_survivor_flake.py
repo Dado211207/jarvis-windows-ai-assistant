@@ -66,11 +66,22 @@ TEST_NAME = "test_no_browser_process_survives_any_fixture"
 ITERATION_TIMEOUT_SECONDS = 600
 
 
-def _node_ids() -> list:
+def _node_ids(all_routes: bool = False) -> list:
+    """The node ids to drive.
+
+    `ROUTES` is the pair that failed in run 33251235787, which is what
+    this harness was first written for. Every later reproduction has been
+    a *different* fixture — `huge.html` on `fdef269` and again in the
+    post-merge Windows smoke job — so restricting to those two would now
+    be aiming at the wrong target. `--all-routes` drives the whole
+    parametrised test, which is the route CI actually runs.
+    """
+    if all_routes:
+        return [f"{TEST_FILE}::{TEST_NAME}"]
     return [f"{TEST_FILE}::{TEST_NAME}[{route}]" for route in ROUTES]
 
 
-def _run_once(index: int, diagnostics: Path, verbose: bool) -> dict:
+def _run_once(index: int, diagnostics: Path, verbose: bool, all_routes: bool = False) -> dict:
     """One pytest invocation. Returns what happened, never raises."""
     before = diagnostics.stat().st_size if diagnostics.exists() else 0
 
@@ -83,7 +94,7 @@ def _run_once(index: int, diagnostics: Path, verbose: bool) -> dict:
     started = time.monotonic()
     try:
         completed = subprocess.run(  # noqa: S603 — argv list, shell=False
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly", *_node_ids()],
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly", *_node_ids(all_routes)],
             cwd=str(REPO_ROOT),
             env=environment,
             capture_output=True,
@@ -126,10 +137,20 @@ def _records(diagnostics: Path) -> list:
 
 
 def _survivors(records: list) -> list:
+    """Survivors, each carrying the kernel probe for the same moment.
+
+    The probe lives at the top level of the record (`native_probes`)
+    rather than on the process entry, so that the cleanup report's own
+    shape — and every assertion pinned to it — stays untouched. It is
+    matched back by PID here, for reading.
+    """
     found = []
     for record in records:
+        probes = {p.get("pid"): p for p in record.get("native_probes", [])}
         for entry in record.get("processes", []):
             if entry.get("outcome") == "still_alive":
+                entry = dict(entry)
+                entry["_native"] = probes.get(entry.get("identity", {}).get("pid"), {})
                 found.append(entry)
     return found
 
@@ -149,6 +170,31 @@ def _describe(entry: dict) -> str:
         f"wait_error={entry.get('wait_error') or 'none'} "
         f"final_checked={entry.get('final_checked')} "
         f"final_state={entry.get('final_state') or 'not_checked'}"
+    ) + _describe_native(entry.get("_native") or {})
+
+
+def _describe_native(record: dict) -> str:
+    """The kernel's own answer, which is why this harness was extended.
+
+    `kill_error=''` does not establish that TerminateProcess succeeded:
+    psutil's `psutil_proc_kill` suppresses ERROR_ACCESS_DENIED. These
+    fields are what distinguish a process that survived a permitted
+    terminate from one whose terminate was never permitted at all.
+    """
+    probe = record.get("probe") or {}
+    if not probe:
+        return "  native=not_recorded"
+    return (
+        f"  native.probe={probe.get('probe')} "
+        f"open={probe.get('open') or 'n/a'} "
+        f"open_error={probe.get('open_error')} "
+        f"identity_matches={probe.get('identity_matches')} "
+        f"wait={probe.get('wait')} "
+        f"wait_error={probe.get('wait_error')} "
+        f"exit_code={probe.get('exit_code')} "
+        f"exit_is_still_active={probe.get('exit_is_still_active')} "
+        f"terminate_access={probe.get('terminate_access')} "
+        f"probe_seconds={probe.get('probe_seconds')}"
     )
 
 
@@ -160,6 +206,9 @@ def main() -> int:
     parser.add_argument("--diagnostics", default="",
                         help="where to write the JSONL (default: a temp file)")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--all-routes", action="store_true",
+                        help="drive the whole parametrised test, not just the two "
+                             "routes of the original failure")
     args = parser.parse_args()
 
     diagnostics = Path(args.diagnostics) if args.diagnostics else (
@@ -170,14 +219,15 @@ def main() -> int:
         diagnostics.unlink()
 
     print(f"platform     : {sys.platform} (os.name={os.name})")
-    print(f"routes       : {', '.join(ROUTES)}")
+    print(f"routes       : "
+          f"{'all parametrised fixtures' if args.all_routes else ', '.join(ROUTES)}")
     print(f"iterations   : {args.iterations}")
     print(f"diagnostics  : {diagnostics}")
     print()
 
     runs = []
     for index in range(1, args.iterations + 1):
-        result = _run_once(index, diagnostics, args.verbose)
+        result = _run_once(index, diagnostics, args.verbose, args.all_routes)
         runs.append(result)
         verdict = "FAILED" if result["failed"] else "passed"
         print(f"  iteration {index:02d}  {verdict}  {result['seconds']}s")
