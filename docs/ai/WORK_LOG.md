@@ -820,6 +820,134 @@ they are the guards that the correction must not break, including the three
 category cases and the two-rejections-of-one-key case that would catch a
 revision that moved when it should not have.
 
+## Independent review, ninth pass — the file underneath all of it
+
+Rounds 6 to 8 built a boundary around the credential pair: one change at a
+time, one coherent snapshot for readers, a revision that says which pair a
+failure belongs to, and a gate held across the check and the write. All of
+it persists half its state through `preferences.json`, and **that file had
+no boundary at all.**
+
+### The defect
+
+`preferences.store_many()` was an unguarded read-modify-write over one
+shared document: load the whole thing, merge the requested keys, write a
+shared `preferences.json.tmp`, replace the file. Every writer merged into
+*its own* snapshot and then replaced the **entire** document, so a writer
+that loaded before another committed silently restored whatever that other
+had changed — and both returned `True`.
+
+The credential transaction cannot help, because it is not in the way. It
+serialises credential Save/Remove/state; this file is also written by the
+preferred name, provider selection, voice settings, clap settings and
+local-AI ownership, none of which enter that gate. Observed on `e3523d2`
+against the real production module:
+
+    both_calls_reported_success   {'credential': True, 'unrelated': True}
+    final_preferred_name          After
+    final_workspace               wrkspc_OLD
+    final_state                   verified
+    lost_credential_metadata      True
+
+In `credential_pair.save()`'s ordering that is a new key in Windows
+Credential Manager, the previous Workspace ID and verification state on
+disk, and `PairOutcome(APPLIED)` already returned to the user — the
+guarantee three rounds were spent building, defeated from outside the
+boundary built to protect it. Somebody changing their display name is
+enough to do it.
+
+**The shared temporary file made it worse than a lost update.** Two writers
+wrote and replaced the same `preferences.json.tmp`, and one run left this
+on disk:
+
+    {
+      "preferred_name": "Before",
+      "anthropic_workspace_id": "wrkspc_01OLDworkspaceidvalue",
+      "anthropic_key_state": "verification_failed"
+    }y": "af_heart"
+    }
+
+A complete document with the tail of another writer's document after it.
+`load()` answers `{}` for that, so *every* saved preference is gone — not
+one update lost, all of them.
+
+### The invariant
+
+Once a successful `store_many()` returns, its update may not be lost by a
+concurrent successful update to different keys. A reader sees the complete
+old document or the complete new one, never a partial write.
+
+### The correction
+
+`_write_lock` serialises the whole operation — load, merge, write, replace —
+at `store_many()`, which is the single entry point every writer already
+uses (`store()` delegates to it, and a test walks the AST to prove no
+second write path exists). Fixing this inside `credential_pair` or the
+API-key routes would have left every other writer able to reproduce it.
+
+The temporary file is now **unique per write**
+(`preferences.json.<pid>.<uuid>.tmp`), so no two writers can ever share
+one — including across processes, and including a stale file left by a
+crash.
+
+**Process scope, established rather than assumed.** Every runtime writer
+runs in the server child: the FastAPI routes, `voice/engines.py`,
+`voice/tts.py`, `voice/clap.py`, `core/local_ai_install.py`,
+`core/ai/credential_pair.py` and `core/providers.py`. The tray parent and
+the window child only read — `launcher/gui.py` uses `get` — a single
+instance is enforced by `launcher/instance_lock.py`, and
+`--uninstall-cleanup` runs after the application has been told to stop. A
+process-local lock is therefore sufficient today, and the unique temporary
+name means even an unexpected second process could not tear a document.
+
+**Lock order.** `_gate` -> `_runtime_downgrade_lock` -> `_write_lock`.
+`save()` holds the coordinator and then writes metadata;
+`note_runtime_failure()` holds the coordinator, then the runtime-note lock,
+then writes. So this lock must be a leaf, and
+`test_the_write_lock_is_a_leaf_and_can_deadlock_with_nothing` proves it
+from the module's imports rather than from a substring search — the first
+version of that test failed because `anthropic_workspace_id` and
+`anthropic_key_state` are *preference key names* in `STORABLE_KEYS`, which
+a text search cannot tell apart from an import of the SDK. Nothing
+unbounded runs inside the lock: no network, no provider call, only JSON and
+one atomic replacement.
+
+### A second loss path, inside the same function
+
+`store_many()` built its merge on `load()`, which answers `{}` both for a
+file that does not exist and for one it could not read. That is right for a
+reader and wrong for a writer: merging into `{}` and replacing turns an
+unreadable document into a deleted one, so a single transient sharing
+violation could erase every saved preference including the credential
+metadata.
+
+`_load_for_update()` separates the three cases. A missing file is safe to
+replace — nothing to lose. A file whose *content* is unparseable is also
+safe, because every reader already sees `{}` for it and overwriting
+recovers rather than destroys. A file that exists and could not be **read**
+is refused: losing this one update is better than losing all of them.
+
+This was not in the round's brief. It is reported rather than folded in
+quietly, because it is a behaviour change in the same function and a
+reviewer may reasonably want it separated.
+
+### Verification
+
+**5 of 9 new tests convict `e3523d2`, 25 runs out of 25**, all on
+substantive assertions; all 9 pass on the correction, 25 out of 25.
+
+The tests drive the real `app/core/preferences.py` against a real temporary
+`preferences.json` — not the in-memory `_Preferences` double the credential
+suites use, because the defect lives in the file path itself.
+
+An earlier draft of them was **not** deterministic. Moving both writers
+onto threads left the order after the release to the scheduler, and two
+tests convicted only by luck. `_second_writer_can_no_longer_be_reordered()`
+waits for whichever of two things actually happens — the second writer
+completes (no lock) or parks on the lock (corrected) — which is the round-8
+barrier lesson applied to a new place: wait for the evidence, not for the
+thread that will produce it.
+
 ## The owner's current installation must not be patched manually
 
 The installed build predates this fix. Do **not** hand-edit files under the

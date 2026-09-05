@@ -154,6 +154,22 @@ separate safe Coding Workspace for the owner's own repositories.
   now carries `credentials.stored_api_key_snapshot()`'s `(reached, value)`,
   so "no key" and "this machine could not be read" are distinguishable, and
   `ANTHROPIC_API_KEY` precedence is explicit.
+- A **ninth** review found that the file all of this persists through had
+  no boundary at all. `preferences.store_many()` was an unguarded
+  read-modify-write over one shared JSON document, so any writer that
+  loaded before another committed silently restored what that other had
+  changed — and both returned True. The credential transaction does not
+  cover it: the preferred name, provider selection, voice, clap and
+  local-AI settings all write the same file without entering that gate, so
+  a display-name change could put the previous Workspace ID and
+  verification state back after `save()` had returned `APPLIED`. The shared
+  `preferences.json.tmp` could also leave a torn document, which `load()`
+  reads as `{}` — every saved preference gone. `_write_lock` now serialises
+  the whole load/merge/write/replace at the single entry point, the
+  temporary file is unique per write, and `_load_for_update()` refuses to
+  replace a file that exists but could not be read. Lock order is
+  `_gate` -> `_runtime_downgrade_lock` -> `_write_lock`, proven a leaf by an
+  import-level test.
 - State: awaiting a further independent review. Nothing installed, merged,
   tagged, released or deployed. **All installer evidence from every previous
   head is superseded** — each corrective commit changes runtime,

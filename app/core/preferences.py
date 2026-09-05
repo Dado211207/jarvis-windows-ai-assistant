@@ -33,8 +33,11 @@ app down over a settings file.
 """
 
 import json
+import os
+import threading
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from app.core.app_paths import config_dir
 from app.core.safe_traceback import describe
@@ -43,6 +46,50 @@ from app.logging_config import get_logger
 logger = get_logger("core.preferences")
 
 PREFERENCES_FILENAME = "preferences.json"
+
+#: Serialises the whole read-modify-write below.
+#:
+#: **The invariant.** Once a successful `store_many()` returns, its update
+#: may not be lost by a concurrent successful update to *different* keys.
+#: A reader sees the complete old document or the complete new one, never
+#: a partial write.
+#:
+#: Without it, every writer merged into its own snapshot of the whole
+#: document and then replaced the entire file, so a writer that loaded
+#: before another committed silently restored what that other had changed —
+#: and both returned True. The credential transaction did not help: it
+#: serialises credential Save/Remove/state, while this file is also written
+#: by voice settings, clap settings, the preferred name, provider selection
+#: and local-AI ownership, none of which enter that gate. A save could
+#: therefore put a new key in Windows Credential Manager, report
+#: `PairOutcome(APPLIED)`, and have the previous Workspace ID restored
+#: underneath it by somebody changing their display name.
+#:
+#: **This lock is a leaf.** It is taken *inside* `credential_transaction`'s
+#: `_gate` and `providers._runtime_downgrade_lock` — `save()` holds the
+#: gate and then writes metadata; `note_runtime_failure()` holds the gate,
+#: then the runtime-note lock, then writes — so nothing reached from under
+#: it may call back into either. Nothing unbounded runs inside it: no
+#: network, no provider call, no model work, only JSON and one file
+#: replacement. `test_the_write_lock_is_a_leaf_and_can_deadlock_with_nothing`
+#: enforces that structurally, because a lock-order defect that only shows
+#: under load is not something one green run can disprove.
+#:
+#: Re-entrant deliberately. Nesting is not expected and would be a defect,
+#: but this module's contract is that it never raises and never takes the
+#: application down over a settings file; a self-deadlock in a preference
+#: write is a worse outcome than a redundant one.
+#:
+#: **Process scope.** Every runtime writer runs in the server child: the
+#: FastAPI routes, the voice engines, the clap settings, the credential
+#: metadata path and the local-AI installer. The tray parent and the window
+#: child only ever *read* (`app/launcher/gui.py` uses `get`), a single
+#: instance is enforced by `app/launcher/instance_lock.py`, and
+#: `--uninstall-cleanup` runs when the application has been told to stop.
+#: A process-local lock is therefore sufficient today — and the temporary
+#: file below is unique per write anyway, so a second process could not
+#: corrupt a document even if one ever appeared.
+_write_lock = threading.RLock()
 
 # The complete set of keys this file may hold. Anything else is refused.
 #
@@ -214,20 +261,100 @@ def store_many(values: Mapping[str, Optional[str]]) -> bool:
         logger.warning("Refused to store unlisted preference keys: %r", unknown)
         return False
 
-    data = load()
-    for key, value in values.items():
-        if value is None or not str(value).strip():
-            data.pop(key, None)
-        else:
-            data[key] = str(value).strip()
-
     path = _path_or_none()
     if path is None:
         return False
-    temporary = path.with_name(path.name + ".tmp")
+
+    # Load, merge and replace as **one** operation. Reading outside this
+    # would put the whole defect back: two writers would each merge into a
+    # snapshot taken before the other committed, and the later replacement
+    # would silently restore what the earlier one had changed while both
+    # returned True.
+    with _write_lock:
+        readable, data = _load_for_update(path)
+        if not readable:
+            # The file is there and could not be read *this time* — a
+            # transient sharing violation, a profile that briefly went
+            # away. Writing now would replace a document whose contents
+            # are unknown with one built from nothing, which is how a
+            # single unlucky read erases every saved preference. Refusing
+            # loses this update; writing loses all of them.
+            return False
+
+        for key, value in values.items():
+            if value is None or not str(value).strip():
+                data.pop(key, None)
+            else:
+                data[key] = str(value).strip()
+        return _write_document(path, data)
+
+
+def _load_for_update(path: Path) -> Tuple[bool, Dict[str, Any]]:
+    """`(safe_to_replace, document)` for the write path. Never raises.
+
+    `load()` answers `{}` for a file that is missing *and* for one it could
+    not read, which is the right answer for a reader — "nothing is saved"
+    degrades to defaults. It is the wrong answer for a writer, where the
+    two differ completely: merging into `{}` and replacing the file turns
+    an unreadable document into a deleted one.
+
+    A file that does not exist yet is `(True, {})`: there is nothing to
+    lose. A file whose *content* is unparseable is also safe to replace —
+    every reader already sees `{}` for it, so the preferences are gone
+    already and overwriting recovers rather than destroys. Only a file that
+    exists and could not be opened is refused.
+    """
+    try:
+        if not path.exists():
+            return True, {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not check for the preferences file. %s", describe(exc))
+        return False, {}
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        # Described, never rendered: an OSError quotes the full path, which
+        # begins with the account name.
+        logger.warning(
+            "The preferences file exists but could not be read; leaving it alone "
+            "rather than replacing it with an incomplete one. %s", describe(exc),
+        )
+        return False, {}
+
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        # A JSONDecodeError quotes the offending document, and this file
+        # holds the workspace ID.
+        logger.warning(
+            "The preferences file is not valid JSON; it already reads as empty "
+            "everywhere, so this write replaces it. %s", describe(exc),
+        )
+        return True, {}
+
+    if not isinstance(parsed, dict):
+        return True, {}
+    return True, {key: parsed[key] for key in STORABLE_KEYS if key in parsed}
+
+
+def _write_document(path: Path, data: Dict[str, Any]) -> bool:
+    """Replace the whole document atomically. Only called under the lock.
+
+    The temporary file is **unique per write**. It used to be one shared
+    `preferences.json.tmp`, so two writers wrote and deleted the same path:
+    within a process the lock now prevents that, but a name nobody else can
+    collide with removes the hazard outright — including for the uninstall
+    cleanup, which runs as a different process, and for a stale temporary
+    left behind by a crash.
+    """
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # Atomic on both platforms, which is what lets `load()` stay
+        # lock-free: a reader opens either the complete old document or the
+        # complete new one, never a half-written file.
         temporary.replace(path)
         return True
     except Exception as exc:  # noqa: BLE001
