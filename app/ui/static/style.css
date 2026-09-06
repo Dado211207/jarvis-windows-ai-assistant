@@ -937,7 +937,49 @@ code, .mono {
 
 /* ── Responsive: hide sidebar on narrow screens ─────────────────────── */
 @media (max-width: 768px) {
-  .sidebar { display: none; }
+  /* The sidebar used to be `display: none` here, which removed every
+     navigation link — Settings included — from any window under 768px.
+     A desktop window can easily be that narrow, and so can a 1280px
+     screen at 175% Windows display scaling, where the CSS viewport is
+     731px. "Hidden on small screens" is a phone assumption; this is a
+     desktop application whose window the user resizes.
+
+     It becomes a horizontal strip instead: same links, same order, same
+     `aria-current`, scrollable if they do not fit. Nothing is removed
+     and no second navigation structure is introduced. */
+  /* `body` is a flex ROW: sidebar and main sit side by side. A
+     full-width sidebar in that row is wider than the viewport by
+     construction, which is what made every page overflow horizontally at
+     390px on the first attempt. Stacking is the fix, not a width tweak. */
+  body { flex-direction: column; }
+
+  .sidebar {
+    position: static;
+    width: auto;
+    min-height: 0;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.25rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.4rem 0.75rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-brand,
+  .sidebar-divider,
+  .sidebar-footer { display: none; }
+  .sidebar-nav {
+    flex-direction: row;
+    gap: 0.25rem;
+    flex-wrap: nowrap;
+  }
+  .sidebar-link {
+    white-space: nowrap;
+    padding: 0.4rem 0.7rem;
+  }
+  .layout-main { margin-left: 0; }
 
   /* The topbar's 5 status indicators are fixed-width (white-space: nowrap
      labels) and .topbar-indicators never shrinks below its content's
@@ -1234,3 +1276,213 @@ code, .mono {
   .diff-add::before { content: "+ "; }
   .diff-del::before { content: "- "; }
 }
+
+/* ── The runtime core ─────────────────────────────────────────────────
+   One animated element on the page. It renders `RuntimeState` and
+   nothing else: every class here is set from a `runtime_state` event or
+   from an explicit disconnect, so the interface cannot show "listening"
+   or "speaking" while the server is not in that state.
+
+   Ten states, each visually distinct, because the product genuinely has
+   ten. Collapsing `awaiting_approval`, `offline` and `error` into one
+   "busy" look would hide exactly the three a person needs to act on.
+
+   Colour is never the only signal: each state also changes the ring
+   count, the dot size or the border style, so the strip still reads on a
+   monochrome display and for a colour-blind reader.
+
+   Transform and opacity only — no width/height animation, no filter, no
+   box-shadow animation. That keeps it off the layout and paint paths and
+   comfortably cheap on integrated and mid-range GPUs alike. */
+
+.core-strip {
+  display: flex;
+  align-items: center;
+  gap: 1.15rem;
+  margin-bottom: 1.25rem;
+}
+
+.core-copy { min-width: 0; }
+
+.core-copy .page-title { margin: 0 0 0.15rem; }
+.core-copy .page-subtitle { margin: 0.2rem 0 0; }
+
+.core-status {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: 0.005em;
+}
+
+.core {
+  position: relative;
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+}
+
+.core-ring,
+.core-dot {
+  position: absolute;
+  border-radius: 50%;
+  /* `will-change` is deliberately absent: these are small elements and
+     promoting three of them per page costs more than it saves. */
+  transition: opacity 200ms ease, transform 200ms ease, border-color 200ms ease;
+}
+
+.core-ring {
+  inset: 0;
+  border: 1.5px solid var(--border-bright);
+  opacity: 0.5;
+}
+
+.core-ring-2 {
+  inset: 8px;
+  border-color: var(--border);
+  opacity: 0.35;
+}
+
+.core-dot {
+  width: 14px;
+  height: 14px;
+  background: var(--text-subtle);
+}
+
+/* Before the first event: the page does not know, and says so. */
+.core-unknown .core-dot,
+.core-connecting .core-dot { background: var(--text-subtle); }
+.core-connecting .core-ring { border-style: dashed; }
+
+/* Idle. Present, not busy — a slow breath, or nothing at all under
+   reduced motion. */
+.core-standby .core-dot,
+.core-booting .core-dot { background: var(--accent-dim); }
+.core-standby .core-ring { border-color: var(--accent-dim); opacity: 0.4; }
+.core-booting .core-ring { border-style: dotted; border-color: var(--accent-dim); }
+.core-standby .core-dot { animation: core-breathe 3.6s ease-in-out infinite; }
+
+/* Listening and transcribing: the microphone is genuinely open. Two
+   rings and a larger dot, so it is unmistakable at a glance. */
+.core-listening .core-dot,
+.core-transcribing .core-dot {
+  background: var(--accent);
+  width: 18px;
+  height: 18px;
+}
+.core-listening .core-ring,
+.core-transcribing .core-ring { border-color: var(--accent); opacity: 0.75; }
+.core-listening .core-ring   { animation: core-pulse 1.5s ease-out infinite; }
+.core-transcribing .core-ring-2 { animation: core-pulse 1.1s ease-out infinite; }
+
+/* Thinking: rotation rather than pulse, so it cannot be mistaken for
+   listening at a glance. */
+.core-thinking .core-dot { background: var(--accent); }
+.core-thinking .core-ring {
+  border-color: var(--accent);
+  border-top-color: transparent;
+  border-right-color: transparent;
+  opacity: 0.9;
+  animation: core-spin 1.25s linear infinite;
+}
+
+/* Executing: something is actually happening to the machine. */
+.core-executing .core-dot { background: var(--warn); }
+.core-executing .core-ring { border-color: var(--warn); opacity: 0.8; }
+.core-executing .core-ring-2 { animation: core-spin 2s linear infinite reverse; }
+
+/* Waiting for the person. Square inner marker: this one is a prompt, not
+   progress, and it must not look like either. */
+.core-awaiting_approval .core-dot {
+  background: var(--warn);
+  border-radius: 3px;
+  width: 16px;
+  height: 16px;
+  animation: core-breathe 1.8s ease-in-out infinite;
+}
+.core-awaiting_approval .core-ring { border-color: var(--warn); opacity: 0.85; }
+
+/* Speaking. */
+.core-speaking .core-dot { background: var(--accent); width: 16px; height: 16px; }
+.core-speaking .core-ring   { border-color: var(--accent); opacity: 0.8; }
+.core-speaking .core-ring-2 { animation: core-pulse 0.9s ease-out infinite; }
+
+/* Error and offline are both red, and told apart by the ring: error is
+   solid and alarming, offline is dashed and inert. */
+.core-error .core-dot { background: var(--err); }
+.core-error .core-ring { border-color: var(--err); opacity: 0.9; }
+.core-error .core-ring-2 { border-color: var(--err); }
+
+.core-offline .core-dot { background: var(--err); opacity: 0.55; }
+.core-offline .core-ring { border-color: var(--err); border-style: dashed; opacity: 0.5; }
+
+/* The event stream dropped. Not a runtime state — the server may be
+   doing anything — so it is drawn as "unknown", never as the last thing
+   we happened to see. */
+.core-disconnected .core-dot { background: var(--text-subtle); }
+.core-disconnected .core-ring {
+  border-style: dashed;
+  border-color: var(--text-subtle);
+  opacity: 0.45;
+}
+
+@keyframes core-pulse {
+  0%   { transform: scale(0.86); opacity: 0.85; }
+  70%  { transform: scale(1.12); opacity: 0; }
+  100% { transform: scale(1.12); opacity: 0; }
+}
+
+@keyframes core-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes core-breathe {
+  0%, 100% { transform: scale(0.9); opacity: 0.75; }
+  50%      { transform: scale(1.06); opacity: 1; }
+}
+
+/* The global reduced-motion rule already disables every animation. What
+   it cannot do is keep the states distinguishable once the motion that
+   distinguished some of them is gone, so each one is given a static
+   difference that survives on its own. */
+@media (prefers-reduced-motion: reduce) {
+  .core-listening .core-ring-2,
+  .core-speaking .core-ring-2   { opacity: 0.8; }
+  .core-thinking .core-ring     { border-top-color: transparent; opacity: 1; }
+  .core-awaiting_approval .core-dot { transform: scale(1.05); }
+  .core-standby .core-dot       { opacity: 0.85; }
+}
+
+/* Narrow windows and high Windows display scaling reach the same place:
+   less usable width. The strip stacks rather than squeezing the title,
+   and the core shrinks instead of pushing the copy off the edge. */
+@media (max-width: 720px) {
+  .core-strip { gap: 0.9rem; }
+  .core { width: 42px; height: 42px; }
+  .core-ring-2 { inset: 6px; }
+  .core-dot { width: 11px; height: 11px; }
+}
+
+@media (max-width: 520px) {
+  .core-strip { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
+}
+
+/* ── `hidden` must actually hide ──────────────────────────────────────
+   The HTML `hidden` attribute works by setting `display: none` in the UA
+   stylesheet, and any component rule with its own `display` silently
+   beats it. `.btn` sets `display: inline-flex`, so every button marked
+   `hidden` in a template was rendering anyway: Chat's Stop button and
+   the push-to-talk Cancel button were both permanently visible.
+
+   A Stop button on screen when nothing is generating is a control that
+   claims work is in progress, which is the same class of untruth as an
+   indicator that says "listening" at a closed microphone — and pressing
+   it did nothing, because the code behind it is guarded.
+
+   Global and `!important` on purpose: this is the attribute's documented
+   meaning, and any rule that overrides it is a bug wherever it appears.
+   Present on no earlier commit, including main. */
+[hidden] { display: none !important; }

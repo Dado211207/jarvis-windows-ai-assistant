@@ -95,8 +95,12 @@
         <span class="status-dot status-dot-grey" id="topbar-ws-dot"></span>
         <span id="topbar-ws-label">connecting</span>
       </span>
+      {# Not "standby". Before `GET /runtime/state` answers or the first
+         `runtime_state` event arrives, the page has not observed a state
+         and must not name one — the old hardcoded "standby" was a claim
+         nobody had checked, and the Home overview copied it verbatim. #}
       <span class="topbar-indicator" title="What JARVIS is doing right now">
-        <span id="topbar-runtime-label" class="badge badge-muted" aria-live="polite">standby</span>
+        <span id="topbar-runtime-label" class="badge badge-muted" aria-live="polite">connecting</span>
       </span>
       <span class="topbar-indicator" title="Privacy mode: blocks cloud AI and cloud speech requests, pauses clap monitoring, and stops new conversations, memory writes, and screenshots from being saved">
         <span class="status-dot status-dot-grey" id="topbar-privacy-dot"></span>

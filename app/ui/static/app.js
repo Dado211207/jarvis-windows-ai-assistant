@@ -2162,10 +2162,16 @@ async function refreshOverviewRecentActions() {
 }
 
 async function refreshOverviewRuntimeState() {
-  // Seeded from the topbar's current label so the card is correct
-  // immediately on load rather than waiting for the first WS event.
+  // Reads the state rather than copying the topbar's text. Seeding from
+  // the label meant the card inherited whatever the template happened to
+  // say before anything was observed — which was the literal word
+  // "standby", asserted at a machine that might have been mid-action.
+  // `refreshRuntimeState()` sets this card too, so this is the fallback
+  // for a page where that has not run yet.
   const label = $("topbar-runtime-label");
-  _setOverviewValue("dash-runtime-state", (label && label.textContent) ? label.textContent : "standby");
+  if (label && label.textContent) {
+    _setOverviewValue("dash-runtime-state", label.textContent);
+  }
 }
 
 function refreshOverview() {
@@ -4542,6 +4548,94 @@ function setRuntimeLabel(state) {
   el.className = "badge " + (RUNTIME_BADGE[state] || "badge-muted");
 }
 
+// ── The runtime core ────────────────────────────────────────────────────────
+// One sentence per state, because a live region that announces a bare word
+// ("speaking") tells a screen-reader user less than it appears to. Each is a
+// complete, meaningful status, announced atomically and without moving focus.
+//
+// `connecting` and `disconnected` are deliberately NOT RuntimeState values.
+// They describe what *this page* knows, which is a different question from
+// what the server is doing, and conflating the two is how an interface ends
+// up showing "listening" at a machine whose microphone is closed.
+const RUNTIME_SENTENCE = {
+  connecting:        "Connecting to JARVIS…",
+  disconnected:      "Live updates disconnected — JARVIS's current state is unknown.",
+  booting:           "JARVIS is starting up.",
+  standby:           "Ready. Type a command or hold Alt+M to speak.",
+  listening:         "Listening — the microphone is open.",
+  transcribing:      "Transcribing what you said.",
+  thinking:          "Thinking…",
+  awaiting_approval: "Waiting for your approval before continuing.",
+  executing:         "Running an approved action.",
+  speaking:          "Speaking the reply aloud.",
+  error:             "Something went wrong. See the message below or the Logs page.",
+  offline:           "JARVIS is offline.",
+};
+
+const RUNTIME_CORE_STATES = Object.keys(RUNTIME_SENTENCE);
+
+// `connecting` and `disconnected` are things this page knows about
+// itself, not RuntimeState values, so the topbar badge must not print
+// them as though the server had reported them. It says "unknown",
+// which is the honest answer to "what is JARVIS doing" when the only
+// channel that could answer is down.
+//
+// Without this the badge kept the last state it saw. On a narrow-window
+// screenshot that read "STANDBY" beside a core already saying "live
+// updates disconnected"; mid-conversation it would have read
+// "LISTENING" at a machine nobody was listening to.
+function setRuntimeUnknown() {
+  const el = $("topbar-runtime-label");
+  if (!el) return;
+  el.textContent = "unknown";
+  el.className = "badge badge-muted";
+  _setOverviewValue("dash-runtime-state", "unknown");
+}
+
+function setRuntimeCore(state) {
+  if (state === "disconnected" || state === "connecting") setRuntimeUnknown();
+  const core = $("runtime-core");
+  if (!core) return;               // every page except Chat
+  const known = RUNTIME_SENTENCE[state] ? state : "connecting";
+
+  // One class list, rebuilt rather than toggled, so no stale state class
+  // can survive a transition. This is the whole reason the interface
+  // cannot show a state the server is not in.
+  core.className = "core core-" + known;
+  core.dataset.state = known;
+
+  const status = $("runtime-core-status");
+  if (status) status.textContent = RUNTIME_SENTENCE[known];
+}
+
+// There is exactly ONE live region for runtime state, and it is the
+// topbar badge — which is on every page and is pinned as such by
+// `test_key_status_regions_are_marked_aria_live`.
+//
+// An earlier version of this redesign moved the announcement to the core
+// and stripped `aria-live` from the topbar. That broke the test, and the
+// test was right: the topbar is the global indicator, present on the ten
+// pages that have no core at all. The core's sentence is therefore
+// `aria-hidden` and purely visual, which satisfies the same "no
+// competing live regions" rule from the other direction.
+
+// The event stream publishes transitions only. A page that opens while
+// nothing is happening would otherwise sit on "connecting" forever, so
+// the current state is read once — and only once — at load.
+async function refreshRuntimeState() {
+  try {
+    const data = await API.get("/runtime/state");
+    if (data && data.state) {
+      setRuntimeLabel(data.state);
+      setRuntimeCore(data.state);
+      _setOverviewValue("dash-runtime-state", data.state);
+    }
+  } catch (e) {
+    // Leave "connecting" rather than inventing a state. An unreachable
+    // server is exactly when a confident "standby" would be a lie.
+  }
+}
+
 // ── Privacy mode indicator ──────────────────────────────────────────────────
 // v0.2: a clear, persistent, always-visible topbar indicator (present on
 // every page, not just a settings screen) — see app/core/privacy.py.
@@ -4571,11 +4665,17 @@ async function refreshPrivacyIndicator() {
 function handleStreamEvent(evt) {
   if (typeof evt.seq === "number" && evt.seq > wsLastSeq) wsLastSeq = evt.seq;
 
-  if (evt.type === "runtime_state" && evt.payload) {
+  if (evt.type === "runtime_state" && evt.payload && evt.payload.to) {
     setRuntimeLabel(evt.payload.to);
+    setRuntimeCore(evt.payload.to);
     // Home's "What JARVIS is doing" card reads the same source as the
-    // topbar, so the two can never disagree.
-    _setOverviewValue("dash-runtime-state", evt.payload.to || "standby");
+    // topbar and the core, so the three can never disagree.
+    //
+    // No `|| "standby"` fallback: an event that arrived without a
+    // destination state is a malformed event, and substituting a
+    // plausible-looking state for it is how a page ends up asserting
+    // something nobody reported.
+    _setOverviewValue("dash-runtime-state", evt.payload.to);
   }
 
   // Keep Home's attention panel honest the moment an approval appears or
@@ -4623,6 +4723,7 @@ function connectEventStream() {
     socket = new WebSocket(url);
   } catch (e) {
     setWsStatus("offline");
+    setRuntimeCore("disconnected");
     scheduleReconnect();
     return;
   }
@@ -4630,6 +4731,12 @@ function connectEventStream() {
   socket.addEventListener("open", () => {
     wsReconnectDelayMs = 1000;
     setWsStatus("connected");
+    // The other half of the disconnect handling. Resuming from the last
+    // sequence replays transitions that were *missed*, but if nothing
+    // transitioned while the stream was down there is nothing to replay
+    // and the indicator would stay "unknown" forever. Re-read it once,
+    // so recovering the connection also recovers the truth.
+    refreshRuntimeState();
   });
 
   socket.addEventListener("message", (msg) => {
@@ -4642,6 +4749,13 @@ function connectEventStream() {
 
   socket.addEventListener("close", () => {
     setWsStatus("reconnecting");
+    // The stream is the only thing that tells this page what JARVIS is
+    // doing. Once it drops, the last state we saw is just the last state
+    // we saw — and leaving "listening" or "speaking" on screen would
+    // claim an open microphone or active playback that nobody is
+    // observing any more. Fall back to "unknown", never to the last
+    // value and never to a comfortable-looking "standby".
+    setRuntimeCore("disconnected");
     scheduleReconnect();
   });
 
@@ -4656,6 +4770,10 @@ function connectEventStream() {
 
 document.addEventListener("DOMContentLoaded", () => {
   connectEventStream();
+  // Read the current state once, because the stream only publishes
+  // transitions and a page opened during a quiet moment would otherwise
+  // never learn what JARVIS is doing.
+  refreshRuntimeState();
   refreshPrivacyIndicator();
   refreshTopbarHealth();
 

@@ -1007,6 +1007,105 @@ completes (no lock) or parks on the lock (corrected) — which is the round-8
 barrier lesson applied to a new place: wait for the evidence, not for the
 thread that will produce it.
 
+## Interface redesign — `claude/jarvis-interface-redesign`
+
+Branch off `main@01dd3d2`. Draft, unmerged, not built and not installed.
+
+### What the inspection changed about the plan
+
+The brief read like a repaint. It was not: `--accent: #00d4ff`, `--bg:
+#080c14` and a complete token set already existed, and — more
+importantly — so did the states. `app/core/runtime_state.py` defines ten
+of them and `EventType.RUNTIME_STATE` already broadcasts every transition
+over `/ws/events`, which `app.js` already consumed. So the animated core
+needed **no new backend and no invented state**; it renders what the
+state machine reports, and there is no client-side path to `listening`
+except the server saying so.
+
+The brief asked for five states. Rendering only five would have collapsed
+`awaiting_approval`, `executing`, `offline` and `transcribing` into
+whichever neighbour looked closest — including the two a person most
+needs to act on. All ten are drawn, each distinguished by shape or ring
+style as well as colour, and each keeping a static difference once
+`prefers-reduced-motion` removes the animation that distinguished some of
+them.
+
+### The design skill, and what it actually returned
+
+`--design-system` **misrouted**: it answered with the "Product Demo +
+Features" landing-page pattern and a light palette with a red primary.
+The narrowed retry (`--domain color`) found no dark cyan match either —
+closest was a photo editor. Per the skill's own contract, no design
+system was persisted; writing a `MASTER.md` from a landing-page palette
+would have created a false source of truth for every later session.
+
+Verified and used: the Minimalism/Swiss style entry (dark supported,
+`performance cost: low`, `requires: contrast-text-4.5, keyboard,
+visible-focus, reduced-motion`), the live-region rule (one atomic status
+message, never a bare value, never competing regions) and the
+reduced-motion rule (1–2 animated elements per view).
+
+**Overridden:** the skill recommends Inter via a Google Fonts CDN import.
+The Phase 7 rule forbids any `http(s)://` URL in `style.css`. Local system
+stack instead; `grep` confirms zero external URLs.
+
+### Honesty at the boundaries
+
+- `GET /runtime/state` added. The stream publishes *transitions*, so a
+  page opened during a quiet moment had nothing to render — and what it
+  did instead was assume: the topbar shipped the literal text `standby`
+  in the template and the Home overview copied it. Both asserted a state
+  nobody had observed.
+- `connecting` and `disconnected` are the page's own states, deliberately
+  not `RuntimeState` values, because "what this page knows" and "what the
+  server is doing" are different questions.
+- On an event-stream drop the indicator falls back to **unknown**, never
+  to the last thing it saw. A narrow-window screenshot caught me getting
+  this half-right: the core said "live updates disconnected" while the
+  topbar badge still read `STANDBY`. Mid-conversation that would have read
+  `LISTENING` at a machine nobody was listening to.
+- On reconnect the state is re-read, because resuming from a sequence
+  replays what was *missed* and a quiet gap has nothing to replay.
+
+### Two pre-existing defects the screenshots exposed
+
+Neither was introduced here; both are on `main`.
+
+1. **`[hidden]` did nothing to a `.btn`.** The attribute works by setting
+   `display: none` in the UA stylesheet, and `.btn { display: inline-flex }`
+   silently beat it. Chat's **Stop** button and the push-to-talk
+   **Cancel** button were therefore permanently visible — controls
+   asserting work in progress when none was, and inert when pressed
+   because the code behind them is guarded. Fixed globally.
+2. **Narrow windows lost all navigation.** `.sidebar { display: none }`
+   under 768px removed every link, Settings included. That is a phone
+   assumption in a desktop application whose window the user resizes —
+   and it bites at 1280px on a 175% Windows scale factor, where the CSS
+   viewport is 731px. The sidebar becomes a scrollable horizontal strip
+   instead: same links, same order, same `aria-current`.
+
+The first attempt at that strip overflowed every page at 390px, because
+`body` is a flex **row** and a full-width sidebar in a row is wider than
+the viewport by construction. `test_no_horizontal_overflow` caught it;
+stacking the layout at that breakpoint is the fix, not a width tweak.
+
+### One test disagreed with me, and it was right
+
+`test_key_status_regions_are_marked_aria_live` pins `#topbar-runtime-label`
+as `aria-live="polite"` **on the Chat page**. My first version moved the
+announcement to the core's `role="status"` and stripped `aria-live` from
+the topbar, which broke it. The test is correct: the topbar is the global
+indicator, present on the ten pages that have no core at all. The core's
+sentence is `aria-hidden` and purely visual instead, which satisfies the
+same no-competing-regions rule from the other direction. The assertion
+was not touched.
+
+### Open, and staying open
+
+#144 and #145 are unchanged by this branch and remain unresolved — see
+`docs/survivor-and-teardown-investigation.md`. `main` is currently red
+because of #144.
+
 ## The owner's current installation must not be patched manually
 
 The installed build predates this fix. Do **not** hand-edit files under the

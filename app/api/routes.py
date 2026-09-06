@@ -554,6 +554,28 @@ class StoredDataResponse(BaseModel):
     encrypted: bool
 
 
+class RuntimeStateResponse(BaseModel):
+    state: str
+
+
+@router.get("/runtime/state", response_model=RuntimeStateResponse)
+def runtime_state() -> RuntimeStateResponse:
+    """What JARVIS is doing right now, read once at page load.
+
+    The event stream only publishes *transitions*, so a page that opened
+    while nothing was happening had nothing to render. What it did
+    instead was assume: the topbar badge shipped with the literal text
+    "standby" in the template, and the Home overview copied that text.
+    Both then claimed a state nobody had observed.
+
+    A read is the honest fix. It is a plain GET with no side effects and
+    no session token, because the state name is already broadcast to
+    every connected client over `/ws/events`.
+    """
+    from app.core.runtime_state import runtime
+    return RuntimeStateResponse(state=runtime.state.value)
+
+
 @router.get("/privacy/status", response_model=PrivacyStatusResponse)
 def privacy_status() -> PrivacyStatusResponse:
     from app.core.privacy import privacy_mode

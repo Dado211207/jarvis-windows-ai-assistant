@@ -4,11 +4,34 @@
 {% block content %}
 <div id="chat-root">
 
-  <div class="page-header">
-    <h1 class="page-title">Chat</h1>
-    <p class="page-subtitle">
-      Send commands and questions. All requests go through the router, tool registry, and permission system.
-    </p>
+  {# The core renders `RuntimeState` and nothing else. Its class is set
+     only from a `runtime_state` event or an explicit disconnect, so there
+     is no client-side path that can show "listening" while the server is
+     not listening. It starts in `unknown` — not `standby` — because
+     before the first event arrives the page genuinely does not know.
+
+     One animated element on the page, which is what the reduced-motion
+     and performance guidance both ask for. #}
+  <div class="core-strip">
+    <div id="runtime-core" class="core core-unknown" data-state="unknown" aria-hidden="true">
+      <span class="core-ring"></span>
+      <span class="core-ring core-ring-2"></span>
+      <span class="core-dot"></span>
+    </div>
+    <div class="core-copy">
+      <h1 class="page-title">Chat</h1>
+      {# Visual only. The single live region for runtime state is the
+         topbar badge, which exists on every page and is pinned as such by
+         `test_key_status_regions_are_marked_aria_live`; a second region
+         here would announce the same transition twice. This line is the
+         richer, sighted version of the same fact. #}
+      <p id="runtime-core-status" class="core-status" aria-hidden="true">
+        Connecting to JARVIS&hellip;
+      </p>
+      <p class="page-subtitle">
+        Every request goes through the router, tool registry and permission system.
+      </p>
+    </div>
   </div>
 
   <div class="card" style="padding: 1rem 1.1rem;">
