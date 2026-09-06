@@ -4665,16 +4665,20 @@ async function refreshPrivacyIndicator() {
 function handleStreamEvent(evt) {
   if (typeof evt.seq === "number" && evt.seq > wsLastSeq) wsLastSeq = evt.seq;
 
+  // The topbar, the core and Home's "What JARVIS is doing" card are all
+  // driven from this one event, so the three can never disagree. The
+  // three calls are kept adjacent and immediately after the guard:
+  // `test_runtime_card_reads_the_same_source_as_the_topbar` reads the
+  // first 400 characters of this handler to check exactly that, and
+  // prose between them pushes the card's line out of its window.
+  //
+  // `evt.payload.to` is required rather than defaulted. An event with no
+  // destination state is malformed, and substituting a plausible-looking
+  // "standby" for it is how a page ends up asserting something nobody
+  // reported.
   if (evt.type === "runtime_state" && evt.payload && evt.payload.to) {
     setRuntimeLabel(evt.payload.to);
     setRuntimeCore(evt.payload.to);
-    // Home's "What JARVIS is doing" card reads the same source as the
-    // topbar and the core, so the three can never disagree.
-    //
-    // No `|| "standby"` fallback: an event that arrived without a
-    // destination state is a malformed event, and substituting a
-    // plausible-looking state for it is how a page ends up asserting
-    // something nobody reported.
     _setOverviewValue("dash-runtime-state", evt.payload.to);
   }
 
