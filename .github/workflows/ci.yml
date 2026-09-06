@@ -99,12 +99,24 @@ jobs:
         # they ran in no CI job at all. The file's other tests are not
         # marked and keep running in the default job; `-m browser` picks
         # only the three here.
+        #
+        # tests/test_runtime_ordering.py drives the real app.js with
+        # controlled HTTP promises and a real dropped WebSocket, and is
+        # the regression cover for three ordering defects a review found
+        # in the runtime indicator. It arrived in the same commit as the
+        # fix and — because this list is explicit — ran in no CI job at
+        # all on its first push: `-m browser` deselected it from the
+        # default job and nothing here selected it. That is the second
+        # time this list has silently dropped a file (see the note above
+        # about test_coding_preview.py), so tests/test_ci_browser_job.py
+        # now fails when a `browser`-marked file is missing from it.
         run: >
           pytest -m browser -v
           tests/test_playwright_e2e.py
           tests/test_clap_detection.py
           tests/test_clap_controller.py
           tests/test_coding_preview.py
+          tests/test_runtime_ordering.py
         env:
           JARVIS_DB_PATH: /tmp/ci_jarvis_browser_test.db
           JARVIS_LOG_LEVEL: WARNING
