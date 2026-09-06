@@ -95,7 +95,6 @@ def privacy_label(state: TrayState) -> str:
 def build_menu_entries(
     state: TrayState,
     on_open_dashboard: Callable[[], None],
-    on_open_command_center: Callable[[], None],
     on_open_in_browser: Callable[[], None],
     on_toggle_privacy: Callable[[], None],
     on_restart: Callable[[], None],
@@ -114,12 +113,18 @@ def build_menu_entries(
     "Open in Browser" is the *explicitly named* browser action, the only
     place in the product where a browser tab is offered: always
     available, for anyone who prefers one or whose window cannot open
-    right now."""
+    right now.
+
+    There was a third entry, "Open Command Center", which opened
+    /ui/chat in a browser while "Open in Browser" opened the landing
+    page. Now that an ordinary launch lands on Chat
+    (gui.LANDING_PATH), the two did exactly the same thing, and two
+    menu items with one behaviour is a menu that has to be tried to be
+    understood."""
     entries = [
         MenuEntry(status_label(state), None, enabled=False),
         MenuEntry("Open JARVIS", on_open_dashboard),
         MenuEntry("Open in Browser", on_open_in_browser),
-        MenuEntry("Open Command Center", on_open_command_center),
         MenuEntry(privacy_label(state), on_toggle_privacy, enabled=state.privacy_active is not None),
     ]
     # A status line, never a control: clapping is configured on the Voice
@@ -327,11 +332,7 @@ def run_tray_loop(
         # that a browser tab always remains an option, not just an
         # emergency degrade path.
         import webbrowser
-        webbrowser.open(gui.dashboard_url())
-
-    def open_command_center() -> None:
-        import webbrowser
-        webbrowser.open(f"http://{host}:{port}/ui/chat")
+        webbrowser.open(gui.landing_url())
 
     def toggle_privacy() -> None:
         if state.privacy_active is None:
@@ -399,7 +400,6 @@ def run_tray_loop(
         entries = build_menu_entries(
             state,
             on_open_dashboard=open_dashboard,
-            on_open_command_center=open_command_center,
             on_open_in_browser=open_in_browser,
             on_toggle_privacy=toggle_privacy,
             on_restart=do_restart,

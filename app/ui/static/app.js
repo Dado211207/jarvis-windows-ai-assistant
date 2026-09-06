@@ -195,12 +195,26 @@ async function loadDashboard() {
 
 let chatEmpty = true;
 
+// The stage above the conversation is full-size while there is nothing to
+// read and compact once there is: prominent when it costs nothing, and out
+// of the transcript's way when it would. One class on #chat-root; the CSS
+// owns every dimension.
+//
+// Set from the same three places `chatEmpty` is, and from nowhere else,
+// because a second notion of "has messages" is a second thing to fall out
+// of step — which is the whole lesson of the runtime indicator above.
+function chatSetConversationActive(active) {
+  const root = $("chat-root");
+  if (root) root.classList.toggle("has-messages", !!active);
+}
+
 function addMessage(role, text, toolUsed) {
   const list = $("chat-messages");
   if (!list) return null;
 
   const empty = $("chat-empty");
   if (empty && chatEmpty) { empty.style.display = "none"; chatEmpty = false; }
+  chatSetConversationActive(true);
 
   const wrap = document.createElement("div");
   wrap.className = `msg msg-${role}`;
@@ -242,6 +256,7 @@ function addStreamingMessage() {
 
   const empty = $("chat-empty");
   if (empty && chatEmpty) { empty.style.display = "none"; chatEmpty = false; }
+  chatSetConversationActive(true);
 
   const wrap = document.createElement("div");
   wrap.className = "msg msg-assistant";
@@ -700,6 +715,7 @@ async function resetConversation() {
     }
     const empty = $("chat-empty");
     if (empty) { empty.style.display = ""; chatEmpty = true; }
+    chatSetConversationActive(false);
     setChatStatus(r.message || "Chat cleared.");
   } catch (e) {
     setChatStatus("Could not clear the conversation: " + e.message);
@@ -730,6 +746,7 @@ function addApprovalCard(actionId, data) {
 
   const empty = $("chat-empty");
   if (empty && chatEmpty) { empty.style.display = "none"; chatEmpty = false; }
+  chatSetConversationActive(true);
 
   const preview = (data && data.data) ? data.data : {};
   const riskLevel = preview.risk_level || "medium";
@@ -965,10 +982,19 @@ function setPttState(state, message) {
   const status = $("ptt-status");
 
   if (btn) {
+    const recording = state === PTT_STATE.LISTENING;
     btn.setAttribute("aria-label",
-      state === PTT_STATE.LISTENING ? "Push to talk: stop recording" : "Push to talk: start recording");
+      recording ? "Push to talk: stop recording" : "Push to talk: start recording");
+    // The state a screen reader is given. The colour change below is the
+    // same fact for everybody else, and `.btn-voice[aria-pressed="true"]`
+    // adds a third, colour-independent signal in the label itself.
+    btn.setAttribute("aria-pressed", recording ? "true" : "false");
     btn.disabled = pttUnavailable || state === PTT_STATE.TRANSCRIBING || state === PTT_STATE.REQUESTING;
-    btn.className = "btn " + (state === PTT_STATE.LISTENING ? "btn-danger" : "btn-ghost");
+    // `btn-voice` is re-applied here because this assignment replaces the
+    // whole class list. Leaving it out silently dropped the sizing and the
+    // label layout the moment the button was first touched — the markup
+    // said one thing and the first state change said another.
+    btn.className = "btn btn-voice " + (recording ? "btn-danger" : "btn-ghost");
   }
   if (cancelBtn) {
     cancelBtn.hidden = !(
@@ -4619,17 +4645,90 @@ function setRuntimeCore(state) {
 // `aria-hidden` and purely visual, which satisfies the same "no
 // competing live regions" rule from the other direction.
 
+// ── Freshness: which observation of the runtime state wins ──────────────────
+//
+// Three things can set the indicator, and they do NOT arrive in the order
+// they were made:
+//
+//   1. a `runtime_state` event off `/ws/events`, carrying the server's own
+//      monotonic sequence number;
+//   2. a `GET /runtime/state` snapshot, which reports the sequence it was
+//      no newer than;
+//   3. the stream dropping — not an observation at all, but the loss of
+//      the only channel that can produce one.
+//
+// Applying whichever landed last produced three real defects, each
+// reproduced in a browser against the previous build:
+//
+//   * a snapshot issued at page load answered "standby" after a live
+//     "listening" event had already been drawn, and reverted it;
+//   * a snapshot still in flight when the socket closed answered
+//     "speaking" a moment later and repainted an active reply beside a
+//     topbar reading "reconnecting";
+//   * two snapshots completing in reverse order left the older one on
+//     screen.
+//
+// The rule that replaces "last writer wins" is one comparison against the
+// server's own sequence, plus a generation counter for the case a
+// sequence cannot settle — a dropped connection, where the honest answer
+// is not a state at all.
+//
+// Deliberately NOT wall-clock time, request start order, or a "latest
+// request id": the client cannot order its own observations against the
+// server's, and every scheme that tries is a guess. The sequence is the
+// server's answer to that question, and it is already in every event.
+
+//: Bumped when the stream drops. Snapshots carry the value they were
+//: issued under; one answering into a later generation is discarded.
+let runtimeGeneration = 0;
+
+//: The highest sequence whose state is currently on screen. -1 means
+//: nothing is — the page has observed no runtime state it can order.
+let runtimeAppliedSeq = -1;
+
+// One place the three indicators are written, so the topbar badge, the
+// core and Home's "What JARVIS is doing" card cannot disagree: they are
+// not three writers of the same fact, they are one.
+function applyRuntimeObservation(state, seq, generation) {
+  if (generation !== runtimeGeneration) return false;   // issued before a drop
+  // An observation with no sequence cannot be ordered against anything,
+  // and the server puts one on every event and every snapshot — so this
+  // is a malformed message, and acting on it is exactly the "assume
+  // something plausible" this whole mechanism exists to stop.
+  if (typeof seq !== "number") return false;
+  if (seq <= runtimeAppliedSeq) return false;           // older than what is shown
+
+  runtimeAppliedSeq = seq;
+  setRuntimeLabel(state);
+  setRuntimeCore(state);
+  _setOverviewValue("dash-runtime-state", state);
+  return true;
+}
+
+// The stream is the only thing that tells this page what JARVIS is doing.
+// Once it drops, the last state seen is just the last state seen — and
+// leaving "listening" or "speaking" on screen would claim an open
+// microphone or active playback nobody is observing any more.
+//
+// Bumping the generation is what invalidates the snapshots already in
+// flight. Resetting the applied sequence is the other half: after a drop
+// the page knows nothing, so the first observation of the next
+// connection must be able to land whatever its number — including the
+// unchanged sequence a quiet reconnect returns.
+function runtimeConnectionLost() {
+  runtimeGeneration += 1;
+  runtimeAppliedSeq = -1;
+  setRuntimeCore("disconnected");
+}
+
 // The event stream publishes transitions only. A page that opens while
 // nothing is happening would otherwise sit on "connecting" forever, so
-// the current state is read once — and only once — at load.
+// the current state is read at load and again on every reconnect.
 async function refreshRuntimeState() {
+  const generation = runtimeGeneration;
   try {
     const data = await API.get("/runtime/state");
-    if (data && data.state) {
-      setRuntimeLabel(data.state);
-      setRuntimeCore(data.state);
-      _setOverviewValue("dash-runtime-state", data.state);
-    }
+    if (data && data.state) applyRuntimeObservation(data.state, data.seq, generation);
   } catch (e) {
     // Leave "connecting" rather than inventing a state. An unreachable
     // server is exactly when a confident "standby" would be a lie.
@@ -4666,20 +4765,15 @@ function handleStreamEvent(evt) {
   if (typeof evt.seq === "number" && evt.seq > wsLastSeq) wsLastSeq = evt.seq;
 
   // The topbar, the core and Home's "What JARVIS is doing" card are all
-  // driven from this one event, so the three can never disagree. The
-  // three calls are kept adjacent and immediately after the guard:
-  // `test_runtime_card_reads_the_same_source_as_the_topbar` reads the
-  // first 400 characters of this handler to check exactly that, and
-  // prose between them pushes the card's line out of its window.
+  // written by `applyRuntimeObservation`, and by nothing else, so the
+  // three cannot disagree.
   //
   // `evt.payload.to` is required rather than defaulted. An event with no
   // destination state is malformed, and substituting a plausible-looking
   // "standby" for it is how a page ends up asserting something nobody
   // reported.
   if (evt.type === "runtime_state" && evt.payload && evt.payload.to) {
-    setRuntimeLabel(evt.payload.to);
-    setRuntimeCore(evt.payload.to);
-    _setOverviewValue("dash-runtime-state", evt.payload.to);
+    applyRuntimeObservation(evt.payload.to, evt.seq, runtimeGeneration);
   }
 
   // Keep Home's attention panel honest the moment an approval appears or
@@ -4727,7 +4821,7 @@ function connectEventStream() {
     socket = new WebSocket(url);
   } catch (e) {
     setWsStatus("offline");
-    setRuntimeCore("disconnected");
+    runtimeConnectionLost();
     scheduleReconnect();
     return;
   }
@@ -4740,6 +4834,11 @@ function connectEventStream() {
     // transitioned while the stream was down there is nothing to replay
     // and the indicator would stay "unknown" forever. Re-read it once,
     // so recovering the connection also recovers the truth.
+    //
+    // This snapshot and the replayed events race, and either order is
+    // fine: the snapshot reports the sequence it was read at, the
+    // replayed events carry theirs, and whichever describes the later
+    // moment wins on the number rather than on arrival.
     refreshRuntimeState();
   });
 
@@ -4753,13 +4852,11 @@ function connectEventStream() {
 
   socket.addEventListener("close", () => {
     setWsStatus("reconnecting");
-    // The stream is the only thing that tells this page what JARVIS is
-    // doing. Once it drops, the last state we saw is just the last state
-    // we saw — and leaving "listening" or "speaking" on screen would
-    // claim an open microphone or active playback that nobody is
-    // observing any more. Fall back to "unknown", never to the last
-    // value and never to a comfortable-looking "standby".
-    setRuntimeCore("disconnected");
+    // Falls back to "unknown" — never to the last value, never to a
+    // comfortable-looking "standby" — and invalidates the snapshots
+    // already in flight, so none of them can answer "speaking" into a
+    // page whose connection indicator reads "reconnecting".
+    runtimeConnectionLost();
     scheduleReconnect();
   });
 

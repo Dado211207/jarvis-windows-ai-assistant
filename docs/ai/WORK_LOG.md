@@ -1100,11 +1100,142 @@ sentence is `aria-hidden` and purely visual instead, which satisfies the
 same no-competing-regions rule from the other direction. The assertion
 was not touched.
 
+### Review round 2 on `d8fe2b9`
+
+Three findings, all addressed on the same branch.
+
+**1. The indicator was decided by arrival order.** `refreshRuntimeState()`
+applied every response unconditionally. The review named three orderings;
+all three were reproduced first, in a real browser, against an untouched
+`d8fe2b9` checked out in a separate worktree so nothing in progress could
+contaminate the result. Each reproduction asserted the *defect*, and all
+three passed:
+
+| Ordering | What was left on screen |
+|---|---|
+| Load snapshot answers after a newer `listening` event | `standby` |
+| Snapshot in flight when the socket closed answers `speaking` | `speaking`, beside a topbar reading `reconnecting` |
+| Two snapshots complete in reverse order | the older one |
+
+The fix does not add a clock or a request id — the client cannot order
+its own observations against the server's, and every scheme that tries is
+a guess. `GET /runtime/state` reports the `event_bus` sequence it was read
+at, which is the same sequence space every `runtime_state` event already
+carries, so the two are directly comparable. `applyRuntimeObservation()`
+applies an observation only when its sequence is higher than what is
+displayed **and** its connection generation is still current.
+
+Two details that are load-bearing and easy to get wrong:
+
+- **The sequence is read before the state.** `transition()` sets the state
+  under its lock and publishes after releasing it, so the two reads are
+  not atomic. Sequence-then-state can only *under*-claim freshness, and
+  the event that follows repeats the same state — harmless.
+  State-then-sequence would claim to be as recent as an event it
+  predates, and the client would then discard that event as stale.
+  `test_the_sequence_is_read_before_the_state` asserts the order, because
+  swapping two adjacent lines is an invisible edit with a consequence
+  nobody would trace back to it.
+- **A disconnect resets the applied sequence as well as bumping the
+  generation.** The generation invalidates snapshots already in flight;
+  the reset is what lets a *quiet* reconnect recover, since nothing
+  transitioned and its snapshot carries the sequence the page had already
+  applied. Without it the indicator would sit on "unknown" for as long as
+  JARVIS stayed quiet.
+
+`tests/test_runtime_ordering.py` runs the real `app.js` in a real browser
+with `fetch("/runtime/state")` replaced by a promise the test resolves by
+hand, and closes the page's own WebSocket to get a real disconnect —
+`BrowserContext.set_offline` was tried first and does not drop an
+established socket. **12 of the 13 new tests fail on unmodified
+`d8fe2b9`.**
+
+`test_runtime_card_reads_the_same_source_as_the_topbar` was re-pointed
+rather than relaxed. It used to hold three calls adjacent by reading 400
+characters of source; the calls now live inside the one applier, which is
+a stronger version of the same property, and the behaviour is proved in
+the browser instead.
+
+**2. Every launch opened the Dashboard.** `gui.dashboard_url()` returned
+`/ui/` after onboarding — so a Chat-first product put a page of CPU bars
+and health dots in front of every person who opened it. Now
+`landing_url()` returning `LANDING_PATH = "/ui/chat"`, with `/ui/setup`
+still winning on first run because an unconfigured JARVIS has no provider
+to answer with. The Dashboard is untouched and still at `/ui/`. The
+tray's "Open Command Center" entry went with it: it opened `/ui/chat` in
+a browser, which is exactly what "Open in Browser" above it now does, and
+two menu items with one behaviour is a menu you have to try to understand.
+
+**3. The composition was still the old page.** Fair: a 54px marker beside
+a heading is a status dot with ambitions. The core is now a 132px centred
+stage above the conversation with the state sentence as the largest text
+on the page — and it compacts to a 54px row the moment there are messages,
+so "prominent" and "preserve usable conversation space" are not traded
+against each other. `--core-size` drives the whole assembly, so the ten
+state rules need no size of their own and the height breakpoints (720px,
+560px — the ones a resized desktop window actually hits) change one
+number.
+
+Voice controls are a labelled group: the microphone carries a visible
+word beside its glyph, is a real `aria-pressed` toggle kept in step by
+`setPttState`, and shows a third, colour-independent recording signal.
+Every control in the composer is at least 44px with 8px between adjacent
+ones, per the touch-target guidance. Send is no longer one mis-aimed
+pixel from opening a microphone.
+
+A note on the design skill this round: the outcome query for voice status
+feedback **misrouted** to generic form guidance and is not being presented
+as guidance. The rules actually used and verified were the icon-context
+rule (an interactive control needs an accessible name and must expose
+applicable state), reduced motion, "1–2 animated elements per view", and
+the touch-target and spacing figures.
+
+### Two failures the round-2 verification found, and what they were
+
+Both were in tests, not in the product, and neither assertion was
+weakened.
+
+1. **My own new test was wrong.** `test_a_quiet_reconnect_still_recovers_the_state`
+   set up its "before the drop" state with a snapshot numbered exactly
+   `base` — the sequence the page had already applied at load. The
+   ordering rule correctly discarded it as not newer, so the test was
+   really asserting against whatever state an earlier test in the session
+   had left the shared state machine in. It passed alone and failed in
+   the suite. The setup snapshot now uses `base + 5`; the property under
+   test is that the sequence is *unchanged across the drop*, not what its
+   value is.
+2. **A pre-existing race in an unrelated test.**
+   `test_the_chat_toggle_writes_the_same_saved_setting_as_the_voice_page`
+   clicked the "Speak replies" checkbox, waited for `checked === true`,
+   then immediately asserted `tts_service.output_enabled`. A checkbox
+   flips natively on click, before the POST to `/voice/output` has been
+   sent — so that wait proved the browser painted it and nothing about
+   the server. It now waits, bounded, for the postcondition it is
+   actually about. The assertion is unchanged and a server that never
+   records the change still fails it.
+
+### Verification of round 2
+
+| Check | Result |
+|---|---|
+| Full gate (`JARVIS_LOG_LEVEL=WARNING`, temp DB) | 3282 passed, 7 skipped, 193 deselected |
+| Browser + accessibility (Playwright + axe) | 193 passed |
+| New ordering tests against unmodified `d8fe2b9` | 12 failed, 1 passed |
+| `python -m compileall app db` | exit 0 |
+| `git diff --check` | exit 0 |
+| External URLs in `style.css` | 0 |
+
+Screenshots were regenerated after a layout defect the first set exposed:
+the stage plus `.chat-messages`' fixed 340px minimum pushed the composer
+off the bottom of a 1280×860 window, so the first thing a person would
+see on the page JARVIS now opens on was a chat box they had to scroll to
+reach. The transcript takes the space that is left instead.
+
 ### Open, and staying open
 
 #144 and #145 are unchanged by this branch and remain unresolved — see
-`docs/survivor-and-teardown-investigation.md`. `main` is currently red
-because of #144.
+`docs/survivor-and-teardown-investigation.md`. Neither investigation was
+restarted this round. `main` is currently red because of #144.
 
 ## The owner's current installation must not be patched manually
 

@@ -114,10 +114,42 @@ def test_local_only_state_explains_what_still_works():
 
 def test_runtime_card_reads_the_same_source_as_the_topbar():
     """Two indicators of the same thing that can disagree are worse than
-    one; both are driven by the runtime_state event."""
+    one, so there is exactly one function that writes either.
+
+    This used to read the first 400 characters after the `runtime_state`
+    branch and look for `dash-runtime-state` in them, which held the
+    three calls adjacent by making a comment between them a test failure.
+    The calls now live together inside `applyRuntimeObservation`, which
+    the event handler delegates to — a stronger version of the same
+    property, since a snapshot cannot bypass it either.
+
+    `tests/test_runtime_ordering.py` proves the behaviour in a browser;
+    this pins the structure that makes it impossible to get wrong.
+    """
     js = _js()
     handler = js[js.index('if (evt.type === "runtime_state"'):]
-    assert "dash-runtime-state" in handler[:400]
+    assert "applyRuntimeObservation" in handler[:300]
+
+    applier = js[js.index("function applyRuntimeObservation"):]
+    applier = applier[:applier.index("\n}")]
+    for written in ("setRuntimeLabel", "setRuntimeCore", "dash-runtime-state"):
+        assert written in applier, f"{written} is no longer written by the one applier"
+
+    # Exactly three mentions of setRuntimeCore in the whole file: its own
+    # definition, the applier, and runtimeConnectionLost. A fourth is a
+    # second writer, which is how the topbar came to read STANDBY beside
+    # a core already saying the stream was down.
+    assert js.count("setRuntimeCore(") == 3, (
+        "setRuntimeCore is written from somewhere new — the core has a "
+        "second writer again"
+    )
+    assert "setRuntimeCore(" in js[js.index("function runtimeConnectionLost"):][:600]
+
+    # The card has one other writer, and it copies the topbar's text
+    # rather than deciding anything, so the two cannot disagree.
+    fallback = js[js.index("async function refreshOverviewRuntimeState"):]
+    fallback = fallback[:fallback.index("\n}")]
+    assert "topbar-runtime-label" in fallback and "label.textContent" in fallback
 
 
 def test_approvals_panel_refreshes_when_an_action_changes():

@@ -650,6 +650,22 @@ def test_the_chat_toggle_writes_the_same_saved_setting_as_the_voice_page(page, l
             "document.getElementById('chat-speak-replies').checked === true", timeout=5000,
         )
 
+        # A checkbox flips natively on click, before the POST to
+        # /voice/output has been sent, let alone answered — so the wait
+        # above proves the browser painted it and nothing about the
+        # server. Asserting the flag immediately after was a race that
+        # passed on almost every run and failed on one.
+        #
+        # This waits for the postcondition the test is actually about.
+        # It is not a weakened assertion: `output_enabled is True` still
+        # has to become true, and a server that never records the change
+        # still fails here — it is given the time an asynchronous write
+        # legitimately takes. `live_server` runs in this process, so this
+        # is the same object the request handler wrote to.
+        deadline = time.time() + 5.0
+        while time.time() < deadline and not tts_service.output_enabled:
+            time.sleep(0.05)
+
         assert tts_service.output_enabled is True
 
         page.goto(url("/ui/voice"), wait_until="networkidle")

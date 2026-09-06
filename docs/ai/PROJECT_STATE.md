@@ -58,6 +58,53 @@ separate safe Coding Workspace for the owner's own repositories.
   the Phase 7 rule; the design skill's Google Fonts recommendation was
   overridden on that basis.
 
+#### Review round 2 on the same branch
+
+A focused review of `d8fe2b9` found three things. All three are addressed
+on this branch; none of them touched `app/coding/`, a browser-QA timeout,
+or a survivor assertion.
+
+1. **Runtime-state ordering.** `refreshRuntimeState()` applied every
+   response unconditionally, so the indicator was decided by which answer
+   arrived last. Three orderings were reproduced in a real browser against
+   unmodified `d8fe2b9` — a delayed load snapshot reverting a newer
+   `listening` event; a snapshot in flight at socket close answering
+   `speaking` beside a topbar reading "reconnecting"; two snapshots
+   completing in reverse order.
+
+   The fix makes freshness the **server's** sequence, not arrival order.
+   `GET /runtime/state` now reports the `event_bus` sequence it was read
+   at — read *before* the state, so it can only under-claim — and
+   `applyRuntimeObservation()` in `app.js` applies an observation only if
+   its sequence is higher than what is on screen and its connection
+   generation is still current. A dropped stream bumps the generation
+   (invalidating every in-flight snapshot) and resets the applied
+   sequence (so a quiet reconnect can still recover). Reconnect replay
+   works in both directions: a replayed event older than the reconnect
+   snapshot is discarded, a newer one wins.
+
+   `tests/test_runtime_ordering.py` (browser) and
+   `tests/test_runtime_state_endpoint.py` cover it. **12 of the 13 fail
+   on unmodified `d8fe2b9`.**
+
+2. **Chat-first launch.** `gui.dashboard_url()` opened `/ui/` — the
+   Dashboard — after onboarding, so every launch of a Chat-first product
+   landed on CPU bars and health dots. It is now `gui.landing_url()`
+   returning `LANDING_PATH = "/ui/chat"`, with `/ui/setup` still winning
+   on first run. The Dashboard is unchanged and still served at `/ui/`,
+   one sidebar click away. The tray's "Open Command Center" entry was
+   removed: it opened `/ui/chat` in a browser, which is now exactly what
+   "Open in Browser" above it does.
+
+3. **The composition.** The core was a 54px marker beside the page title
+   with the rest of the layout untouched. It is now a centred stage above
+   the conversation at 132px, with the state sentence as the largest text
+   on the page; it compacts to a 54px row once there are messages, so the
+   transcript keeps its space. Voice controls are grouped and labelled —
+   the microphone carries a visible word, is a real `aria-pressed`
+   toggle, and every control in the composer is at least 44px with 8px
+   between adjacent ones.
+
 ### Anthropic identity-linked API keys — MERGED
 
 - Branch: `claude/anthropic-workspace-id` (merged as `01dd3d2`, branch preserved)

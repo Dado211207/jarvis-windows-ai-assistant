@@ -4,13 +4,21 @@ Drives the actual FastAPI app in a real Chromium through Playwright. No
 mockups, no hand-drawn approximations: every image is the product
 rendering itself.
 
-**Runtime states are simulated, and the filenames say so.** Reaching
-`speaking` or `awaiting_approval` for real would need a live provider, a
-microphone and a pending action. What this script does instead is
-dispatch the same `runtime_state` event the server broadcasts, through
-the same `handleStreamEvent` path the page uses in production — so the
-rendering is genuine even though the trigger is not. Any file with
-`-simulated-` in its name was produced that way.
+**Anything simulated says so in its filename.** Three kinds of image here
+carry `-simulated-`:
+
+  * runtime states — reaching `speaking` or `awaiting_approval` for real
+    would need a live provider, a microphone and a pending action, so the
+    same `runtime_state` event the server broadcasts is dispatched through
+    the same `handleStreamEvent` path production uses;
+  * a conversation — invented words, drawn by the page's own
+    `addMessage()`;
+  * an approval card — a representative pending action drawn by the real
+    `addApprovalCard()`. Nothing is actually pending; Confirm would ask
+    the server about an id it never issued.
+
+In every case the *rendering* is the product's own. Only the trigger is
+the harness's, which is exactly what the name is there to disclose.
 
 Nothing here is a test and nothing asserts. It writes PNGs.
 """
@@ -90,6 +98,40 @@ def _wait_for_server(port: int, timeout: float = 30.0) -> bool:
     return False
 
 
+#: A short exchange, drawn by the page's own `addMessage` / `addApprovalCard`
+#: — the same functions a real reply goes through. The words are invented,
+#: which is why every file built from this is named `-simulated-`.
+SIMULATED_CONVERSATION = """
+() => {
+  addMessage("user", "system status");
+  addMessage("assistant",
+    "CPU 14%, memory 41% of 16 GB, disk C: 232 GB free of 476 GB. " +
+    "Nothing is waiting for approval.", "system_status");
+  addMessage("user", "make a note that the installer run finished");
+  addMessage("assistant",
+    "Saved to Documents\\\\JARVIS_Notes as installer-run.md.", "create_note");
+}
+"""
+
+#: An approval card in the transcript, rendered by the real code path with
+#: a representative pending action. Nothing is actually pending: pressing
+#: Confirm here would ask the server about an id it has never issued.
+SIMULATED_APPROVAL = """
+() => {
+  addMessage("user", "empty the downloads folder");
+  addApprovalCard("simulated-action-id", {
+    message: "This action needs your approval before it runs.",
+    data: {
+      tool_name: "delete_files",
+      risk_level: "high",
+      description: "Delete 38 files from C:\\\\Users\\\\...\\\\Downloads. " +
+        "This cannot be undone from JARVIS.",
+    },
+  });
+}
+"""
+
+
 def _apply_state(page, state: str) -> None:
     """Push a runtime_state event through the page's own handler.
 
@@ -98,11 +140,16 @@ def _apply_state(page, state: str) -> None:
     produce. This goes through `handleStreamEvent`, so what is captured is
     what a real transition draws.
     """
+    # The sequence has to climb. `applyRuntimeObservation` discards an
+    # observation that is not newer than the one on screen, so a harness
+    # that sent `seq: 0` every time would photograph the first state
+    # seven times and name the files after seven different ones.
     page.evaluate(
         """(state) => {
+            window.__shotSeq = (window.__shotSeq || 1000000) + 1;
             window.handleStreamEvent({
-                seq: 0, type: "runtime_state", timestamp: new Date().toISOString(),
-                payload: { to: state }
+                seq: window.__shotSeq, type: "runtime_state",
+                timestamp: new Date().toISOString(), payload: { to: state }
             });
         }""",
         state,
@@ -148,6 +195,27 @@ def main() -> int:
                     name = out / f"{label}-{vp_name}.png"
                     page.screenshot(path=str(name), full_page=False)
                     written.append(name)
+
+                # The stage compacts once there is a conversation to read,
+                # so an empty Chat and a used one are two different
+                # compositions and both are worth showing.
+                page.goto(f"http://{HOST}:{port}/ui/chat", wait_until="networkidle")
+                page.wait_for_timeout(250)
+                page.evaluate(SIMULATED_CONVERSATION)
+                page.wait_for_timeout(400)
+                name = out / f"chat-simulated-conversation-{vp_name}.png"
+                page.screenshot(path=str(name), full_page=False)
+                written.append(name)
+
+                # An approval in the transcript, where it actually appears
+                # — there is no modal anywhere in this product.
+                page.goto(f"http://{HOST}:{port}/ui/chat", wait_until="networkidle")
+                page.wait_for_timeout(250)
+                page.evaluate(SIMULATED_APPROVAL)
+                page.wait_for_timeout(400)
+                name = out / f"chat-simulated-approval-{vp_name}.png"
+                page.screenshot(path=str(name), full_page=False)
+                written.append(name)
 
                 # Runtime states, on Chat, at the desktop size only —
                 # the point is the core, not the layout.

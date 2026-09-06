@@ -4,37 +4,40 @@
 {% block content %}
 <div id="chat-root">
 
-  {# The core renders `RuntimeState` and nothing else. Its class is set
-     only from a `runtime_state` event or an explicit disconnect, so there
-     is no client-side path that can show "listening" while the server is
-     not listening. It starts in `unknown` — not `standby` — because
-     before the first event arrives the page genuinely does not know.
+  {# The core is the page's subject, not a decoration beside the title.
+     It renders `RuntimeState` and nothing else: its class is set only from
+     a `runtime_state` event or an explicit disconnect, so there is no
+     client-side path that can show "listening" while the server is not
+     listening. It starts in `unknown` — not `standby` — because before the
+     first observation the page genuinely does not know.
 
-     One animated element on the page, which is what the reduced-motion
-     and performance guidance both ask for. #}
-  <div class="core-strip">
+     One animated element on the whole page, which is what the
+     reduced-motion and performance guidance both ask for. #}
+  <section class="core-stage">
     <div id="runtime-core" class="core core-unknown" data-state="unknown" aria-hidden="true">
       <span class="core-ring"></span>
       <span class="core-ring core-ring-2"></span>
       <span class="core-dot"></span>
     </div>
-    <div class="core-copy">
-      <h1 class="page-title">Chat</h1>
-      {# Visual only. The single live region for runtime state is the
-         topbar badge, which exists on every page and is pinned as such by
-         `test_key_status_regions_are_marked_aria_live`; a second region
-         here would announce the same transition twice. This line is the
-         richer, sighted version of the same fact. #}
-      <p id="runtime-core-status" class="core-status" aria-hidden="true">
-        Connecting to JARVIS&hellip;
-      </p>
-      <p class="page-subtitle">
-        Every request goes through the router, tool registry and permission system.
-      </p>
-    </div>
-  </div>
 
-  <div class="card" style="padding: 1rem 1.1rem;">
+    <h1 class="core-eyebrow">Chat</h1>
+
+    {# Visual only. The single live region for runtime state is the topbar
+       badge, which exists on every page and is pinned as such by
+       `test_key_status_regions_are_marked_aria_live`; a second region here
+       would announce the same transition twice. This line is the richer,
+       sighted version of the same fact — and the largest text on the page,
+       because it is the one thing a person looks up to check. #}
+    <p id="runtime-core-status" class="core-status" aria-hidden="true">
+      Connecting to JARVIS&hellip;
+    </p>
+
+    <p class="core-hint">
+      Every request goes through the router, tool registry and permission system.
+    </p>
+  </section>
+
+  <div class="card chat-card">
     <div class="chat-toolbar">
       <span id="chat-provider" class="text-xs text-muted" aria-live="polite">Checking AI provider&hellip;</span>
       {# The same saved setting as the Voice page toggle — one flag, read
@@ -67,36 +70,48 @@
     <div class="chat-input-row">
       <input
         id="chat-input"
-        class="input"
+        class="input chat-input"
         type="text"
-        placeholder='Try: "status", "open notepad", "memory add hello world", "open website example.com"'
+        placeholder='Try: "status", "open notepad", "memory add hello world"'
         autocomplete="off"
         spellcheck="false"
         aria-label="Command input"
       >
-      <button
-        id="ptt-button"
-        class="btn btn-ghost"
-        type="button"
-        aria-label="Push to talk: start recording"
-        title="Push to talk (Alt+M). Voice input is optional — text always works."
-      >&#127908;</button>
-      <button
-        id="ptt-cancel"
-        class="btn btn-ghost btn-sm"
-        type="button"
-        aria-label="Cancel recording"
-        hidden
-      >&#10005;</button>
-      <button id="chat-send" class="btn btn-primary" type="button">Send</button>
-      <button
-        id="chat-stop"
-        class="btn btn-danger"
-        type="button"
-        hidden
-        aria-label="Stop generating the current response"
-      >Stop</button>
+
+      {# Voice controls, grouped and labelled.
+         They were three unlabelled ghost buttons wedged between the input
+         and Send, at a size the touch-target guidance would not accept. The
+         microphone now carries a visible word as well as its glyph, is a
+         real toggle (`aria-pressed`, kept in step by `setPttState`), and
+         sits in its own group so Send is never one mis-aimed pixel away
+         from opening a microphone. #}
+      <div class="chat-actions" role="group" aria-label="Voice and send controls">
+        <button
+          id="ptt-button"
+          class="btn btn-voice"
+          type="button"
+          aria-pressed="false"
+          aria-label="Push to talk: start recording"
+          title="Push to talk (Alt+M). Voice input is optional — text always works."
+        ><span class="voice-glyph" aria-hidden="true">&#127908;</span><span class="voice-word">Speak</span></button>
+        <button
+          id="ptt-cancel"
+          class="btn btn-ghost btn-icon"
+          type="button"
+          aria-label="Cancel recording"
+          hidden
+        >&#10005;</button>
+        <button id="chat-send" class="btn btn-primary" type="button">Send</button>
+        <button
+          id="chat-stop"
+          class="btn btn-danger"
+          type="button"
+          hidden
+          aria-label="Stop generating the current response"
+        >Stop</button>
+      </div>
     </div>
+
     <div id="ptt-status" class="text-xs text-muted mt-1" aria-live="polite"></div>
     <div id="chat-status" class="text-xs text-muted mt-1" aria-live="polite"></div>
   </div>

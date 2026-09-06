@@ -693,19 +693,36 @@ def test_show_error_dialog_off_windows_does_not_raise(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# dashboard_url()
+# landing_url()
 # ---------------------------------------------------------------------------
 
-def test_dashboard_url_points_at_setup_before_onboarding_completes(monkeypatch):
+def test_landing_url_points_at_setup_before_onboarding_completes(monkeypatch):
     from app.launcher import gui
     monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: False)
-    assert gui.dashboard_url().endswith("/ui/setup")
+    assert gui.landing_url().endswith("/ui/setup")
 
 
-def test_dashboard_url_points_at_the_dashboard_after_onboarding(monkeypatch):
+def test_landing_url_points_at_chat_after_onboarding(monkeypatch):
+    """An ordinary launch opens the thing people came to use.
+
+    This asserted `/ui/` — the Dashboard — until the review pointed out
+    that a Chat-first product whose every launch lands on CPU bars and
+    health dots is not Chat-first. The Dashboard is still served at
+    `/ui/` and still one sidebar click away; it stopped being the page
+    JARVIS opens itself on.
+    """
     from app.launcher import gui
     monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: True)
-    assert gui.dashboard_url().endswith("/ui/")
+    assert gui.landing_url().endswith("/ui/chat")
+
+
+def test_the_window_child_is_started_on_the_landing_url(monkeypatch):
+    """The constant and the launch path cannot drift apart: whatever
+    `landing_url()` decides is what the native window is pointed at."""
+    from app.launcher import gui
+    monkeypatch.setattr("app.core.onboarding.is_onboarding_complete", lambda: True)
+    assert gui.landing_url().endswith(gui.LANDING_PATH)
+    assert gui.LANDING_PATH == "/ui/chat"
 
 
 # ---------------------------------------------------------------------------
