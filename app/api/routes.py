@@ -554,6 +554,59 @@ class StoredDataResponse(BaseModel):
     encrypted: bool
 
 
+class RuntimeStateResponse(BaseModel):
+    state: str
+    #: The event-stream sequence this snapshot is no newer than.
+    #:
+    #: Without it the page has two sources of runtime state — this
+    #: response and the `/ws/events` stream — and no way to tell which
+    #: describes the more recent moment. It guessed, by applying whichever
+    #: arrived last, and a delayed answer to a request issued seconds
+    #: earlier then overwrote newer live events. Sharing the stream's own
+    #: sequence space makes the two directly comparable.
+    seq: int
+
+
+@router.get("/runtime/state", response_model=RuntimeStateResponse)
+def runtime_state() -> RuntimeStateResponse:
+    """What JARVIS is doing right now, and how recent that answer is.
+
+    The event stream only publishes *transitions*, so a page that opened
+    while nothing was happening had nothing to render. What it did
+    instead was assume: the topbar badge shipped with the literal text
+    "standby" in the template, and the Home overview copied that text.
+    Both then claimed a state nobody had observed.
+
+    A read is the honest fix. It is a plain GET with no side effects and
+    no session token, because the state name is already broadcast to
+    every connected client over `/ws/events`.
+
+    **The sequence is read before the state, and the order matters.**
+    `RuntimeStateMachine.transition()` assigns the new state under its
+    lock and publishes the event after releasing it, so the two reads
+    here cannot be taken as one atomic observation. Of the two possible
+    skews only one is safe:
+
+      * seq first, then state — a transition landing in between returns
+        the *new* state under the *old* sequence. The snapshot
+        under-claims its own freshness; the event that follows carries
+        the same state under a higher sequence, so applying it changes
+        nothing. Harmless.
+      * state first, then seq — returns the *old* state under the *new*
+        sequence, claiming to be as recent as an event it predates. The
+        client would then discard that event as stale and keep showing
+        the older state. That is the defect this endpoint exists to
+        prevent, arriving by a different door.
+
+    So: `latest_seq()` first. Never reorder these two lines.
+    """
+    from app.core.events import event_bus
+    from app.core.runtime_state import runtime
+
+    seq = event_bus.latest_seq()
+    return RuntimeStateResponse(state=runtime.state.value, seq=seq)
+
+
 @router.get("/privacy/status", response_model=PrivacyStatusResponse)
 def privacy_status() -> PrivacyStatusResponse:
     from app.core.privacy import privacy_mode

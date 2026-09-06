@@ -50,11 +50,30 @@ QUIT_SERVER_STOP_TIMEOUT_SECONDS = 5.0
 QUIT_PORT_RELEASE_TIMEOUT_SECONDS = 5.0
 
 
-def dashboard_url() -> str:
-    """Routes to the first-run setup page until it's been completed, then
-    the normal dashboard."""
+#: Where an ordinary launch lands once first-run setup is behind us.
+#:
+#: Chat, not the Dashboard. JARVIS is an assistant: the thing a person
+#: opens it to do is talk to it, and every launch arriving on a page of
+#: CPU bars and health dots put a diagnostics screen between them and
+#: that. The Dashboard is still one click away in the sidebar and still
+#: served at /ui/ — nothing was removed, it stopped being the front door.
+LANDING_PATH = "/ui/chat"
+
+#: First run goes to setup instead, and that precedence is not negotiable:
+#: an unconfigured JARVIS has no provider to answer with, so a chat box
+#: would be the least useful page in the product.
+SETUP_PATH = "/ui/setup"
+
+
+def landing_url() -> str:
+    """The page a launch opens: setup until onboarding is complete, then Chat.
+
+    Named for what it is. It was `dashboard_url()` and returned `/ui/`,
+    which is genuinely the Dashboard route — the name was accurate and
+    the destination was the problem.
+    """
     from app.core.onboarding import is_onboarding_complete
-    path = "/ui/" if is_onboarding_complete() else "/ui/setup"
+    path = LANDING_PATH if is_onboarding_complete() else SETUP_PATH
     return f"http://{settings.jarvis_host}:{settings.jarvis_port}{path}"
 
 
@@ -216,7 +235,7 @@ class LauncherSupervisor:
         matching repair — a distinction the old boolean threw away.
         """
         self._window = window_process.WindowProcess(
-            url=dashboard_url(), close_action=close_action(),
+            url=landing_url(), close_action=close_action(),
             # So the window child can authenticate the one thing it reports
             # to the server: which folder a person picked in a native dialog.
             session_secret=self._server.session_secret if self._server else "",

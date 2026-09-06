@@ -601,8 +601,13 @@ a:hover { color: var(--accent-hover); }
 }
 
 .chat-messages {
-  min-height: 340px;
-  max-height: 560px;
+  /* Grows into whatever the stage and the composer leave. The old fixed
+     340px/560px band is what pushed the input row off a 1280x860 window
+     once the core became a stage — see the note on #chat-root below.
+     140px is a floor, not a target: two messages, so the box never
+     collapses to nothing on a very short window. */
+  flex: 1 1 auto;
+  min-height: 140px;
   overflow-y: auto;
   padding: 0.5rem 0.25rem;
   margin-bottom: 1rem;
@@ -742,9 +747,107 @@ a:hover { color: var(--accent-hover); }
   margin-right: 0.6rem;
 }
 
+/* ── The Chat page's vertical budget ───────────────────────────────────
+   The composer must always be on screen. `.chat-messages` had a fixed
+   340px minimum, which was fine beside a 54px status marker and is not
+   fine under a 132px stage: at 1280×860 the input row fell off the
+   bottom edge, so the first thing a person saw on the page JARVIS now
+   opens on was a chat box they had to scroll to reach.
+
+   So the transcript takes what is left rather than claiming a fixed
+   amount. `min-height: 0` on both the column and the scroller is what
+   lets a flex child actually shrink — without it the default
+   `min-height: auto` keeps the scroller at its content height and the
+   overflow reappears one message later. */
+#chat-root {
+  display: flex;
+  flex-direction: column;
+  /* 52px topbar + the 1.75rem padding above and below .main. */
+  min-height: calc(100vh - 52px - 3.5rem);
+}
+
+.chat-card {
+  padding: 1rem 1.1rem;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ── The composer ──────────────────────────────────────────────────────
+   The input and the controls are two groups, not one run of five
+   same-looking things. Send and the microphone used to sit side by side
+   at identical size and weight, which put "open a microphone" one
+   mis-aimed pixel from "send this" — and the microphone carried no word
+   at all, only a glyph.
+
+   Sizes are from the touch-target guidance: every control here is at
+   least 44px in its smaller dimension, with 8px between adjacent ones. */
 .chat-input-row {
   display: flex;
+  align-items: stretch;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.chat-input {
+  flex: 1 1 16rem;
+  min-width: 0;
+  min-height: 44px;
+}
+
+.chat-actions {
+  display: flex;
+  align-items: stretch;
   gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
+.chat-actions .btn { min-height: 44px; }
+
+/* The microphone: a real toggle, with a word beside the glyph.
+   `setPttState` rewrites this element's class list on every transition,
+   so `btn-voice` is re-applied there too — see the comment at that
+   assignment. `aria-pressed` is what a screen reader reads as the state;
+   the colour change is what everybody else does. */
+.btn-voice {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 44px;
+  padding-inline: 0.85rem;
+  font-weight: 600;
+}
+
+.voice-glyph { font-size: 1rem; line-height: 1; }
+.voice-word  { font-size: 0.8rem; letter-spacing: 0.01em; }
+
+/* Recording. `btn-danger` already carries the colour; this adds the
+   second, colour-independent signal — the glyph does not depend on a
+   red the reader may not see. */
+.btn-voice[aria-pressed="true"] .voice-glyph { transform: scale(1.12); }
+.btn-voice[aria-pressed="true"] .voice-word::after {
+  content: " \00B7 rec";
+  letter-spacing: 0.04em;
+}
+
+/* Cancel is the one control here that stays a glyph: it appears only
+   while recording, next to a button that has just been relabelled
+   "stop recording", and its accessible name says what it does. */
+.btn-icon {
+  min-width: 44px;
+  padding-inline: 0.6rem;
+  font-size: 0.9rem;
+}
+
+/* Below this the composer stacks: the input takes the full width and the
+   controls sit under it, rather than each shrinking until the microphone
+   is a 20px square. */
+@media (max-width: 640px) {
+  .chat-input { flex: 1 1 100%; }
+  .chat-actions { width: 100%; }
+  .chat-actions .btn-primary,
+  .chat-actions .btn-danger { flex: 1 1 auto; }
 }
 
 /* ── Memory list ───────────────────────────────────────────────────── */
@@ -937,7 +1040,49 @@ code, .mono {
 
 /* ── Responsive: hide sidebar on narrow screens ─────────────────────── */
 @media (max-width: 768px) {
-  .sidebar { display: none; }
+  /* The sidebar used to be `display: none` here, which removed every
+     navigation link — Settings included — from any window under 768px.
+     A desktop window can easily be that narrow, and so can a 1280px
+     screen at 175% Windows display scaling, where the CSS viewport is
+     731px. "Hidden on small screens" is a phone assumption; this is a
+     desktop application whose window the user resizes.
+
+     It becomes a horizontal strip instead: same links, same order, same
+     `aria-current`, scrollable if they do not fit. Nothing is removed
+     and no second navigation structure is introduced. */
+  /* `body` is a flex ROW: sidebar and main sit side by side. A
+     full-width sidebar in that row is wider than the viewport by
+     construction, which is what made every page overflow horizontally at
+     390px on the first attempt. Stacking is the fix, not a width tweak. */
+  body { flex-direction: column; }
+
+  .sidebar {
+    position: static;
+    width: auto;
+    min-height: 0;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.25rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.4rem 0.75rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-brand,
+  .sidebar-divider,
+  .sidebar-footer { display: none; }
+  .sidebar-nav {
+    flex-direction: row;
+    gap: 0.25rem;
+    flex-wrap: nowrap;
+  }
+  .sidebar-link {
+    white-space: nowrap;
+    padding: 0.4rem 0.7rem;
+  }
+  .layout-main { margin-left: 0; }
 
   /* The topbar's 5 status indicators are fixed-width (white-space: nowrap
      labels) and .topbar-indicators never shrinks below its content's
@@ -1234,3 +1379,303 @@ code, .mono {
   .diff-add::before { content: "+ "; }
   .diff-del::before { content: "- "; }
 }
+
+/* ── The runtime core ─────────────────────────────────────────────────
+   One animated element on the page. It renders `RuntimeState` and
+   nothing else: every class here is set from a `runtime_state` event or
+   from an explicit disconnect, so the interface cannot show "listening"
+   or "speaking" while the server is not in that state.
+
+   Ten states, each visually distinct, because the product genuinely has
+   ten. Collapsing `awaiting_approval`, `offline` and `error` into one
+   "busy" look would hide exactly the three a person needs to act on.
+
+   Colour is never the only signal: each state also changes the ring
+   count, the dot size or the border style, so the strip still reads on a
+   monochrome display and for a colour-blind reader.
+
+   Transform and opacity only — no width/height animation, no filter, no
+   box-shadow animation. That keeps it off the layout and paint paths and
+   comfortably cheap on integrated and mid-range GPUs alike. */
+
+/* The stage. Centred above the conversation, because the core is what the
+   page is about and a 54px marker beside a heading was a status dot with
+   ambitions.
+
+   `--core-size` drives every part of it, so the whole assembly scales from
+   one number and the ten state rules below never need a size of their own.
+   Two sizes exist: the full stage on an empty conversation, and a compact
+   one once there are messages to read — the hero has the room when there
+   is nothing to push down, and gives it back when there is. Both keep the
+   core, the state sentence and the same animation; only the scale
+   changes. */
+.core-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.5rem;
+  padding: 1.6rem 1rem 1.4rem;
+  margin-bottom: 0.9rem;
+  /* A faint pool of accent behind the core, so it reads as lit rather than
+     drawn. Static — a moving gradient would be a second animated element. */
+  background:
+    radial-gradient(58% 78% at 50% 22%, rgba(0, 212, 255, 0.07), transparent 70%);
+}
+
+.core-eyebrow {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  /* --text-muted, not --text-subtle: #475569 on this background is
+     2.6:1, which is fine for a decorative glyph and not fine for a word
+     somebody has to read. */
+  color: var(--text-muted);
+}
+
+/* The largest text on the page. It is the answer to the only question
+   somebody looks up from the keyboard to ask. */
+.core-status {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 1.22rem;
+  line-height: 1.45;
+  font-weight: 500;
+  color: var(--text);
+  letter-spacing: 0.005em;
+}
+
+.core-hint {
+  margin: 0;
+  max-width: 54ch;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.core {
+  --core-size: 132px;
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--core-size);
+  height: var(--core-size);
+  display: grid;
+  place-items: center;
+}
+
+/* Once the conversation has content, the transcript is what matters and
+   the stage steps back. Driven by one class on #chat-root, set where the
+   empty-state placeholder is already hidden, so there is no second notion
+   of "has messages" to fall out of step. */
+/* The switch is deliberately not animated. Padding and font-size are
+   layout properties, and this file's rule for the core is transform and
+   opacity only; a 220ms reflow buys nothing at the exact moment a message
+   is being appended and the transcript is reflowing anyway. */
+#chat-root.has-messages .core-stage {
+  flex-direction: row;
+  justify-content: flex-start;
+  text-align: left;
+  gap: 1rem;
+  padding: 0.35rem 0.2rem 0.6rem;
+  background: none;
+}
+#chat-root.has-messages .core { --core-size: 54px; }
+#chat-root.has-messages .core-eyebrow { display: none; }
+#chat-root.has-messages .core-hint { display: none; }
+#chat-root.has-messages .core-status { font-size: 0.9rem; max-width: none; }
+
+.core-ring,
+.core-dot {
+  position: absolute;
+  border-radius: 50%;
+  /* `will-change` is deliberately absent: these are small elements and
+     promoting three of them per page costs more than it saves. */
+  transition: opacity 200ms ease, transform 200ms ease, border-color 200ms ease;
+}
+
+.core-ring {
+  inset: 0;
+  border: 1.5px solid var(--border-bright);
+  opacity: 0.5;
+}
+
+.core-ring-2 {
+  inset: calc(var(--core-size) * 0.155);
+  border-color: var(--border);
+  opacity: 0.35;
+}
+
+.core-dot {
+  width: calc(var(--core-size) * 0.185);
+  height: calc(var(--core-size) * 0.185);
+  background: var(--text-subtle);
+}
+
+/* Before the first event: the page does not know, and says so. */
+.core-unknown .core-dot,
+.core-connecting .core-dot { background: var(--text-subtle); }
+.core-connecting .core-ring { border-style: dashed; }
+
+/* Idle. Present, not busy — a slow breath, or nothing at all under
+   reduced motion. */
+.core-standby .core-dot,
+.core-booting .core-dot { background: var(--accent-dim); }
+.core-standby .core-ring { border-color: var(--accent-dim); opacity: 0.4; }
+.core-booting .core-ring { border-style: dotted; border-color: var(--accent-dim); }
+.core-standby .core-dot { animation: core-breathe 3.6s ease-in-out infinite; }
+
+/* Listening and transcribing: the microphone is genuinely open. Two
+   rings and a larger dot, so it is unmistakable at a glance. */
+.core-listening .core-dot,
+.core-transcribing .core-dot {
+  background: var(--accent);
+  width: 18px;
+  height: 18px;
+}
+.core-listening .core-ring,
+.core-transcribing .core-ring { border-color: var(--accent); opacity: 0.75; }
+.core-listening .core-ring   { animation: core-pulse 1.5s ease-out infinite; }
+.core-transcribing .core-ring-2 { animation: core-pulse 1.1s ease-out infinite; }
+
+/* Thinking: rotation rather than pulse, so it cannot be mistaken for
+   listening at a glance. */
+.core-thinking .core-dot { background: var(--accent); }
+.core-thinking .core-ring {
+  border-color: var(--accent);
+  border-top-color: transparent;
+  border-right-color: transparent;
+  opacity: 0.9;
+  animation: core-spin 1.25s linear infinite;
+}
+
+/* Executing: something is actually happening to the machine. */
+.core-executing .core-dot { background: var(--warn); }
+.core-executing .core-ring { border-color: var(--warn); opacity: 0.8; }
+.core-executing .core-ring-2 { animation: core-spin 2s linear infinite reverse; }
+
+/* Waiting for the person. Square inner marker: this one is a prompt, not
+   progress, and it must not look like either. */
+.core-awaiting_approval .core-dot {
+  background: var(--warn);
+  border-radius: calc(var(--core-size) * 0.045);
+  width: calc(var(--core-size) * 0.21);
+  height: calc(var(--core-size) * 0.21);
+  animation: core-breathe 1.8s ease-in-out infinite;
+}
+.core-awaiting_approval .core-ring { border-color: var(--warn); opacity: 0.85; }
+
+/* Speaking. */
+.core-speaking .core-dot {
+  background: var(--accent);
+  width: calc(var(--core-size) * 0.215);
+  height: calc(var(--core-size) * 0.215);
+}
+.core-speaking .core-ring   { border-color: var(--accent); opacity: 0.8; }
+.core-speaking .core-ring-2 { animation: core-pulse 0.9s ease-out infinite; }
+
+/* Error and offline are both red, and told apart by the ring: error is
+   solid and alarming, offline is dashed and inert. */
+.core-error .core-dot { background: var(--err); }
+.core-error .core-ring { border-color: var(--err); opacity: 0.9; }
+.core-error .core-ring-2 { border-color: var(--err); }
+
+.core-offline .core-dot { background: var(--err); opacity: 0.55; }
+.core-offline .core-ring { border-color: var(--err); border-style: dashed; opacity: 0.5; }
+
+/* The event stream dropped. Not a runtime state — the server may be
+   doing anything — so it is drawn as "unknown", never as the last thing
+   we happened to see. */
+.core-disconnected .core-dot { background: var(--text-subtle); }
+.core-disconnected .core-ring {
+  border-style: dashed;
+  border-color: var(--text-subtle);
+  opacity: 0.45;
+}
+
+@keyframes core-pulse {
+  0%   { transform: scale(0.86); opacity: 0.85; }
+  70%  { transform: scale(1.12); opacity: 0; }
+  100% { transform: scale(1.12); opacity: 0; }
+}
+
+@keyframes core-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes core-breathe {
+  0%, 100% { transform: scale(0.9); opacity: 0.75; }
+  50%      { transform: scale(1.06); opacity: 1; }
+}
+
+/* The global reduced-motion rule already disables every animation. What
+   it cannot do is keep the states distinguishable once the motion that
+   distinguished some of them is gone, so each one is given a static
+   difference that survives on its own. */
+@media (prefers-reduced-motion: reduce) {
+  .core-listening .core-ring-2,
+  .core-speaking .core-ring-2   { opacity: 0.8; }
+  .core-thinking .core-ring     { border-top-color: transparent; opacity: 1; }
+  .core-awaiting_approval .core-dot { transform: scale(1.05); }
+  .core-standby .core-dot       { opacity: 0.85; }
+}
+
+/* Narrow windows and high Windows display scaling reach the same place:
+   less usable space. Only `--core-size` and the stage's padding change —
+   the ten state rules above are written in terms of that variable, so
+   none of them appears here. */
+@media (max-width: 720px) {
+  .core { --core-size: 104px; }
+  .core-stage { padding: 1.1rem 0.75rem 1rem; }
+  .core-status { font-size: 1.08rem; }
+}
+
+@media (max-width: 520px) {
+  .core { --core-size: 84px; }
+  .core-stage { padding: 0.85rem 0.5rem 0.8rem; gap: 0.4rem; }
+  .core-status { font-size: 1rem; }
+  .core-hint { display: none; }
+}
+
+/* A short window is the case the desktop app actually hits: someone drags
+   the bottom edge up, or Windows is at 150-175% scaling. Height, not
+   width, is what runs out — and the transcript is what must survive it. */
+@media (max-height: 720px) {
+  .core { --core-size: 88px; }
+  .core-stage { padding: 0.8rem 0.75rem 0.7rem; gap: 0.35rem; }
+  .core-status { font-size: 1rem; }
+  .core-hint { display: none; }
+}
+
+@media (max-height: 560px) {
+  .core { --core-size: 60px; }
+  .core-stage {
+    flex-direction: row;
+    justify-content: flex-start;
+    text-align: left;
+    gap: 0.85rem;
+    padding: 0.3rem 0.2rem 0.5rem;
+    background: none;
+  }
+  .core-eyebrow { display: none; }
+  .core-status { font-size: 0.9rem; max-width: none; }
+}
+
+/* ── `hidden` must actually hide ──────────────────────────────────────
+   The HTML `hidden` attribute works by setting `display: none` in the UA
+   stylesheet, and any component rule with its own `display` silently
+   beats it. `.btn` sets `display: inline-flex`, so every button marked
+   `hidden` in a template was rendering anyway: Chat's Stop button and
+   the push-to-talk Cancel button were both permanently visible.
+
+   A Stop button on screen when nothing is generating is a control that
+   claims work is in progress, which is the same class of untruth as an
+   indicator that says "listening" at a closed microphone — and pressing
+   it did nothing, because the code behind it is guarded.
+
+   Global and `!important` on purpose: this is the attribute's documented
+   meaning, and any rule that overrides it is a bug wherever it appears.
+   Present on no earlier commit, including main. */
+[hidden] { display: none !important; }

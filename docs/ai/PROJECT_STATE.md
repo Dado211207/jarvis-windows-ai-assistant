@@ -20,7 +20,94 @@ separate safe Coding Workspace for the owner's own repositories.
 
 ## Active work
 
-- Branch: `claude/anthropic-workspace-id`
+### Interface redesign — `claude/jarvis-interface-redesign`
+
+- Base: `main` at `01dd3d2aa13b124f388778d3dc9f0061575564d1`
+- State: **Draft, open, unmerged.** Not built, not installed, not offered
+  to the owner.
+- A polished dark pass over the existing cyan token set — this was an
+  elevation, not a repaint: `--accent: #00d4ff` and the full token system
+  already existed.
+- **A runtime core on Chat, driven only by real events.** It renders
+  `RuntimeState` from `EventType.RUNTIME_STATE` over `/ws/events`. There
+  is no client-side path that can show `listening` or `speaking` while
+  the server is not in that state, because the class list is rebuilt
+  wholesale from the event payload and from nowhere else.
+- All **ten** states stay distinct, including `awaiting_approval`,
+  `error` and `offline` — the three a person has to act on. Each differs
+  by shape or ring style as well as colour, so none depends on colour
+  alone, and each keeps a static difference under `prefers-reduced-motion`.
+- `connecting` and `disconnected` are the page's own states, deliberately
+  **not** `RuntimeState` values. On an event-stream drop the indicator
+  falls back to "unknown" rather than keeping the last thing it saw.
+- **New:** `GET /runtime/state`, a plain read with no side effects. The
+  stream publishes transitions only, so a page opened during a quiet
+  moment previously rendered a hardcoded `standby` from the template that
+  nobody had observed.
+- Three defects found and fixed during the pass, two of them pre-existing
+  on `main`:
+  1. `[hidden]` did nothing to `.btn`, so Chat's **Stop** button and the
+     push-to-talk **Cancel** button were permanently visible — controls
+     asserting work in progress when none was.
+  2. `.sidebar { display: none }` under 768px removed **all** navigation,
+     Settings included, from any narrow window — including a 1280px
+     screen at 175% Windows scaling, where the CSS viewport is 731px.
+  3. Mine: the topbar badge kept its last state after a disconnect while
+     the core correctly said "unknown".
+- Fonts stay local/system. `style.css` contains no `http(s)://` URL, per
+  the Phase 7 rule; the design skill's Google Fonts recommendation was
+  overridden on that basis.
+
+#### Review round 2 on the same branch
+
+A focused review of `d8fe2b9` found three things. All three are addressed
+on this branch; none of them touched `app/coding/`, a browser-QA timeout,
+or a survivor assertion.
+
+1. **Runtime-state ordering.** `refreshRuntimeState()` applied every
+   response unconditionally, so the indicator was decided by which answer
+   arrived last. Three orderings were reproduced in a real browser against
+   unmodified `d8fe2b9` — a delayed load snapshot reverting a newer
+   `listening` event; a snapshot in flight at socket close answering
+   `speaking` beside a topbar reading "reconnecting"; two snapshots
+   completing in reverse order.
+
+   The fix makes freshness the **server's** sequence, not arrival order.
+   `GET /runtime/state` now reports the `event_bus` sequence it was read
+   at — read *before* the state, so it can only under-claim — and
+   `applyRuntimeObservation()` in `app.js` applies an observation only if
+   its sequence is higher than what is on screen and its connection
+   generation is still current. A dropped stream bumps the generation
+   (invalidating every in-flight snapshot) and resets the applied
+   sequence (so a quiet reconnect can still recover). Reconnect replay
+   works in both directions: a replayed event older than the reconnect
+   snapshot is discarded, a newer one wins.
+
+   `tests/test_runtime_ordering.py` (browser) and
+   `tests/test_runtime_state_endpoint.py` cover it. **12 of the 13 fail
+   on unmodified `d8fe2b9`.**
+
+2. **Chat-first launch.** `gui.dashboard_url()` opened `/ui/` — the
+   Dashboard — after onboarding, so every launch of a Chat-first product
+   landed on CPU bars and health dots. It is now `gui.landing_url()`
+   returning `LANDING_PATH = "/ui/chat"`, with `/ui/setup` still winning
+   on first run. The Dashboard is unchanged and still served at `/ui/`,
+   one sidebar click away. The tray's "Open Command Center" entry was
+   removed: it opened `/ui/chat` in a browser, which is now exactly what
+   "Open in Browser" above it does.
+
+3. **The composition.** The core was a 54px marker beside the page title
+   with the rest of the layout untouched. It is now a centred stage above
+   the conversation at 132px, with the state sentence as the largest text
+   on the page; it compacts to a 54px row once there are messages, so the
+   transcript keeps its space. Voice controls are grouped and labelled —
+   the microphone carries a visible word, is a real `aria-pressed`
+   toggle, and every control in the composer is at least 44px with 8px
+   between adjacent ones.
+
+### Anthropic identity-linked API keys — MERGED
+
+- Branch: `claude/anthropic-workspace-id` (merged as `01dd3d2`, branch preserved)
 - Base: `main` at `884c737d465afddeaee31ba99567345861602026`
 - Purpose: JARVIS could not authenticate with an Anthropic **identity-linked**
   API key (a personal or service account key that is not scoped to one
@@ -201,6 +288,34 @@ separate safe Coding Workspace for the owner's own repositories.
 - **The `msedge.exe` survivor remains unreproduced and unfixed.** Its opt-in
   diagnostics scaffolding is deliberately still in the tree. Do not weaken
   `survivors == []`, raise a timeout, add a retry, or sweep by image name.
+
+## Open issues, explicitly not closed
+
+Both bounded investigations reached their agreed two-run limit without a
+demonstrated cause. Neither has a fix, and neither is closed. Full record
+in `docs/survivor-and-teardown-investigation.md`.
+
+- **#144 — the `msedge.exe` survivor.** Real and recurring in CI:
+  `fdef269` job `101218076939`, post-merge Windows smoke job
+  `101317543827`, and post-merge installer acceptance job
+  `101317560899` (a different manifestation, where cleanup correctly
+  reported every owned tree terminated and a profile sweep still found a
+  survivor outside the captured set). The retained-handle explanation was
+  measured and not reproduced in the conditions tested; the real route
+  then ran 96 cleanup passes with 0 survivors. **Inconclusive.** Note
+  that `kill_error=''` does not establish that `TerminateProcess`
+  succeeded — psutil's `psutil_proc_kill` suppresses
+  `ERROR_ACCESS_DENIED`.
+- **#145 — the interpreter abort after the totals.** `terminate called
+  without an active exception`, exit 134, attributed to onnxruntime
+  tearing down the Kokoro decoder. A synthetic workload never reproduced
+  it (0/12); the real suite combination aborted on the baseline and
+  exited 0 with the session released — but at **n=1 per arm**, against a
+  defect intermittent at roughly one run in five. **Suggestive, not
+  solved.** `engine.py` is untouched.
+- **`main` is currently red** because of #144: two of the six post-merge
+  jobs on `01dd3d2` failed, and the installer artifact upload was skipped
+  by that failure, so no installer artifact exists for that commit.
 
 ## Durable constraints
 

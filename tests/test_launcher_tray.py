@@ -42,7 +42,6 @@ def test_build_menu_entries_shape_and_order():
     entries = build_menu_entries(
         state,
         on_open_dashboard=lambda: calls.append("dashboard"),
-        on_open_command_center=lambda: calls.append("command_center"),
         on_open_in_browser=lambda: calls.append("browser"),
         on_toggle_privacy=lambda: calls.append("privacy"),
         on_restart=lambda: calls.append("restart"),
@@ -53,8 +52,11 @@ def test_build_menu_entries_shape_and_order():
     assert labels == [
         "Status: running",
         "Open JARVIS",
+        # "Open Command Center" used to sit here. It opened /ui/chat in a
+        # browser; now that a launch lands on Chat, "Open in Browser"
+        # above opens the same page, and two entries with one behaviour
+        # is a menu you have to try to understand.
         "Open in Browser",
-        "Open Command Center",
         "Privacy mode: OFF",
         "Restart JARVIS",
         "Quit JARVIS",
@@ -64,7 +66,7 @@ def test_build_menu_entries_shape_and_order():
     assert entries[0].enabled is False
 
     # Every action-bearing entry actually invokes the callback it was given.
-    expected_order = ["dashboard", "browser", "command_center", "privacy", "restart", "quit"]
+    expected_order = ["dashboard", "browser", "privacy", "restart", "quit"]
     for entry in entries[1:]:
         entry.action()
     assert calls == expected_order
@@ -76,7 +78,6 @@ def test_privacy_entry_disabled_when_state_unknown():
     entries = build_menu_entries(
         TrayState(privacy_active=None),
         on_open_dashboard=lambda: None,
-        on_open_command_center=lambda: None,
         on_open_in_browser=lambda: None,
         on_toggle_privacy=lambda: None,
         on_restart=lambda: None,
