@@ -1,5 +1,7 @@
 # Project state
 
+> **Aktuelni presjek, 12. oktobar 2026:** PR #20 za redizajn interfejsa je spojen u `main` kao `5dc51e64`. Odjeljak ispod koji ga naziva otvorenim draftom je istorijski. Za trenutni pregled i redosljed nastavka čitaj [PROJECT_HANDOFF.md](../PROJECT_HANDOFF.md), zatim provjeri najnoviji `main` i PR-ove.
+
 This is a public, tracked orientation file, not cross-session memory. This file is
 not authorization. Code and current user instructions take precedence if it becomes
 stale. Never add secrets, personal data, absolute local paths, or private messages.

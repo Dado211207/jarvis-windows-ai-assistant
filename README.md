@@ -1,5 +1,8 @@
 # JARVIS — Personal Windows AI Assistant
 
+> [Aktuelni projektni handoff](docs/PROJECT_HANDOFF.md) — presjek 12. oktobra 2026.
+
+
 > v0.2: Safe Voice Command Center & Windows Action Runtime — every action is
 > classified by risk, policy-gated, and recorded in a persisted audit trail
 > before it ever touches your system.
