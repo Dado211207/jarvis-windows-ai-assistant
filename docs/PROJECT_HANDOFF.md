@@ -22,3 +22,17 @@ Lokalni Windows asistent: desktop shell, razgovor i glas, odobravanje sistemskih
 2. Za konkretan zadatak pročitaj navedene izvorne fajlove i provjeri odgovarajuće podatke sa vlasnikom; ne dopunjavaj činjenice nagađanjem.
 3. Pokreni relevantne provjere, pregledaj promjenu na telefonu i računaru kada dira UI, pa dokumentuj šta je stvarno objavljeno. Nikad ne upisuj lozinke, tokene, lične podatke ili sadržaj privatnih razgovora u Git.
 
+## Detaljni pregled — 21. oktobar 2026.
+
+**Izvor provjere:** `main` na `11ca22a8a09eba9929e76ebfebbddbf8d9ccffac` (dokumentacioni commit); README, `SECURITY.md`, `docs/ai/PROJECT_STATE.md` i otvoreni PR-ovi. Ovaj pregled nije novo testiranje na Windows računaru niti potvrda javnog izdanja.
+
+| Područje | Gdje se održava | Granica |
+| --- | --- | --- |
+| Lokalni API i razgovor | `app/api/`, `app/core/ai/` | Podrazumijevani loopback `127.0.0.1:5555`; cloud AI je opcioni servis, a bez ključa ostaju lokalne determinističke komande. |
+| Radnje i sigurnost | politika odobravanja, audit, `SECURITY.md`, `docs/THREAT_MODEL.md` | Rizične radnje prolaze provjeru/odobrenje; tajne se rediguju; Coding Workspace je ograničen na odobrene putanje. |
+| Desktop i distribucija | `app/desktop/`, `installer/`, `packaging/`, `docs/WINDOWS_INSTALLER.md` | Windows 10/11 i WebView2; installer per-user čuva podatke odvojeno. CI artefakt je unsigned i privremen, nije javni release. |
+| Podaci i testovi | `db/`, `tests/`, `.github/workflows/` | SQLite i lokalna evidencija; `python -m compileall app db` i `pytest` su komande za svježu provjeru. Ovdje nijesu ponovo izvršene. |
+
+**Otvoren rad:** draft [#13](https://github.com/Dado211207/jarvis-windows-ai-assistant/pull/13) (settings/memory) cilja `main`; draft [#14](https://github.com/Dado211207/jarvis-windows-ai-assistant/pull/14) (installer/onboarding) je naslagan na granu #13; draft [#16](https://github.com/Dado211207/jarvis-windows-ai-assistant/pull/16) popravlja ISPP packaging. Nijedan od njih nije dio ovog `main` presjeka samo zato što postoji PR. Prije spajanja provjeri bazu svake grane, CI i konfliktne promjene.
+
+**Prije distribucije:** fizički Windows PC, mikrofon i zvuk, WebView2, SmartScreen, instalacija/deinstalacija, čuvanje korisničkih podataka i provjera SHA-256 instalera. GitHub Actions release tok je u `docs/release-process.md`; ne pokreći ga samo na osnovu prolaza statičkih testova. Sljedeći korak je uskladiti starije statusne odjeljke u `docs/ai/PROJECT_STATE.md`, pa zasebno pregledati naslagane draftove.
